@@ -7,8 +7,9 @@ from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
-from job_applier.filters import evaluate
+from job_applier.filters import FilterResult, evaluate
 from job_applier.models import Company, JobPosting, engine
+from job_applier.models.db import FilterStatus
 from job_applier.sources import ALL_SOURCES, RawJob, SourceAdapter
 
 
@@ -50,8 +51,7 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
 
     company = _upsert_company(session, raw.company_name)
     if company.is_blocked:
-        # Blocklisted company — store but mark dropped.
-        decision = (False, "company is on blocklist")
+        decision = FilterResult(status=FilterStatus.dropped, reason="company is on blocklist")
     else:
         decision = evaluate(raw)
 
