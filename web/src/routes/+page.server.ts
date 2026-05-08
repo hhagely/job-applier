@@ -9,6 +9,10 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 		? filterParam
 		: 'passed') as FilterStatus;
 
-	const jobs = await api.listJobs(fetch, { filter_status, limit: 200 });
+	const all = await api.listJobs(fetch, { filter_status, limit: 200 });
+	const jobs =
+		filter_status === 'passed'
+			? all.filter((j) => j.application?.status !== 'archived')
+			: all;
 	return { jobs, filter_status };
 };
