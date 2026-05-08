@@ -1,17 +1,26 @@
-.PHONY: setup run dev clean lint
+.PHONY: setup api web dev ingest clean lint help
 
-setup: ## Install dependencies
+setup: ## Install backend + frontend dependencies
 	uv sync
+	cd web && npm install
 
-run: ## Run the application
-	uv run python -m job_applier
+api: ## Run FastAPI backend on :8000
+	uv run uvicorn job_applier.api.app:app --reload --port 8000
 
-dev: ## Run with auto-reload (for development)
-	uv run python -m job_applier
+web: ## Run SvelteKit dev server on :5174
+	cd web && npm run dev
+
+dev: ## Run backend + frontend together (requires GNU parallel or two terminals)
+	@echo "Run 'make api' in one terminal and 'make web' in another."
+	@echo "Or: (make api &) && make web"
+
+ingest: ## Pull jobs from configured sources
+	uv run job-applier ingest
 
 clean: ## Remove build artifacts and caches
-	rm -rf __pycache__ .venv dist build *.egg-info
+	rm -rf dist build *.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	rm -rf web/.svelte-kit web/node_modules/.vite
 
 lint: ## Run linter
 	uv run ruff check src/

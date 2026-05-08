@@ -6,13 +6,12 @@ __pycache__/
 *.egg
 dist/
 build/
+.ruff_cache/
+.pytest_cache/
 
 # Virtual environments
 .venv/
 venv/
-
-# UV
-uv.lock
 
 # IDE
 .vscode/
@@ -27,3 +26,17 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Local data (SQLite, ingest cache)
+data/
+*.db
+*.db-journal
+
+# Generated application artifacts (per-job tailored resumes/cover letters)
+applications/
+
+# SvelteKit / Node
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/.env

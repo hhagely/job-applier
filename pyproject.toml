@@ -1,9 +1,22 @@
 [project]
 name = "job-applier"
 version = "0.1.0"
-description = "Scrape LinkedIn jobs and auto-apply with your resume"
+description = "Personal job board: ingest postings from open sources, filter, score against resume, draft tailored applications"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlmodel>=0.0.22",
+    "httpx>=0.28",
+    "pydantic-settings>=2.6",
+    "typer>=0.13",
+    "apscheduler>=3.10",
+    "weasyprint>=63.0",
+    "markdown-it-py>=3.0",
+]
+
+[project.scripts]
+job-applier = "job_applier.cli:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -11,3 +24,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/job_applier"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7",
+    "pytest>=8.3",
+]
