@@ -170,13 +170,26 @@
 		overflow-x: auto;
 		font-size: 0.85rem;
 	}
+	.description :global(*) {
+		color: var(--fg) !important;
+		background-color: transparent !important;
+	}
+	.description :global(a) {
+		color: var(--accent) !important;
+	}
 	.description :global(p) {
 		line-height: 1.5;
 	}
-	.description :global(ul) {
-		padding-left: 1.5rem;
-	}
+	.description :global(ul),
 	.description :global(ol) {
 		padding-left: 1.5rem;
+	}
+	.description :global(img) {
+		max-width: 100%;
+		height: auto;
+	}
+	.description :global(pre),
+	.description :global(code) {
+		background: var(--bg) !important;
 	}
 </style>

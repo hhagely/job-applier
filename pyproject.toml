@@ -13,6 +13,8 @@ dependencies = [
     "apscheduler>=3.10",
     "weasyprint>=63.0",
     "markdown-it-py>=3.0",
+    "pypdf>=5.1",
+    "python-multipart>=0.0.20",
 ]
 
 [project.scripts]

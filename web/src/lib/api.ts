@@ -1,8 +1,9 @@
 // Tiny typed client around the FastAPI backend.
-// Used from +page.server.ts so requests never leave the dev server's process.
-import { env } from '$env/dynamic/private';
+// Imported by both +page.server.ts (server-side fetches via form actions)
+// and +page.svelte (browser-side helpers like resumePdfUrl()), so this module
+// must stay browser-safe — no $env/dynamic/private here.
 
-export const API_BASE = env.JOB_APPLIER_API ?? 'http://127.0.0.1:8000';
+export const API_BASE = 'http://127.0.0.1:8000';
 
 export type FilterStatus = 'passed' | 'dropped' | 'manual';
 export type ApplicationStatus =
@@ -57,6 +58,15 @@ export interface JobDetail extends Job {
 	description: string;
 }
 
+export interface Resume {
+	id: number;
+	original_filename: string;
+	page_count?: number | null;
+	is_active: boolean;
+	uploaded_at: string;
+	extracted_text: string;
+}
+
 type FetchFn = typeof fetch;
 
 async function call<T>(fetchFn: FetchFn, path: string, init?: RequestInit): Promise<T> {
@@ -68,6 +78,17 @@ async function call<T>(fetchFn: FetchFn, path: string, init?: RequestInit): Prom
 		const body = await res.text();
 		throw new Error(`API ${path} -> ${res.status}: ${body}`);
 	}
+	return res.json() as Promise<T>;
+}
+
+async function callOptional<T>(
+	fetchFn: FetchFn,
+	path: string,
+	init?: RequestInit
+): Promise<T | null> {
+	const res = await fetchFn(`${API_BASE}${path}`, init);
+	if (res.status === 404) return null;
+	if (!res.ok) throw new Error(`API ${path} -> ${res.status}: ${await res.text()}`);
 	return res.json() as Promise<T>;
 }
 
@@ -101,5 +122,17 @@ export const api = {
 		call<Application>(fetchFn, `/api/jobs/${id}/notes`, {
 			method: 'POST',
 			body: JSON.stringify({ notes })
-		})
+		}),
+
+	getCurrentResume: (fetchFn: FetchFn) => callOptional<Resume>(fetchFn, '/api/resume/current'),
+
+	uploadResume: async (fetchFn: FetchFn, file: File): Promise<Resume> => {
+		const fd = new FormData();
+		fd.append('file', file, file.name);
+		const res = await fetchFn(`${API_BASE}/api/resume`, { method: 'POST', body: fd });
+		if (!res.ok) throw new Error(`upload failed: ${res.status} ${await res.text()}`);
+		return res.json() as Promise<Resume>;
+	},
+
+	resumePdfUrl: () => `${API_BASE}/api/resume/current/pdf`
 };

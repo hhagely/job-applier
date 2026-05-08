@@ -11,11 +11,15 @@ subscription instead of paying for API tokens.
 
 ## Steps
 
-1. **Read the master resume**: `resume/master.md`. If it doesn't exist or is just the
-   placeholder template, stop and tell the user to fill it in first.
-
-2. **Check the API is up**: `curl -sf http://127.0.0.1:8000/api/health`. If it fails,
+1. **Check the API is up**: `curl -sf http://127.0.0.1:8000/api/health`. If it fails,
    tell the user to run `make api` in another terminal.
+
+2. **Fetch the active resume**:
+   `curl -sS http://127.0.0.1:8000/api/resume/current`
+
+   The response has `extracted_text` (plain text from the uploaded PDF) — this is
+   what you score against. If you get 404, stop and tell the user to upload a
+   resume at http://localhost:5174/resume.
 
 3. **Fetch the queue**:
    `curl -sS "http://127.0.0.1:8000/api/pending-match?limit=25"`
