@@ -58,6 +58,17 @@ export interface JobDetail extends Job {
 	description: string;
 }
 
+export interface Draft {
+	job_id: number;
+	has_resume_md: boolean;
+	has_resume_pdf: boolean;
+	has_cover_letter_md: boolean;
+	has_cover_letter_pdf: boolean;
+	updated_at?: string | null;
+	resume_md?: string | null;
+	cover_letter_md?: string | null;
+}
+
 export interface Resume {
 	id: number;
 	original_filename: string;
@@ -140,5 +151,19 @@ export const api = {
 		return res.json() as Promise<Resume>;
 	},
 
-	resumePdfUrl: () => `${API_BASE}/api/resume/current/pdf`
+	resumePdfUrl: () => `${API_BASE}/api/resume/current/pdf`,
+
+	getDraft: (fetchFn: FetchFn, jobId: number, includeMarkdown = false) =>
+		callOptional<Draft>(
+			fetchFn,
+			`/api/jobs/${jobId}/draft${includeMarkdown ? '?include_markdown=true' : ''}`
+		),
+
+	renderDraft: (fetchFn: FetchFn, jobId: number) =>
+		call<Draft>(fetchFn, `/api/jobs/${jobId}/draft/render`, { method: 'POST' }),
+
+	draftResumePdfUrl: (jobId: number) => `${API_BASE}/api/jobs/${jobId}/draft/resume.pdf`,
+
+	draftCoverLetterPdfUrl: (jobId: number) =>
+		`${API_BASE}/api/jobs/${jobId}/draft/cover-letter.pdf`
 };

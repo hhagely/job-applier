@@ -6,11 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlmodel import Session, select
 
-from job_applier import resume_io
+from job_applier import drafts, resume_io
 from job_applier.api.schemas import (
     ApplicationOut,
     BulkStatusUpdate,
     CompanyOut,
+    DraftIn,
+    DraftOut,
     JobDetail,
     JobOut,
     NotesUpdate,
@@ -326,6 +328,80 @@ def download_current_resume(session: Session = Depends(get_session)):
 def get_current_resume_markdown(session: Session = Depends(get_session)):
     r = _active_resume(session)
     return resume_io.to_markdown(r.extracted_text)
+
+
+def _draft_out(
+    job_id: int, *, include_markdown: bool = False
+) -> DraftOut:
+    s = drafts.get_status(job_id)
+    return DraftOut(
+        job_id=s.job_id,
+        has_resume_md=s.has_resume_md,
+        has_resume_pdf=s.has_resume_pdf,
+        has_cover_letter_md=s.has_cover_letter_md,
+        has_cover_letter_pdf=s.has_cover_letter_pdf,
+        updated_at=s.updated_at,
+        resume_md=drafts.read_markdown(job_id, "resume") if include_markdown else None,
+        cover_letter_md=(
+            drafts.read_markdown(job_id, "cover_letter") if include_markdown else None
+        ),
+    )
+
+
+@app.get("/api/jobs/{job_id}/draft", response_model=DraftOut)
+def get_draft(
+    job_id: int,
+    include_markdown: bool = False,
+    session: Session = Depends(get_session),
+):
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    return _draft_out(job_id, include_markdown=include_markdown)
+
+
+@app.post("/api/jobs/{job_id}/draft", response_model=DraftOut)
+def save_draft(
+    job_id: int, body: DraftIn, session: Session = Depends(get_session)
+):
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    if body.resume_md is None and body.cover_letter_md is None:
+        raise HTTPException(422, "provide at least one of resume_md, cover_letter_md")
+    drafts.save_and_render(job_id, body.resume_md, body.cover_letter_md)
+    return _draft_out(job_id)
+
+
+@app.post("/api/jobs/{job_id}/draft/render", response_model=DraftOut)
+def render_draft(job_id: int, session: Session = Depends(get_session)):
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    s = drafts.get_status(job_id)
+    if not (s.has_resume_md or s.has_cover_letter_md):
+        raise HTTPException(404, "no draft markdown to render")
+    drafts.render_existing(job_id)
+    return _draft_out(job_id)
+
+
+@app.get("/api/jobs/{job_id}/draft/resume.pdf")
+def download_draft_resume(job_id: int, session: Session = Depends(get_session)):
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    path = drafts.pdf_path(job_id, "resume")
+    if not path.exists():
+        raise HTTPException(404, "tailored resume PDF not found — run /draft first")
+    return FileResponse(path, media_type="application/pdf", filename=f"resume-{job_id}.pdf")
+
+
+@app.get("/api/jobs/{job_id}/draft/cover-letter.pdf")
+def download_draft_cover_letter(job_id: int, session: Session = Depends(get_session)):
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    path = drafts.pdf_path(job_id, "cover_letter")
+    if not path.exists():
+        raise HTTPException(404, "cover letter PDF not found — run /draft first")
+    return FileResponse(
+        path, media_type="application/pdf", filename=f"cover-letter-{job_id}.pdf"
+    )
 
 
 @app.get("/api/health")

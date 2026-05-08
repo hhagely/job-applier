@@ -15,8 +15,8 @@ export const load: PageServerLoad = async ({ params, fetch }) => {
 	const id = Number(params.id);
 	if (!Number.isFinite(id)) throw error(400, 'invalid id');
 	try {
-		const job = await api.getJob(fetch, id);
-		return { job };
+		const [job, draft] = await Promise.all([api.getJob(fetch, id), api.getDraft(fetch, id)]);
+		return { job, draft };
 	} catch (e) {
 		throw error(404, (e as Error).message);
 	}
@@ -38,5 +38,14 @@ export const actions: Actions = {
 		const notes = String(form.get('notes') ?? '');
 		await api.setNotes(fetch, id, notes);
 		return { ok: true };
+	},
+	renderDraft: async ({ params, fetch }) => {
+		const id = Number(params.id);
+		try {
+			await api.renderDraft(fetch, id);
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	}
 };
