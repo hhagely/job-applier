@@ -1,8 +1,9 @@
 // Tiny typed client around the FastAPI backend.
-// Used from +page.server.ts so requests never leave the dev server's process.
-import { env } from '$env/dynamic/private';
+// Imported by both +page.server.ts (server-side fetches via form actions)
+// and +page.svelte (browser-side helpers like resumePdfUrl()), so this module
+// must stay browser-safe — no $env/dynamic/private here.
 
-export const API_BASE = env.JOB_APPLIER_API ?? 'http://127.0.0.1:8000';
+export const API_BASE = 'http://127.0.0.1:8000';
 
 export type FilterStatus = 'passed' | 'dropped' | 'manual';
 export type ApplicationStatus =
