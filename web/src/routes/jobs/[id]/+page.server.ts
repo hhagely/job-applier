@@ -1,0 +1,42 @@
+import { api, type ApplicationStatus } from '$lib/api';
+import { error, fail } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
+
+const VALID_STATUS: ApplicationStatus[] = [
+	'new',
+	'interested',
+	'drafted',
+	'applied',
+	'rejected',
+	'archived'
+];
+
+export const load: PageServerLoad = async ({ params, fetch }) => {
+	const id = Number(params.id);
+	if (!Number.isFinite(id)) throw error(400, 'invalid id');
+	try {
+		const job = await api.getJob(fetch, id);
+		return { job };
+	} catch (e) {
+		throw error(404, (e as Error).message);
+	}
+};
+
+export const actions: Actions = {
+	setStatus: async ({ request, params, fetch }) => {
+		const id = Number(params.id);
+		const form = await request.formData();
+		const status = String(form.get('status') ?? '') as ApplicationStatus;
+		const notes = (form.get('notes') as string | null) || undefined;
+		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
+		await api.setStatus(fetch, id, status, notes);
+		return { ok: true };
+	},
+	setNotes: async ({ request, params, fetch }) => {
+		const id = Number(params.id);
+		const form = await request.formData();
+		const notes = String(form.get('notes') ?? '');
+		await api.setNotes(fetch, id, notes);
+		return { ok: true };
+	}
+};
