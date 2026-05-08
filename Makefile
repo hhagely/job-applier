@@ -1,4 +1,4 @@
-.PHONY: setup api web dev ingest clean lint help
+.PHONY: setup api web dev ingest clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies
 	uv sync
@@ -24,6 +24,14 @@ clean: ## Remove build artifacts and caches
 
 lint: ## Run linter
 	uv run ruff check src/
+
+test-api: ## Run backend tests (pytest)
+	uv run pytest
+
+test-web: ## Run frontend tests (vitest)
+	cd web && npm test
+
+test: test-api test-web ## Run all tests
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
