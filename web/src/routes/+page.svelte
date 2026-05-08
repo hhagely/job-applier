@@ -6,7 +6,7 @@
 	function relTime(iso: string): string {
 		const diff = Date.now() - new Date(iso).getTime();
 		const days = Math.floor(diff / 86_400_000);
-		if (days === 0) return 'today';
+		if (days <= 0) return 'today';
 		if (days === 1) return '1 day ago';
 		if (days < 30) return `${days} days ago`;
 		return `${Math.floor(days / 30)} months ago`;
@@ -50,7 +50,15 @@
 							{#if job.location}
 								<span class="dot">·</span><span>{job.location}</span>
 							{/if}
-							<span class="dot">·</span><span>{relTime(job.ingested_at)}</span>
+							<span class="dot">·</span>
+							<span>
+								{#if job.posted_at}
+									posted {relTime(job.posted_at)}
+								{:else}
+									posted ?
+								{/if}
+								· ingested {relTime(job.ingested_at)}
+							</span>
 							{#if job.application}
 								<span class="dot">·</span>
 								<span class="status status-{job.application.status}">
