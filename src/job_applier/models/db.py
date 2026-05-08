@@ -96,6 +96,16 @@ class Application(SQLModel, table=True):
     job: Optional[JobPosting] = Relationship(back_populates="application")
 
 
+class Resume(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    original_filename: str
+    pdf_path: str  # absolute path under settings.resumes_dir
+    extracted_text: str
+    page_count: Optional[int] = None
+    is_active: bool = Field(default=False, index=True)
+    uploaded_at: datetime = Field(default_factory=_utcnow)
+
+
 _engine = None
 
 

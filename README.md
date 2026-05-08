@@ -36,26 +36,27 @@ make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
 
-Drop your real resume into `resume/master.md` (replace the template).
-
 ## Daily flow
 
-1. **Ingest** new postings:
-   ```sh
-   make ingest
-   ```
-2. **Run the API + UI** in two terminals:
+1. **Run the API + UI** in two terminals:
    ```sh
    make api    # http://127.0.0.1:8000
    make web    # http://localhost:5174
    ```
-3. **Score the queue** — open Claude Code in this repo and run:
+2. **Upload your resume** at http://localhost:5174/resume — pick the PDF you
+   actually send to employers. The API extracts plain text via `pypdf` and stores
+   it as the active resume. Older uploads are kept but inactive.
+3. **Ingest** new postings:
+   ```sh
+   make ingest
+   ```
+4. **Score the queue** — open Claude Code in this repo and run:
    ```
    /match-pending
    ```
-   It reads `resume/master.md`, fetches unscored jobs from the API, and writes
-   scores back. Refresh the UI to see them.
-4. **Review** in the UI — change a job's status to `interested`, `applied`,
+   It pulls the active resume from `/api/resume/current`, fetches unscored jobs,
+   and writes scores back. Refresh the UI to see them.
+5. **Review** in the UI — change a job's status to `interested`, `applied`,
    `rejected`, etc. Status changes use SvelteKit form actions, so they round-trip
    through the backend without client-side fetch code.
 
@@ -68,17 +69,19 @@ src/job_applier/
   models/      # SQLModel definitions + DB engine
   sources/     # Source adapters (Remotive today; more coming)
   ingest.py    # Pipeline: fetch → dedupe → filter → persist
+  resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
   config.py    # Settings (paths, ports, DB location)
 web/           # SvelteKit app
   src/lib/api.ts                                 # typed client used by +page.server.ts
   src/routes/+page.{svelte,server.ts}            # queue
   src/routes/jobs/[id]/+page.{svelte,server.ts}  # detail + status form actions
+  src/routes/resume/+page.{svelte,server.ts}     # resume upload + view
 .claude/commands/
   match-pending.md   # slash command Claude Code uses to score the queue
-resume/master.md     # your resume (markdown, source of truth)
 applications/        # generated tailored resumes / cover letters per job (gitignored)
 data/jobs.db         # SQLite (gitignored)
+data/resumes/        # uploaded PDFs (gitignored)
 ```
 
 ## Hard filter rules

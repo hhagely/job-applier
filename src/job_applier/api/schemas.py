@@ -73,3 +73,12 @@ class PendingMatchJob(BaseModel):
     url: str
     location: Optional[str]
     description: str
+
+
+class ResumeOut(BaseModel):
+    id: int
+    original_filename: str
+    page_count: Optional[int]
+    is_active: bool
+    uploaded_at: datetime
+    extracted_text: str

@@ -9,8 +9,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="JOB_APPLIER_", extra="ignore")
 
     db_path: Path = REPO_ROOT / "data" / "jobs.db"
-    resume_path: Path = REPO_ROOT / "resume" / "master.md"
+    resumes_dir: Path = REPO_ROOT / "data" / "resumes"
     applications_dir: Path = REPO_ROOT / "applications"
+    max_resume_bytes: int = 10 * 1024 * 1024  # 10 MiB
 
     api_host: str = "127.0.0.1"
     api_port: int = 8000
