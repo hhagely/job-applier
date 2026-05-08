@@ -113,13 +113,18 @@
 	}
 	.score-pill {
 		flex: 0 0 3rem;
-		text-align: center;
+		align-self: center;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 2.25rem;
 		font-weight: 700;
 		padding: 0.4rem 0.5rem;
 		border-radius: 6px;
 		background: #20262d;
 		color: var(--muted);
 		font-variant-numeric: tabular-nums;
+		line-height: 1;
 	}
 	.score-pill[data-score='high'] {
 		background: rgba(46, 160, 67, 0.2);
