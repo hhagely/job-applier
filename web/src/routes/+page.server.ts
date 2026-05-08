@@ -1,7 +1,17 @@
-import { api, type FilterStatus } from '$lib/api';
-import type { PageServerLoad } from './$types';
+import { api, type ApplicationStatus, type FilterStatus } from '$lib/api';
+import { fail } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
 
 const VALID: FilterStatus[] = ['passed', 'manual', 'dropped'];
+
+const VALID_STATUS: ApplicationStatus[] = [
+	'new',
+	'interested',
+	'drafted',
+	'applied',
+	'rejected',
+	'archived'
+];
 
 export const load: PageServerLoad = async ({ url, fetch }) => {
 	const filterParam = url.searchParams.get('filter');
@@ -15,4 +25,21 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 			? all.filter((j) => j.application?.status !== 'archived')
 			: all;
 	return { jobs, filter_status };
+};
+
+export const actions: Actions = {
+	bulkStatus: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const status = String(form.get('status') ?? '') as ApplicationStatus;
+		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
+
+		const ids = form
+			.getAll('ids')
+			.map((v) => Number(v))
+			.filter((n) => Number.isFinite(n));
+		if (ids.length === 0) return fail(400, { error: 'no jobs selected' });
+
+		await api.bulkSetStatus(fetch, ids, status);
+		return { ok: true, count: ids.length, status };
+	}
 };
