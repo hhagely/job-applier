@@ -6,8 +6,8 @@ resume via Claude Code, and surfaces the results in a SvelteKit review UI so you
 can decide which ones are worth tailoring an application for.
 
 No LinkedIn or Indeed scraping — those violate ToS and risk account bans.
-Sources are open ATS endpoints (Greenhouse, Lever, Ashby — coming) and aggregator
-APIs (Remotive — wired up; Adzuna, USAJobs — coming).
+Sources are open ATS endpoints (Greenhouse + Lever today, Ashby coming) and
+aggregator APIs (Remotive + Adzuna today, USAJobs coming).
 
 ## Architecture
 
@@ -99,12 +99,38 @@ Applied at ingest time; failed jobs are kept in the DB but marked `dropped` (aud
 
 Adjust `src/job_applier/filters/rules.py` if your criteria change.
 
-## Adding a source
+## Sources
 
-Create a new file under `src/job_applier/sources/` that implements the
-`SourceAdapter` protocol from `sources/base.py` (one method: `fetch() -> Iterable[RawJob]`),
-then add an instance to `ALL_SOURCES` in `sources/__init__.py`. The ingest
-pipeline picks it up automatically.
+| Source     | Auth needed                                  | Notes                                                                |
+| ---------- | -------------------------------------------- | -------------------------------------------------------------------- |
+| Remotive   | none                                         | Aggregator, remote-only by definition.                               |
+| Greenhouse | none                                         | Per-company boards. Edit `sources/companies.py` to add slugs.        |
+| Lever      | none                                         | Per-company postings. Edit `sources/companies.py` to add slugs.      |
+| Adzuna     | `JOB_APPLIER_ADZUNA_APP_ID` + `..._APP_KEY`  | Free tier at developer.adzuna.com. Skipped silently if unset.        |
+
+### Adding company slugs
+
+Open `src/job_applier/sources/companies.py` and append to `GREENHOUSE_COMPANIES`
+or `LEVER_COMPANIES`. Find the slug from the company's careers URL — most route
+through `job-boards.greenhouse.io/{slug}` or `jobs.lever.co/{slug}`. Failed
+fetches log a warning at ingest time but don't break the run.
+
+### Enabling Adzuna
+
+```sh
+# .env at repo root
+JOB_APPLIER_ADZUNA_APP_ID=your_id
+JOB_APPLIER_ADZUNA_APP_KEY=your_key
+JOB_APPLIER_ADZUNA_PAGES=3      # optional, default 3
+JOB_APPLIER_ADZUNA_COUNTRY=us   # optional, default us
+```
+
+### Adding a brand-new source type
+
+Create a file under `src/job_applier/sources/` that implements the
+`SourceAdapter` protocol from `sources/base.py` (one method:
+`fetch() -> Iterable[RawJob]`), then add an instance to `ALL_SOURCES` in
+`sources/__init__.py`.
 
 ## Why no Anthropic API calls?
 
