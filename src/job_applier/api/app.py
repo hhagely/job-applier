@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from job_applier import resume_io
 from job_applier.api.schemas import (
     ApplicationOut,
+    BulkStatusUpdate,
     CompanyOut,
     JobDetail,
     JobOut,
@@ -143,6 +144,27 @@ def set_status(job_id: int, body: StatusUpdate, session: Session = Depends(get_s
     session.commit()
     session.refresh(app_row)
     return _application_out(app_row)
+
+
+@app.post("/api/jobs/bulk-status", response_model=list[ApplicationOut])
+def set_status_bulk(body: BulkStatusUpdate, session: Session = Depends(get_session)):
+    if not body.job_ids:
+        raise HTTPException(422, "job_ids must not be empty")
+    now = datetime.now(timezone.utc)
+    results: list[ApplicationOut] = []
+    for job_id in body.job_ids:
+        job = session.get(JobPosting, job_id)
+        if job is None:
+            raise HTTPException(404, f"job {job_id} not found")
+        app_row = job.application or Application(job_id=job_id)
+        app_row.status = body.status
+        if body.status == ApplicationStatus.applied and app_row.applied_at is None:
+            app_row.applied_at = now
+        app_row.updated_at = now
+        session.add(app_row)
+        results.append(app_row)
+    session.commit()
+    return [_application_out(a) for a in results]
 
 
 @app.post("/api/jobs/{job_id}/notes", response_model=ApplicationOut)

@@ -55,6 +55,11 @@ class StatusUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class BulkStatusUpdate(BaseModel):
+    job_ids: list[int]
+    status: ApplicationStatus
+
+
 class NotesUpdate(BaseModel):
     notes: str
 

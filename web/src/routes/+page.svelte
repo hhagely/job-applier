@@ -1,12 +1,44 @@
 <script lang="ts">
+	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
+	import type { ApplicationStatus, Job } from '$lib/api';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
+	type SortKey = 'score-desc' | 'score-asc' | 'posted-desc' | 'ingested-desc' | 'title-asc';
+	type StatusFilter = ApplicationStatus | 'none';
+
+	const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+		{ key: 'none', label: 'unset' },
+		{ key: 'new', label: 'new' },
+		{ key: 'interested', label: 'interested' },
+		{ key: 'drafted', label: 'drafted' },
+		{ key: 'applied', label: 'applied' },
+		{ key: 'rejected', label: 'rejected' },
+		{ key: 'archived', label: 'archived' }
+	];
+
+	const BULK_STATUSES: ApplicationStatus[] = [
+		'interested',
+		'drafted',
+		'applied',
+		'rejected',
+		'archived'
+	];
+
+	let sortBy = $state<SortKey>('score-desc');
+	let activeStatuses = $state<Set<StatusFilter>>(new Set());
+	let unscoredOnly = $state(false);
+	let minScoreInput = $state('');
+	let selected = $state<Set<number>>(new Set());
+	let bulkStatus = $state<ApplicationStatus>('interested');
+	let submitting = $state(false);
+
 	function relTime(iso: string): string {
 		const diff = Date.now() - new Date(iso).getTime();
 		const days = Math.floor(diff / 86_400_000);
-		if (days === 0) return 'today';
+		if (days <= 0) return 'today';
 		if (days === 1) return '1 day ago';
 		if (days < 30) return `${days} days ago`;
 		return `${Math.floor(days / 30)} months ago`;
@@ -18,6 +50,86 @@
 		if (score >= 60) return 'med';
 		return 'low';
 	}
+
+	function jobStatusKey(job: Job): StatusFilter {
+		return job.application?.status ?? 'none';
+	}
+
+	function toggleStatus(key: StatusFilter) {
+		const next = new Set(activeStatuses);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		activeStatuses = next;
+	}
+
+	function clearFilters() {
+		activeStatuses = new Set();
+		unscoredOnly = false;
+		minScoreInput = '';
+	}
+
+	const minScore = $derived.by(() => {
+		const n = Number(minScoreInput);
+		return minScoreInput !== '' && Number.isFinite(n) ? n : null;
+	});
+
+	const visible = $derived.by(() => {
+		let list = data.jobs.slice();
+		if (activeStatuses.size > 0) {
+			list = list.filter((j) => activeStatuses.has(jobStatusKey(j)));
+		}
+		if (unscoredOnly) {
+			list = list.filter((j) => j.score == null);
+		}
+		if (minScore !== null) {
+			list = list.filter((j) => (j.score?.score ?? -1) >= minScore);
+		}
+		const cmp: Record<SortKey, (a: Job, b: Job) => number> = {
+			'score-desc': (a, b) => (b.score?.score ?? -1) - (a.score?.score ?? -1),
+			'score-asc': (a, b) => (a.score?.score ?? 999) - (b.score?.score ?? 999),
+			'posted-desc': (a, b) => dateVal(b.posted_at) - dateVal(a.posted_at),
+			'ingested-desc': (a, b) => dateVal(b.ingested_at) - dateVal(a.ingested_at),
+			'title-asc': (a, b) => a.title.localeCompare(b.title)
+		};
+		list.sort(cmp[sortBy]);
+		return list;
+	});
+
+	function dateVal(iso: string | null | undefined): number {
+		return iso ? new Date(iso).getTime() : 0;
+	}
+
+	const allVisibleSelected = $derived(
+		visible.length > 0 && visible.every((j) => selected.has(j.id))
+	);
+	const someVisibleSelected = $derived(visible.some((j) => selected.has(j.id)));
+
+	function toggleSelect(id: number) {
+		const next = new Set(selected);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selected = next;
+	}
+
+	function toggleSelectAllVisible() {
+		const next = new Set(selected);
+		if (allVisibleSelected) {
+			for (const j of visible) next.delete(j.id);
+		} else {
+			for (const j of visible) next.add(j.id);
+		}
+		selected = next;
+	}
+
+	function clearSelection() {
+		selected = new Set();
+	}
+
+	const selectedCount = $derived(selected.size);
+
+	function statusCount(key: StatusFilter): number {
+		return data.jobs.filter((j) => jobStatusKey(j) === key).length;
+	}
 </script>
 
 <section class="header-row">
@@ -28,18 +140,94 @@
 				? 'Manual review'
 				: 'Dropped'}
 	</h1>
-	<span class="count">{data.jobs.length} jobs</span>
+	<span class="count">
+		{visible.length}
+		{visible.length === data.jobs.length ? '' : `of ${data.jobs.length}`} jobs
+	</span>
+</section>
+
+<section class="toolbar">
+	<div class="toolbar-row">
+		<label class="sort">
+			Sort
+			<select bind:value={sortBy}>
+				<option value="score-desc">Score (high → low)</option>
+				<option value="score-asc">Score (low → high)</option>
+				<option value="posted-desc">Posted (newest)</option>
+				<option value="ingested-desc">Ingested (newest)</option>
+				<option value="title-asc">Title (A → Z)</option>
+			</select>
+		</label>
+
+		<label class="num">
+			Min score
+			<input
+				type="number"
+				min="0"
+				max="100"
+				placeholder="any"
+				bind:value={minScoreInput}
+			/>
+		</label>
+
+		<label class="check">
+			<input type="checkbox" bind:checked={unscoredOnly} />
+			Unscored only
+		</label>
+
+		{#if activeStatuses.size > 0 || unscoredOnly || minScoreInput !== ''}
+			<button type="button" class="clear" onclick={clearFilters}>Clear filters</button>
+		{/if}
+	</div>
+
+	<div class="chips">
+		{#each STATUS_FILTERS as f (f.key)}
+			{@const n = statusCount(f.key)}
+			{#if n > 0}
+				<button
+					type="button"
+					class="chip"
+					class:active={activeStatuses.has(f.key)}
+					onclick={() => toggleStatus(f.key)}
+				>
+					{f.label}
+					<span class="chip-count">{n}</span>
+				</button>
+			{/if}
+		{/each}
+	</div>
 </section>
 
 {#if data.jobs.length === 0}
 	<p class="empty">
 		Nothing here. Run <code>make ingest</code> to pull new postings.
 	</p>
+{:else if visible.length === 0}
+	<p class="empty">No jobs match the current filters.</p>
 {:else}
+	<div class="select-all">
+		<label>
+			<input
+				type="checkbox"
+				checked={allVisibleSelected}
+				indeterminate={!allVisibleSelected && someVisibleSelected}
+				onchange={toggleSelectAllVisible}
+			/>
+			Select all visible ({visible.length})
+		</label>
+	</div>
+
 	<ul class="jobs">
-		{#each data.jobs as job (job.id)}
-			<li>
-				<a href={`/jobs/${job.id}`} class="row">
+		{#each visible as job (job.id)}
+			<li class="row" class:selected={selected.has(job.id)}>
+				<label class="check-cell" aria-label="select job">
+					<input
+						type="checkbox"
+						checked={selected.has(job.id)}
+						onchange={() => toggleSelect(job.id)}
+					/>
+				</label>
+				<a href={`/jobs/${job.id}`} class="row-link">
 					<span class="score-pill" data-score={scoreBucket(job.score?.score)}>
 						{job.score ? job.score.score : '—'}
 					</span>
@@ -50,7 +238,15 @@
 							{#if job.location}
 								<span class="dot">·</span><span>{job.location}</span>
 							{/if}
-							<span class="dot">·</span><span>{relTime(job.ingested_at)}</span>
+							<span class="dot">·</span>
+							<span>
+								{#if job.posted_at}
+									posted {relTime(job.posted_at)}
+								{:else}
+									posted ?
+								{/if}
+								· ingested {relTime(job.ingested_at)}
+							</span>
 							{#if job.application}
 								<span class="dot">·</span>
 								<span class="status status-{job.application.status}">
@@ -68,12 +264,50 @@
 	</ul>
 {/if}
 
+{#if selectedCount > 0}
+	<form
+		method="POST"
+		action="?/bulkStatus"
+		class="action-bar"
+		use:enhance={() => {
+			submitting = true;
+			return async ({ result, update }) => {
+				submitting = false;
+				if (result.type === 'success') {
+					selected = new Set();
+					await invalidateAll();
+				}
+				await update({ reset: false });
+			};
+		}}
+	>
+		<span class="action-count">
+			{selectedCount} selected
+		</span>
+		{#each [...selected] as id (id)}
+			<input type="hidden" name="ids" value={id} />
+		{/each}
+		<label class="action-status">
+			Set status
+			<select name="status" bind:value={bulkStatus}>
+				{#each BULK_STATUSES as s (s)}
+					<option value={s}>{s}</option>
+				{/each}
+			</select>
+		</label>
+		<button type="submit" class="action-apply" disabled={submitting}>
+			{submitting ? 'Applying…' : 'Apply'}
+		</button>
+		<button type="button" class="action-clear" onclick={clearSelection}>Clear</button>
+	</form>
+{/if}
+
 <style>
 	.header-row {
 		display: flex;
 		align-items: baseline;
 		gap: 1rem;
-		margin-bottom: 1rem;
+		margin-bottom: 0.75rem;
 	}
 	h1 {
 		font-size: 1.4rem;
@@ -83,12 +317,101 @@
 		color: var(--muted);
 		font-size: 0.9rem;
 	}
+	.toolbar {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-bottom: 1rem;
+		padding: 0.75rem 0.85rem;
+		background: var(--panel);
+		border: 1px solid var(--panel-border);
+		border-radius: 8px;
+	}
+	.toolbar-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+		align-items: center;
+	}
+	.toolbar label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.85rem;
+		color: var(--muted);
+	}
+	.toolbar select,
+	.toolbar input[type='number'] {
+		background: #20262d;
+		color: var(--fg);
+		border: 1px solid var(--panel-border);
+		border-radius: 4px;
+		padding: 0.25rem 0.4rem;
+		font-size: 0.85rem;
+	}
+	.toolbar input[type='number'] {
+		width: 5rem;
+	}
+	.clear {
+		background: transparent;
+		color: var(--muted);
+		border: 1px solid var(--panel-border);
+		border-radius: 4px;
+		padding: 0.25rem 0.6rem;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.clear:hover {
+		color: var(--fg);
+		border-color: var(--accent);
+	}
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+	.chip {
+		background: #20262d;
+		color: var(--muted);
+		border: 1px solid var(--panel-border);
+		border-radius: 999px;
+		padding: 0.2rem 0.6rem;
+		font-size: 0.78rem;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.chip:hover {
+		border-color: var(--accent);
+	}
+	.chip.active {
+		background: rgba(88, 166, 255, 0.18);
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.chip-count {
+		font-variant-numeric: tabular-nums;
+		font-size: 0.7rem;
+		opacity: 0.7;
+	}
 	.empty {
 		color: var(--muted);
 		padding: 2rem;
 		text-align: center;
 		border: 1px dashed var(--panel-border);
 		border-radius: 8px;
+	}
+	.select-all {
+		font-size: 0.8rem;
+		color: var(--muted);
+		margin: 0 0 0.5rem 0.4rem;
+	}
+	.select-all label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		cursor: pointer;
 	}
 	.jobs {
 		list-style: none;
@@ -100,15 +423,40 @@
 	}
 	.row {
 		display: flex;
-		gap: 1rem;
-		padding: 0.85rem 1rem;
+		align-items: stretch;
 		background: var(--panel);
 		border: 1px solid var(--panel-border);
 		border-radius: 8px;
-		color: var(--fg);
+		overflow: hidden;
+	}
+	.row.selected {
+		border-color: var(--accent);
+		background: rgba(88, 166, 255, 0.06);
 	}
 	.row:hover {
 		border-color: var(--accent);
+	}
+	.check-cell {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 0.6rem 0 0.85rem;
+		cursor: pointer;
+	}
+	.check-cell input {
+		width: 1rem;
+		height: 1rem;
+		cursor: pointer;
+	}
+	.row-link {
+		flex: 1;
+		display: flex;
+		gap: 1rem;
+		padding: 0.85rem 1rem 0.85rem 0.4rem;
+		color: var(--fg);
+		min-width: 0;
+	}
+	.row-link:hover {
 		text-decoration: none;
 	}
 	.score-pill {
@@ -184,5 +532,64 @@
 	.status-drafted {
 		background: rgba(88, 166, 255, 0.18);
 		color: var(--accent);
+	}
+
+	.action-bar {
+		position: fixed;
+		left: 50%;
+		transform: translateX(-50%);
+		bottom: 1.25rem;
+		display: flex;
+		align-items: center;
+		gap: 0.85rem;
+		padding: 0.6rem 0.9rem;
+		background: var(--panel);
+		border: 1px solid var(--accent);
+		border-radius: 10px;
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+		font-size: 0.85rem;
+		z-index: 10;
+	}
+	.action-count {
+		color: var(--accent);
+		font-weight: 600;
+	}
+	.action-status {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--muted);
+	}
+	.action-status select {
+		background: #20262d;
+		color: var(--fg);
+		border: 1px solid var(--panel-border);
+		border-radius: 4px;
+		padding: 0.25rem 0.4rem;
+		font-size: 0.85rem;
+	}
+	.action-apply {
+		background: var(--accent);
+		color: #0d1117;
+		border: 0;
+		border-radius: 4px;
+		padding: 0.35rem 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.action-apply:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.action-clear {
+		background: transparent;
+		color: var(--muted);
+		border: 1px solid var(--panel-border);
+		border-radius: 4px;
+		padding: 0.3rem 0.6rem;
+		cursor: pointer;
+	}
+	.action-clear:hover {
+		color: var(--fg);
 	}
 </style>

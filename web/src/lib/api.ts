@@ -118,6 +118,12 @@ export const api = {
 			body: JSON.stringify({ status, notes })
 		}),
 
+	bulkSetStatus: (fetchFn: FetchFn, job_ids: number[], status: ApplicationStatus) =>
+		call<Application[]>(fetchFn, `/api/jobs/bulk-status`, {
+			method: 'POST',
+			body: JSON.stringify({ job_ids, status })
+		}),
+
 	setNotes: (fetchFn: FetchFn, id: number, notes: string) =>
 		call<Application>(fetchFn, `/api/jobs/${id}/notes`, {
 			method: 'POST',
