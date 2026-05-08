@@ -87,3 +87,19 @@ class ResumeOut(BaseModel):
     is_active: bool
     uploaded_at: datetime
     extracted_text: str
+
+
+class DraftIn(BaseModel):
+    resume_md: Optional[str] = None
+    cover_letter_md: Optional[str] = None
+
+
+class DraftOut(BaseModel):
+    job_id: int
+    has_resume_md: bool
+    has_resume_pdf: bool
+    has_cover_letter_md: bool
+    has_cover_letter_pdf: bool
+    updated_at: Optional[datetime]
+    resume_md: Optional[str] = None
+    cover_letter_md: Optional[str] = None

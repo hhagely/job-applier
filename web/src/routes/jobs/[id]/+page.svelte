@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types';
-	import type { ApplicationStatus } from '$lib/api';
+	import { api, type ApplicationStatus } from '$lib/api';
 
 	let { data }: { data: PageData } = $props();
 
@@ -14,6 +14,13 @@
 	];
 
 	let job = $derived(data.job);
+	let draft = $derived(data.draft);
+
+	function fmtUpdated(iso: string | null | undefined): string {
+		if (!iso) return '';
+		const d = new Date(iso);
+		return d.toLocaleString();
+	}
 </script>
 
 <a href="/" class="back">← back to queue</a>
@@ -69,6 +76,46 @@
 			<button type="submit">Save notes</button>
 		</form>
 	</div>
+</section>
+
+<section class="panel draft">
+	<h2>Tailored draft</h2>
+	{#if draft && (draft.has_resume_pdf || draft.has_cover_letter_pdf)}
+		<div class="draft-actions">
+			{#if draft.has_resume_pdf}
+				<a class="btn primary" href={api.draftResumePdfUrl(job.id)} download>
+					Download resume PDF
+				</a>
+			{:else}
+				<span class="muted">No tailored resume yet</span>
+			{/if}
+			{#if draft.has_cover_letter_pdf}
+				<a class="btn primary" href={api.draftCoverLetterPdfUrl(job.id)} download>
+					Download cover letter PDF
+				</a>
+			{:else}
+				<span class="muted">No cover letter yet</span>
+			{/if}
+		</div>
+		<div class="draft-meta">
+			{#if draft.updated_at}
+				<span class="muted">Last generated {fmtUpdated(draft.updated_at)}</span>
+			{/if}
+			<form method="POST" action="?/renderDraft" class="inline-form">
+				<button type="submit" class="btn">Re-render PDFs from markdown</button>
+			</form>
+		</div>
+		<p class="muted hint">
+			Run <code>/draft {job.id}</code> in Claude Code to regenerate the tailored markdown from the
+			current job description.
+		</p>
+	{:else}
+		<p class="muted">
+			No draft yet. Run <code>/draft {job.id}</code> in Claude Code to generate a tailored resume and
+			cover letter (both PDFs). Drafts strictly use only what's in your master resume — they reorder
+			and re-emphasize, but won't invent skills or experience.
+		</p>
+	{/if}
 </section>
 
 <section class="panel description">
@@ -191,5 +238,47 @@
 	.description :global(pre),
 	.description :global(code) {
 		background: var(--bg) !important;
+	}
+	.draft {
+		margin-bottom: 1rem;
+	}
+	.draft-actions {
+		display: flex;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.6rem;
+	}
+	.draft-meta {
+		display: flex;
+		align-items: center;
+		gap: 0.85rem;
+		flex-wrap: wrap;
+		font-size: 0.85rem;
+	}
+	.btn {
+		display: inline-block;
+		padding: 0.4rem 0.75rem;
+		border-radius: 6px;
+		border: 1px solid var(--panel-border);
+		background: var(--panel-border);
+		color: var(--fg);
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.btn:hover {
+		border-color: var(--accent);
+		text-decoration: none;
+	}
+	.btn.primary {
+		background: rgba(88, 166, 255, 0.18);
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.inline-form {
+		display: inline;
+	}
+	.hint {
+		margin-top: 0.6rem;
+		font-size: 0.8rem;
 	}
 </style>
