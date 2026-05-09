@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
 from job_applier.config import settings
@@ -94,6 +94,28 @@ class Application(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
     job: Optional[JobPosting] = Relationship(back_populates="application")
+
+
+class SourceSlug(SQLModel, table=True):
+    """A per-company ATS slug to ingest from (e.g. greenhouse:stripe).
+
+    The DB is the source of truth at runtime; ``sources/companies.py`` is a
+    one-time seed used by ``job-applier init`` when the table is empty.
+    Run ``job-applier refresh-slugs`` to expand the list from the
+    SimplifyJobs community feed.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source: str = Field(index=True)  # "greenhouse" | "lever"
+    slug: str = Field(index=True)
+    enabled: bool = Field(default=True, index=True)
+    last_fetched_at: Optional[datetime] = None
+    last_job_count: Optional[int] = None
+    last_error: Optional[str] = None
+    added_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+    __table_args__ = (UniqueConstraint("source", "slug", name="uq_sourceslug_source_slug"),)
 
 
 class Resume(SQLModel, table=True):

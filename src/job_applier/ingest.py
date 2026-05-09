@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
-from job_applier.filters import FilterResult, evaluate
+from job_applier.filters import evaluate
 from job_applier.models import Company, JobPosting, engine
 from job_applier.models.db import FilterStatus
-from job_applier.sources import ALL_SOURCES, RawJob, SourceAdapter
+from job_applier.sources import RawJob, SourceAdapter, get_all_sources
+
+# Postings older than this are skipped — stale listings are rarely still open,
+# and a re-post will come through on the next ingest if the role is real.
+STALE_AFTER_DAYS = 30
 
 
 @dataclass
@@ -21,6 +26,15 @@ class IngestStats:
     passed_filter: int = 0
     dropped_filter: int = 0
     manual_review: int = 0
+    stale: int = 0
+
+
+def _is_stale(posted_at: datetime | None, now: datetime) -> bool:
+    if posted_at is None:
+        return False
+    if posted_at.tzinfo is None:
+        posted_at = posted_at.replace(tzinfo=timezone.utc)
+    return (now - posted_at) > timedelta(days=STALE_AFTER_DAYS)
 
 
 def dedupe_hash(raw: RawJob) -> str:
@@ -49,11 +63,19 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
         stats.skipped_duplicate += 1
         return
 
+    if _is_stale(raw.posted_at, datetime.now(timezone.utc)):
+        stats.stale += 1
+        return
+
+    decision = evaluate(raw)
+    if decision.status == FilterStatus.dropped:
+        stats.dropped_filter += 1
+        return
+
     company = _upsert_company(session, raw.company_name)
     if company.is_blocked:
-        decision = FilterResult(status=FilterStatus.dropped, reason="company is on blocklist")
-    else:
-        decision = evaluate(raw)
+        stats.dropped_filter += 1
+        return
 
     posting = JobPosting(
         source=raw.source,
@@ -72,10 +94,8 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
 
     posting.filter_status = decision.status
     posting.filter_reason = decision.reason
-    if decision.status.value == "passed":
+    if decision.status == FilterStatus.passed:
         stats.passed_filter += 1
-    elif decision.status.value == "dropped":
-        stats.dropped_filter += 1
     else:
         stats.manual_review += 1
 
@@ -84,7 +104,8 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
 
 
 def run_ingest(sources: list[SourceAdapter] | None = None) -> IngestStats:
-    sources = sources or ALL_SOURCES
+    if sources is None:
+        sources = get_all_sources()
     stats = IngestStats()
     with Session(engine()) as session:
         for source in sources:
