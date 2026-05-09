@@ -34,6 +34,22 @@
 	let selected = $state<Set<number>>(new Set());
 	let bulkStatus = $state<ApplicationStatus>('interested');
 	let submitting = $state(false);
+	let copied = $state(false);
+	let copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+	async function copySelectedIds() {
+		const ids = [...selected].sort((a, b) => a - b).join(' ');
+		try {
+			await navigator.clipboard.writeText(ids);
+			copied = true;
+			if (copyTimer) clearTimeout(copyTimer);
+			copyTimer = setTimeout(() => {
+				copied = false;
+			}, 1500);
+		} catch {
+			// clipboard write failed (e.g., insecure context) — leave copied false
+		}
+	}
 
 	function relTime(iso: string): string {
 		const diff = Date.now() - new Date(iso).getTime();
@@ -134,11 +150,7 @@
 
 <section class="header-row">
 	<h1>
-		{data.filter_status === 'passed'
-			? 'Queue'
-			: data.filter_status === 'manual'
-				? 'Manual review'
-				: 'Dropped'}
+		{data.filter_status === 'passed' ? 'Queue' : 'Manual review'}
 	</h1>
 	<span class="count">
 		{visible.length}
@@ -297,6 +309,9 @@
 		</label>
 		<button type="submit" class="action-apply" disabled={submitting}>
 			{submitting ? 'Applying…' : 'Apply'}
+		</button>
+		<button type="button" class="action-copy" onclick={copySelectedIds}>
+			{copied ? 'Copied!' : 'Copy IDs'}
 		</button>
 		<button type="button" class="action-clear" onclick={clearSelection}>Clear</button>
 	</form>
@@ -581,6 +596,7 @@
 		opacity: 0.6;
 		cursor: not-allowed;
 	}
+	.action-copy,
 	.action-clear {
 		background: transparent;
 		color: var(--muted);
@@ -589,7 +605,9 @@
 		padding: 0.3rem 0.6rem;
 		cursor: pointer;
 	}
+	.action-copy:hover,
 	.action-clear:hover {
 		color: var(--fg);
+		border-color: var(--accent);
 	}
 </style>

@@ -17,6 +17,12 @@ dev: ## Run backend + frontend together (requires GNU parallel or two terminals)
 ingest: ## Pull jobs from configured sources
 	uv run job-applier ingest
 
+refresh-slugs: ## Discover new Greenhouse/Lever slugs from the SimplifyJobs feed
+	uv run job-applier refresh-slugs
+
+refresh-slugs-full: ## Discover new slugs and re-verify existing ones (auto-disables dead boards)
+	uv run job-applier refresh-slugs --reverify
+
 clean: ## Remove build artifacts and caches
 	rm -rf dist build *.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

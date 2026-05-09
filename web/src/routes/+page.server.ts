@@ -2,7 +2,7 @@ import { api, type ApplicationStatus, type FilterStatus } from '$lib/api';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
-const VALID: FilterStatus[] = ['passed', 'manual', 'dropped'];
+const VALID: FilterStatus[] = ['passed', 'manual'];
 
 const VALID_STATUS: ApplicationStatus[] = [
 	'new',

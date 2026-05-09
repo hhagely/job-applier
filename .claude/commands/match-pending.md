@@ -71,7 +71,7 @@ an application. Don't sandbag and don't oversell.
 
 - The job is clearly Angular-primary despite passing the regex filter — POST score 0
   with `reasoning: "Angular-primary stack — disqualified per user's filter"`.
-- The job requires on-site presence in a single location despite being on Remotive —
+- The job requires on-site presence in a single location despite being tagged remote —
   same: score 0, reasoning explains.
 - The role is below Senior (e.g. "Senior" in title but body says 2-4 years total) —
   score ≤ 30 and explain.

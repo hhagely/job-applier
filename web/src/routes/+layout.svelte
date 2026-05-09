@@ -8,7 +8,6 @@
 		<nav>
 			<a href="/?filter=passed">Queue</a>
 			<a href="/?filter=manual">Manual review</a>
-			<a href="/?filter=dropped">Dropped</a>
 			<a href="/resume">Resume</a>
 		</nav>
 	</header>

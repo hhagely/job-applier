@@ -7,14 +7,14 @@ can decide which ones are worth tailoring an application for.
 
 No LinkedIn or Indeed scraping — those violate ToS and risk account bans.
 Sources are open ATS endpoints (Greenhouse + Lever today, Ashby coming) and
-aggregator APIs (Remotive + Adzuna today, USAJobs coming).
+aggregator APIs (Adzuna today, USAJobs coming).
 
 ## Architecture
 
 ```
 ┌──────────────┐   ingest   ┌──────────┐   filter   ┌──────────┐
 │  Source(s)   │ ─────────► │ SQLite   │ ─────────► │ FastAPI  │
-│ Remotive,…   │            │ jobs.db  │            │ :8000    │
+│ Greenhouse,… │            │ jobs.db  │            │ :8000    │
 └──────────────┘            └──────────┘            └────┬─────┘
                                   ▲                      │ JSON
                                   │ POST /score          ▼
@@ -67,7 +67,7 @@ src/job_applier/
   api/         # FastAPI app + Pydantic schemas
   filters/     # Hard-rule filter (remote, Senior+, JS/TS, no Angular)
   models/      # SQLModel definitions + DB engine
-  sources/     # Source adapters (Remotive today; more coming)
+  sources/     # Source adapters (Greenhouse, Lever, Adzuna today; more coming)
   ingest.py    # Pipeline: fetch → dedupe → filter → persist
   resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
@@ -103,17 +103,30 @@ Adjust `src/job_applier/filters/rules.py` if your criteria change.
 
 | Source     | Auth needed                                  | Notes                                                                |
 | ---------- | -------------------------------------------- | -------------------------------------------------------------------- |
-| Remotive   | none                                         | Aggregator, remote-only by definition.                               |
-| Greenhouse | none                                         | Per-company boards. Edit `sources/companies.py` to add slugs.        |
-| Lever      | none                                         | Per-company postings. Edit `sources/companies.py` to add slugs.      |
+| Greenhouse | none                                         | Per-company boards. Slugs live in the `SourceSlug` DB table.         |
+| Lever      | none                                         | Per-company postings. Slugs live in the `SourceSlug` DB table.       |
 | Adzuna     | `JOB_APPLIER_ADZUNA_APP_ID` + `..._APP_KEY`  | Free tier at developer.adzuna.com. Skipped silently if unset.        |
 
-### Adding company slugs
+### Managing the company slug list
 
-Open `src/job_applier/sources/companies.py` and append to `GREENHOUSE_COMPANIES`
-or `LEVER_COMPANIES`. Find the slug from the company's careers URL — most route
-through `job-boards.greenhouse.io/{slug}` or `jobs.lever.co/{slug}`. Failed
-fetches log a warning at ingest time but don't break the run.
+The Greenhouse + Lever slug list lives in the database (`SourceSlug` table),
+not in code. Initial setup seeds the table from `src/job_applier/sources/companies.py`
+on first `job-applier init`; after that, manage slugs through the CLI:
+
+```sh
+# Pull new candidates from the SimplifyJobs community feed and verify them
+make refresh-slugs
+
+# Same, but also re-verify every existing slug; auto-disable dead boards
+make refresh-slugs-full
+```
+
+Run `make refresh-slugs` whenever the list feels stale — once a month is
+plenty. No scheduler / cron needed.
+
+To add a single slug by hand, insert into the DB or edit `companies.py` *before*
+your first `init` (it's only consulted when the table is empty). Failed fetches
+during ingest log a warning but don't break the run.
 
 ### Enabling Adzuna
 
