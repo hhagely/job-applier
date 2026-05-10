@@ -94,3 +94,69 @@ def test_marks_manual_when_only_short_js_ts_hint(make_raw):
         make_raw(description="Backend role; some js work occasionally.")
     )
     assert result.status is FilterStatus.manual
+
+
+# ---- State allow-list (Missouri eligibility) ----
+
+
+def test_keeps_when_no_state_list_present(make_raw):
+    # No state restriction language at all — assume open anywhere.
+    result = evaluate(make_raw(description="We use TypeScript and React. Remote-first team."))
+    assert result.status is FilterStatus.passed
+
+
+def test_drops_when_state_list_excludes_missouri(make_raw):
+    result = evaluate(
+        make_raw(
+            description=(
+                "We use TypeScript and React. We are currently hiring employees in "
+                "California, New York, Texas, and Washington."
+            )
+        )
+    )
+    assert result.status is FilterStatus.dropped
+    assert "Missouri" in (result.reason or "")
+
+
+def test_keeps_when_state_list_includes_missouri(make_raw):
+    result = evaluate(
+        make_raw(
+            description=(
+                "TypeScript / React role. We hire employees in California, Missouri, and Texas."
+            )
+        )
+    )
+    assert result.status is FilterStatus.passed
+
+
+def test_drops_single_state_must_reside(make_raw):
+    result = evaluate(
+        make_raw(description="TypeScript / React role. Candidates must reside in California.")
+    )
+    assert result.status is FilterStatus.dropped
+
+
+def test_keeps_when_nationwide_override_present(make_raw):
+    # "We hire in" appears, but "any US state" overrides the implied list.
+    result = evaluate(
+        make_raw(
+            description=(
+                "TypeScript / React role. We hire in any US state. Offices in California "
+                "and New York for those who want them."
+            )
+        )
+    )
+    assert result.status is FilterStatus.passed
+
+
+def test_keeps_when_states_named_without_restriction_phrase(make_raw):
+    # State names mentioned (offices) but no allow-list trigger — should pass.
+    result = evaluate(
+        make_raw(
+            description=(
+                "TypeScript / React role. Our offices are in California and New York, "
+                "but the team is fully remote across the US."
+            )
+        )
+    )
+    assert result.status is FilterStatus.passed

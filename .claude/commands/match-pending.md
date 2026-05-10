@@ -75,6 +75,9 @@ an application. Don't sandbag and don't oversell.
   same: score 0, reasoning explains.
 - The role is below Senior (e.g. "Senior" in title but body says 2-4 years total) —
   score ≤ 30 and explain.
+- The posting names a US-state allow-list that omits Missouri (the regex filter
+  catches the obvious cases, but if you spot one that slipped through) —
+  score 0, reasoning: "state allow-list excludes Missouri".
 
 ## Notes
 

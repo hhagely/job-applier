@@ -3,10 +3,11 @@
 Rules (drop on any failure):
   1. Must be fully remote.
   2. Location must not be non-US-only (when a country is named).
-  3. Title must indicate Senior/Staff/Principal/Lead (or equivalent).
-  4. Title must not be a sales / pre-sales / biz-dev role.
-  5. Posting must reference JavaScript/TypeScript/Node ecosystem.
-  6. Angular as the primary stack disqualifies.
+  3. If the posting names an explicit US-state allow-list, Missouri must be in it.
+  4. Title must indicate Senior/Staff/Principal/Lead (or equivalent).
+  5. Title must not be a sales / pre-sales / biz-dev role.
+  6. Posting must reference JavaScript/TypeScript/Node ecosystem.
+  7. Angular as the primary stack disqualifies.
 
 Ambiguous postings (e.g. JS/TS implied but not stated, seniority unclear) are
 marked `manual` so the user can decide rather than silently dropping.
@@ -100,6 +101,86 @@ def _has_us_hint(location: str) -> bool:
     return bool(_US_HINT_CI.search(location) or _US_HINT_CS.search(location))
 
 
+# US states + DC, full names. Used to detect explicit state allow-lists in the
+# posting body. (We don't try to parse two-letter abbreviations — too many
+# collisions with English words like "OR", "IN", "ME".)
+US_STATES = re.compile(
+    r"\b("
+    r"alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|"
+    r"florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|"
+    r"louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|"
+    r"missouri|montana|nebraska|nevada|"
+    r"new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york|"
+    r"north\s+carolina|north\s+dakota|"
+    r"ohio|oklahoma|oregon|pennsylvania|rhode\s+island|"
+    r"south\s+carolina|south\s+dakota|"
+    r"tennessee|texas|utah|vermont|virginia|washington|"
+    r"west\s+virginia|wisconsin|wyoming|"
+    r"district\s+of\s+columbia"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Case-insensitive on the full name; case-sensitive on the abbreviation so it
+# doesn't match the prefix in words like "Monday" or "modify".
+MISSOURI_TOKEN = re.compile(r"\bmissouri\b", re.IGNORECASE)
+MISSOURI_ABBR = re.compile(r"\bMO\b")
+
+
+def _has_missouri(text: str) -> bool:
+    return bool(MISSOURI_TOKEN.search(text) or MISSOURI_ABBR.search(text))
+
+# Phrases that announce "we only hire in these places". Each match opens a
+# window we then scan for a state list.
+STATE_RESTRICTION_TRIGGER = re.compile(
+    r"(?:"
+    r"(?:currently\s+|presently\s+|able\s+(?:only\s+)?to\s+)?hir(?:e|ing)\s+(?:employees?\s+)?in"
+    r"|(?:we\s+)?employ(?:\s+employees?)?\s+in"
+    r"|available\s+(?:in|to\s+(?:candidates?|applicants?)\s+(?:in|residing\s+in))"
+    r"|open\s+to\s+(?:candidates?|applicants?|residents?)\s+(?:in|of|residing\s+in|based\s+in|located\s+in)"
+    r"|must\s+(?:reside|live|be\s+located|be\s+based)\s+in"
+    r"|residen(?:t|ce)\s+(?:in|of|required\s+in)"
+    r"|approved\s+states?"
+    r"|eligible\s+(?:states?|to\s+work\s+in)"
+    r"|registered\s+(?:to\s+(?:employ|hire|do\s+business)\s+in|in)"
+    r"|states?\s+where\s+we\s+(?:can\s+)?(?:hire|employ)"
+    r"|(?:work|employ(?:ed)?)\s+from\s+(?:any\s+of\s+)?the\s+following"
+    r"|(?:located|based)\s+in\s+(?:one\s+of\s+)?(?:the\s+following|these)"
+    r"|this\s+role\s+is\s+(?:only\s+)?(?:open|available)\s+to\s+(?:residents?\s+of|candidates?\s+in)"
+    r")",
+    re.IGNORECASE,
+)
+
+# "Anywhere in the US" type phrases — if any of these appear inside a triggered
+# window, the trigger is meaningless ("we hire in any US state").
+NATIONWIDE_OVERRIDE = re.compile(
+    r"\b(any\s+(?:US\s+)?state|all\s+(?:50\s+)?states|"
+    r"any\s+state\s+in\s+the\s+(?:US|United\s+States)|"
+    r"nationwide|throughout\s+the\s+(?:US|United\s+States)|"
+    r"anywhere\s+in\s+the\s+(?:US|U\.S\.|United\s+States))\b",
+    re.IGNORECASE,
+)
+
+
+def _has_state_allowlist_excluding_mo(text: str) -> bool:
+    """True iff the text declares a US-state allow-list that omits Missouri.
+
+    Strategy: each trigger-phrase match opens an 800-char scan window; if the
+    window contains 1+ state names, lacks Missouri, and isn't overridden by an
+    "any state" / "nationwide" phrase, it's a restriction we should drop on.
+    """
+    for match in STATE_RESTRICTION_TRIGGER.finditer(text):
+        window = text[match.start() : match.start() + 800]
+        if NATIONWIDE_OVERRIDE.search(window):
+            continue
+        if not US_STATES.search(window):
+            continue
+        if _has_missouri(window):
+            continue
+        return True
+    return False
+
+
 @dataclass
 class FilterResult:
     status: FilterStatus
@@ -127,15 +208,19 @@ def evaluate(raw: RawJob) -> FilterResult:
     if NON_US_LOCATION.search(location) and not _has_us_hint(location):
         return FilterResult(FilterStatus.dropped, "location is non-US only")
 
-    # 3. Seniority
+    # 3. State allow-list must include Missouri (user resides in MO)
+    if _has_state_allowlist_excluding_mo(_haystack(raw)):
+        return FilterResult(FilterStatus.dropped, "state allow-list excludes Missouri")
+
+    # 4. Seniority
     if not SENIOR_TITLE.search(title):
         return FilterResult(FilterStatus.dropped, "title not Senior/Staff/Principal/Lead")
 
-    # 4. Sales / pre-sales / biz-dev titles
+    # 5. Sales / pre-sales / biz-dev titles
     if SALES_TITLE.search(title) or SALES_HEAD_OF.search(title):
         return FilterResult(FilterStatus.dropped, "title is sales / pre-sales / biz-dev")
 
-    # 5. Angular check (before JS/TS — Angular IS JS/TS, but disqualifies)
+    # 6. Angular check (before JS/TS — Angular IS JS/TS, but disqualifies)
     angular_in_title = bool(ANGULAR_TERM.search(title))
     angular_in_tags = "angular" in tags_lower or "angularjs" in tags_lower
     other_fw_in_tags = any(t in tags_lower for t in ("react", "vue", "svelte", "next.js", "nuxt"))
@@ -144,7 +229,7 @@ def evaluate(raw: RawJob) -> FilterResult:
     if angular_in_tags and not other_fw_in_tags:
         return FilterResult(FilterStatus.dropped, "Angular is the listed frontend framework")
 
-    # 6. JS/TS reference
+    # 7. JS/TS reference
     has_long = bool(JS_TS_TERMS.search(haystack))
     has_short = bool(JS_TS_SHORT.search(haystack))
     if not has_long and not has_short:
