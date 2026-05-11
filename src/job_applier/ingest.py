@@ -47,8 +47,35 @@ def dedupe_hash(raw: RawJob) -> str:
     return h.hexdigest()
 
 
-def normalize_title(title: str) -> str:
-    return " ".join(title.lower().split())
+_LOCATION_SUFFIX_FALLBACK = re.compile(
+    r"\s*[\-–—]\s*"
+    r"[^,\-–—]{1,40},\s*[^,\-–—]{1,40}"
+    r"(?:,\s*[^,\-–—]{1,40})?"
+    r"\s*$"
+)
+
+
+def _strip_location_suffix(title: str, location: str | None) -> str:
+    """Remove a trailing " - {location}" from a title.
+
+    Speechify and other Greenhouse posters fan a single role out into one
+    posting per city; the title gets " - {City}, {State}, {Country}" appended
+    and the `location` field carries that same suffix verbatim. Stripping it
+    lets dedupe see the underlying role.
+    """
+    if location:
+        pattern = re.compile(
+            r"\s*[\-–—]\s*" + re.escape(location.strip()) + r"\s*$",
+            re.IGNORECASE,
+        )
+        stripped = pattern.sub("", title)
+        if stripped != title:
+            return stripped
+    return _LOCATION_SUFFIX_FALLBACK.sub("", title)
+
+
+def normalize_title(title: str, location: str | None = None) -> str:
+    return " ".join(_strip_location_suffix(title, location).lower().split())
 
 
 _COMPANY_SUFFIXES = re.compile(
@@ -71,8 +98,8 @@ def _normalize_company(name: str) -> str:
     return s
 
 
-def _normalize_title(title: str) -> str:
-    s = (title or "").lower()
+def _normalize_title(title: str, location: str | None = None) -> str:
+    s = _strip_location_suffix(title or "", location).lower()
     s = re.sub(r"\bsr\.?\b", "senior", s)
     s = re.sub(r"\bjr\.?\b", "junior", s)
     s = re.sub(r"\beng\.?\b", "engineer", s)
@@ -87,7 +114,7 @@ def cross_source_hash(raw: RawJob) -> str | None:
     sources collapses to one row. Returns None if either field is too thin
     to fingerprint reliably (avoids false-positive collisions)."""
     company = _normalize_company(raw.company_name)
-    title = _normalize_title(raw.title)
+    title = _normalize_title(raw.title, raw.location)
     if len(company) < 2 or len(title) < 4:
         return None
     h = hashlib.sha256()
@@ -132,14 +159,14 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
     # Some employers post the same role under one source_id per city. Treat any
     # existing posting from the same source + company with the same normalized
     # title as a duplicate so we don't flood the queue.
-    norm = normalize_title(raw.title)
+    norm = normalize_title(raw.title, raw.location)
     existing_dup = session.exec(
         select(JobPosting).where(
             JobPosting.source == raw.source,
             JobPosting.company_id == company.id,
         )
     ).all()
-    if any(normalize_title(p.title) == norm for p in existing_dup):
+    if any(normalize_title(p.title, p.location) == norm for p in existing_dup):
         stats.skipped_duplicate += 1
         return
 
@@ -192,28 +219,40 @@ def run_ingest(sources: list[SourceAdapter] | None = None) -> IngestStats:
 
 
 def archive_existing_duplicates(session: Session) -> int:
-    """Archive postings that share (source, company, normalized-title) with an
-    earlier posting. Keeps the earliest ``id`` per group; sets every later one's
-    Application.status to ``archived`` (creating an Application row if absent).
-    Returns the number of postings archived.
+    """Archive postings that share (source, company, normalized-title) with
+    another posting in the same group. Keeps the earliest *non-archived*
+    posting as the canonical (so a previously-archived city variant doesn't
+    end up swallowing every sibling). Returns the number of postings archived.
     """
     postings = session.exec(select(JobPosting).order_by(JobPosting.id)).all()
-    seen: dict[tuple[str, int | None, str], int] = {}
-    archived = 0
+    archived_job_ids = {
+        a.job_id
+        for a in session.exec(
+            select(Application).where(Application.status == ApplicationStatus.archived)
+        ).all()
+    }
+    groups: dict[tuple[str, int | None, str], list[JobPosting]] = {}
     for p in postings:
-        key = (p.source, p.company_id, normalize_title(p.title))
-        if key not in seen:
-            seen[key] = p.id  # type: ignore[assignment]
+        key = (p.source, p.company_id, normalize_title(p.title, p.location))
+        groups.setdefault(key, []).append(p)
+
+    archived = 0
+    for ps in groups.values():
+        if len(ps) < 2:
             continue
-        app = session.exec(select(Application).where(Application.job_id == p.id)).first()
-        if app is None:
-            session.add(Application(job_id=p.id, status=ApplicationStatus.archived))
-        elif app.status != ApplicationStatus.archived:
-            app.status = ApplicationStatus.archived
-            session.add(app)
-        else:
-            continue
-        archived += 1
+        keeper = next((p for p in ps if p.id not in archived_job_ids), ps[0])
+        for p in ps:
+            if p.id == keeper.id:
+                continue
+            app = session.exec(select(Application).where(Application.job_id == p.id)).first()
+            if app is None:
+                session.add(Application(job_id=p.id, status=ApplicationStatus.archived))
+            elif app.status != ApplicationStatus.archived:
+                app.status = ApplicationStatus.archived
+                session.add(app)
+            else:
+                continue
+            archived += 1
     session.commit()
     return archived
 
@@ -240,6 +279,7 @@ def backfill_cross_source_hash() -> int:
                 title=row.title,
                 company_name=company,
                 description="",
+                location=row.location,
             )
             h = cross_source_hash(fake)
             if h is None or h in seen:
