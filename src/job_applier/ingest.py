@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 from job_applier.filters import evaluate
-from job_applier.models import Company, JobPosting, engine
+from job_applier.models import Application, ApplicationStatus, Company, JobPosting, engine
 from job_applier.models.db import FilterStatus
 from job_applier.sources import RawJob, SourceAdapter, get_all_sources
 
@@ -45,6 +45,10 @@ def dedupe_hash(raw: RawJob) -> str:
     return h.hexdigest()
 
 
+def normalize_title(title: str) -> str:
+    return " ".join(title.lower().split())
+
+
 def _upsert_company(session: Session, name: str) -> Company:
     company = session.exec(select(Company).where(Company.name == name)).first()
     if company is None:
@@ -75,6 +79,20 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
     company = _upsert_company(session, raw.company_name)
     if company.is_blocked:
         stats.dropped_filter += 1
+        return
+
+    # Some employers post the same role under one source_id per city. Treat any
+    # existing posting from the same source + company with the same normalized
+    # title as a duplicate so we don't flood the queue.
+    norm = normalize_title(raw.title)
+    existing_dup = session.exec(
+        select(JobPosting).where(
+            JobPosting.source == raw.source,
+            JobPosting.company_id == company.id,
+        )
+    ).all()
+    if any(normalize_title(p.title) == norm for p in existing_dup):
+        stats.skipped_duplicate += 1
         return
 
     posting = JobPosting(
@@ -113,3 +131,30 @@ def run_ingest(sources: list[SourceAdapter] | None = None) -> IngestStats:
                 ingest_one(session, raw, stats)
         session.commit()
     return stats
+
+
+def archive_existing_duplicates(session: Session) -> int:
+    """Archive postings that share (source, company, normalized-title) with an
+    earlier posting. Keeps the earliest ``id`` per group; sets every later one's
+    Application.status to ``archived`` (creating an Application row if absent).
+    Returns the number of postings archived.
+    """
+    postings = session.exec(select(JobPosting).order_by(JobPosting.id)).all()
+    seen: dict[tuple[str, int | None, str], int] = {}
+    archived = 0
+    for p in postings:
+        key = (p.source, p.company_id, normalize_title(p.title))
+        if key not in seen:
+            seen[key] = p.id  # type: ignore[assignment]
+            continue
+        app = session.exec(select(Application).where(Application.job_id == p.id)).first()
+        if app is None:
+            session.add(Application(job_id=p.id, status=ApplicationStatus.archived))
+        elif app.status != ApplicationStatus.archived:
+            app.status = ApplicationStatus.archived
+            session.add(app)
+        else:
+            continue
+        archived += 1
+    session.commit()
+    return archived
