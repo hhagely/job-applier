@@ -123,9 +123,16 @@ next `init` without disturbing the populated tables.
 # Pull new Greenhouse/Lever candidates from the SimplifyJobs feed and verify
 make refresh-slugs
 
-# Same, but also re-verify every existing slug; auto-disable dead boards
+# Same, but also re-verify every existing slug across all four per-company
+# sources (Greenhouse, Lever, Ashby, Workday) and auto-disable dead boards.
+# A Workday tenant returning HTTP 422 is treated as a permanent rejection
+# and disabled, since 422 means the tenant rejects the public CXS body shape.
 make refresh-slugs-full
 ```
+
+Discovery (the candidate-pull) only covers Greenhouse + Lever — the
+SimplifyJobs feed doesn't carry Ashby or Workday URLs, and there's no
+equivalent public list for them. Re-verification covers all four sources.
 
 The SimplifyJobs feed is heavily new-grad / intern biased — it's only useful
 as a wide net for *valid* slugs, not relevant ones. To add a target company
