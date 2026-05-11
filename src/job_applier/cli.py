@@ -5,9 +5,10 @@ import json
 import typer
 
 from job_applier.config import settings
-from job_applier.ingest import run_ingest
-from job_applier.models import create_db_and_tables
+from job_applier.ingest import archive_existing_duplicates, run_ingest
+from job_applier.models import create_db_and_tables, engine
 from job_applier.sources.refresh import refresh_slugs, seed_if_empty
+from sqlmodel import Session
 
 app = typer.Typer(no_args_is_help=True, help="job-applier CLI")
 
@@ -42,6 +43,17 @@ def refresh_slugs_cmd(
     create_db_and_tables()
     stats = refresh_slugs(reverify_existing=reverify)
     typer.echo(json.dumps(stats.__dict__, indent=2))
+
+
+@app.command("dedupe-existing")
+def dedupe_existing_cmd() -> None:
+    """Archive postings that share source + company + normalized title with an
+    earlier posting. One-shot cleanup for postings ingested before content-level
+    dedupe was added."""
+    create_db_and_tables()
+    with Session(engine()) as session:
+        n = archive_existing_duplicates(session)
+    typer.echo(f"Archived {n} duplicate postings")
 
 
 @app.command()

@@ -40,3 +40,6 @@ web/node_modules/
 web/.svelte-kit/
 web/build/
 web/.env
+
+# Claude Code runtime
+.claude/scheduled_tasks.lock
