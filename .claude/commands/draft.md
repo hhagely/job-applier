@@ -46,6 +46,25 @@ You may **not**:
 If the job demands something the resume doesn't show, do **not** paper over it —
 just don't mention it. The cover letter can lean on the strengths that do match.
 
+## Hard rule — no em dashes
+
+Do **not** use em dashes (`—`, U+2014) anywhere in the tailored resume or cover
+letter markdown. Some ATS / recruiter screens flag em-dash-heavy text as
+LLM-generated and filter it out. This applies to both documents, every section,
+including the summary and cover-letter body.
+
+Use one of these instead, depending on what you meant:
+
+- A period and a new sentence.
+- A comma, semicolon, or colon.
+- Parentheses for an aside.
+- A hyphen (`-`) for compound modifiers (e.g. "production-ready").
+
+Do not substitute en dashes (`–`, U+2013) either — same problem. Plain ASCII
+punctuation only in the generated documents. (Em dashes are fine in *this*
+instruction file and in your final report to the user; the rule is about the
+markdown you write to `/tmp/job-applier-<id>-{resume,cover}.md`.)
+
 ## Steps
 
 1. **Check the API**: `curl -sf http://127.0.0.1:8000/api/health`. If it fails,

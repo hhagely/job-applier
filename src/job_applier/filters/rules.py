@@ -101,6 +101,22 @@ def _has_us_hint(location: str) -> bool:
     return bool(_US_HINT_CI.search(location) or _US_HINT_CS.search(location))
 
 
+# A "City, X[, Y]" pattern. Used as a fallback signal: any specific-place
+# location that lacks a US hint is treated as non-US, even if its country
+# isn't enumerated in NON_US_LOCATION.
+_SPECIFIC_LOCATION = re.compile(
+    r"[A-Za-z][A-Za-z\s.'\-]{1,40},\s*[A-Za-z][A-Za-z\s.'\-]{1,40}"
+)
+
+
+def _is_specific_non_us(location: str) -> bool:
+    if not location:
+        return False
+    if _has_us_hint(location):
+        return False
+    return bool(_SPECIFIC_LOCATION.search(location))
+
+
 # US states + DC, full names. Used to detect explicit state allow-lists in the
 # posting body. (We don't try to parse two-letter abbreviations — too many
 # collisions with English words like "OR", "IN", "ME".)
@@ -206,6 +222,10 @@ def evaluate(raw: RawJob) -> FilterResult:
     # 2. US-only location (when a country/region is named)
     location = raw.location or ""
     if NON_US_LOCATION.search(location) and not _has_us_hint(location):
+        return FilterResult(FilterStatus.dropped, "location is non-US only")
+    # Catch specific non-US cities whose country isn't in NON_US_LOCATION
+    # (e.g. "Tbilisi, Georgia", "Almaty, Kazakhstan", "Bishkek, Kyrgyzstan").
+    if _is_specific_non_us(location):
         return FilterResult(FilterStatus.dropped, "location is non-US only")
 
     # 3. State allow-list must include Missouri (user resides in MO)

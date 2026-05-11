@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +24,7 @@ class IngestStats:
     fetched: int = 0
     inserted: int = 0
     skipped_duplicate: int = 0
+    skipped_cross_source: int = 0
     passed_filter: int = 0
     dropped_filter: int = 0
     manual_review: int = 0
@@ -45,8 +47,81 @@ def dedupe_hash(raw: RawJob) -> str:
     return h.hexdigest()
 
 
-def normalize_title(title: str) -> str:
-    return " ".join(title.lower().split())
+_LOCATION_SUFFIX_FALLBACK = re.compile(
+    r"\s*[\-–—]\s*"
+    r"[^,\-–—]{1,40},\s*[^,\-–—]{1,40}"
+    r"(?:,\s*[^,\-–—]{1,40})?"
+    r"\s*$"
+)
+
+
+def _strip_location_suffix(title: str, location: str | None) -> str:
+    """Remove a trailing " - {location}" from a title.
+
+    Speechify and other Greenhouse posters fan a single role out into one
+    posting per city; the title gets " - {City}, {State}, {Country}" appended
+    and the `location` field carries that same suffix verbatim. Stripping it
+    lets dedupe see the underlying role.
+    """
+    if location:
+        pattern = re.compile(
+            r"\s*[\-–—]\s*" + re.escape(location.strip()) + r"\s*$",
+            re.IGNORECASE,
+        )
+        stripped = pattern.sub("", title)
+        if stripped != title:
+            return stripped
+    return _LOCATION_SUFFIX_FALLBACK.sub("", title)
+
+
+def normalize_title(title: str, location: str | None = None) -> str:
+    return " ".join(_strip_location_suffix(title, location).lower().split())
+
+
+_COMPANY_SUFFIXES = re.compile(
+    r"[,\s]+(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|"
+    r"plc|gmbh|s\.?a\.?|s\.?l\.?|pty|ag|nv|bv)\.?$",
+    re.IGNORECASE,
+)
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_TITLE_NOISE = re.compile(
+    r"\b(remote|us|usa|united\s+states|anywhere|global|emea|apac|americas|"
+    r"\(remote\)|\(us\)|\(usa\)|m/?f/?d|f/?m/?d|h/?f|m/?w/?d)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_company(name: str) -> str:
+    s = (name or "").strip()
+    s = _COMPANY_SUFFIXES.sub("", s)
+    s = _NON_ALNUM.sub("", s.lower())
+    return s
+
+
+def _normalize_title(title: str, location: str | None = None) -> str:
+    s = _strip_location_suffix(title or "", location).lower()
+    s = re.sub(r"\bsr\.?\b", "senior", s)
+    s = re.sub(r"\bjr\.?\b", "junior", s)
+    s = re.sub(r"\beng\.?\b", "engineer", s)
+    s = re.sub(r"\bdev\.?\b", "developer", s)
+    s = _TITLE_NOISE.sub("", s)
+    s = _NON_ALNUM.sub("", s)
+    return s
+
+
+def cross_source_hash(raw: RawJob) -> str | None:
+    """Hash a normalized (company, title) so the same role from different
+    sources collapses to one row. Returns None if either field is too thin
+    to fingerprint reliably (avoids false-positive collisions)."""
+    company = _normalize_company(raw.company_name)
+    title = _normalize_title(raw.title, raw.location)
+    if len(company) < 2 or len(title) < 4:
+        return None
+    h = hashlib.sha256()
+    h.update(company.encode())
+    h.update(b"|")
+    h.update(title.encode())
+    return h.hexdigest()
 
 
 def _upsert_company(session: Session, name: str) -> Company:
@@ -84,16 +159,25 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
     # Some employers post the same role under one source_id per city. Treat any
     # existing posting from the same source + company with the same normalized
     # title as a duplicate so we don't flood the queue.
-    norm = normalize_title(raw.title)
+    norm = normalize_title(raw.title, raw.location)
     existing_dup = session.exec(
         select(JobPosting).where(
             JobPosting.source == raw.source,
             JobPosting.company_id == company.id,
         )
     ).all()
-    if any(normalize_title(p.title) == norm for p in existing_dup):
+    if any(normalize_title(p.title, p.location) == norm for p in existing_dup):
         stats.skipped_duplicate += 1
         return
+
+    cross_h = cross_source_hash(raw)
+    if cross_h is not None:
+        cross_match = session.exec(
+            select(JobPosting).where(JobPosting.cross_source_hash == cross_h)
+        ).first()
+        if cross_match is not None:
+            stats.skipped_cross_source += 1
+            return
 
     posting = JobPosting(
         source=raw.source,
@@ -106,6 +190,7 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
         employment_type=raw.employment_type,
         posted_at=raw.posted_at,
         dedupe_hash=h,
+        cross_source_hash=cross_h,
         raw=raw.raw,
         company_id=company.id,
     )
@@ -134,27 +219,75 @@ def run_ingest(sources: list[SourceAdapter] | None = None) -> IngestStats:
 
 
 def archive_existing_duplicates(session: Session) -> int:
-    """Archive postings that share (source, company, normalized-title) with an
-    earlier posting. Keeps the earliest ``id`` per group; sets every later one's
-    Application.status to ``archived`` (creating an Application row if absent).
-    Returns the number of postings archived.
+    """Archive postings that share (source, company, normalized-title) with
+    another posting in the same group. Keeps the earliest *non-archived*
+    posting as the canonical (so a previously-archived city variant doesn't
+    end up swallowing every sibling). Returns the number of postings archived.
     """
     postings = session.exec(select(JobPosting).order_by(JobPosting.id)).all()
-    seen: dict[tuple[str, int | None, str], int] = {}
-    archived = 0
+    archived_job_ids = {
+        a.job_id
+        for a in session.exec(
+            select(Application).where(Application.status == ApplicationStatus.archived)
+        ).all()
+    }
+    groups: dict[tuple[str, int | None, str], list[JobPosting]] = {}
     for p in postings:
-        key = (p.source, p.company_id, normalize_title(p.title))
-        if key not in seen:
-            seen[key] = p.id  # type: ignore[assignment]
+        key = (p.source, p.company_id, normalize_title(p.title, p.location))
+        groups.setdefault(key, []).append(p)
+
+    archived = 0
+    for ps in groups.values():
+        if len(ps) < 2:
             continue
-        app = session.exec(select(Application).where(Application.job_id == p.id)).first()
-        if app is None:
-            session.add(Application(job_id=p.id, status=ApplicationStatus.archived))
-        elif app.status != ApplicationStatus.archived:
-            app.status = ApplicationStatus.archived
-            session.add(app)
-        else:
-            continue
-        archived += 1
+        keeper = next((p for p in ps if p.id not in archived_job_ids), ps[0])
+        for p in ps:
+            if p.id == keeper.id:
+                continue
+            app = session.exec(select(Application).where(Application.job_id == p.id)).first()
+            if app is None:
+                session.add(Application(job_id=p.id, status=ApplicationStatus.archived))
+            elif app.status != ApplicationStatus.archived:
+                app.status = ApplicationStatus.archived
+                session.add(app)
+            else:
+                continue
+            archived += 1
     session.commit()
     return archived
+
+
+def backfill_cross_source_hash() -> int:
+    """Populate cross_source_hash on existing rows that pre-date the column.
+
+    Rows with the same fingerprint as an earlier row are left with NULL hash
+    (so we don't punish the original ingest by retroactively flagging it as a
+    dup). Returns the number of rows updated.
+    """
+    updated = 0
+    seen: set[str] = set()
+    with Session(engine()) as session:
+        rows = session.exec(
+            select(JobPosting).where(JobPosting.cross_source_hash.is_(None))  # type: ignore[union-attr]
+        ).all()
+        for row in rows:
+            company = row.company.name if row.company else ""
+            fake = RawJob(
+                source=row.source,
+                source_id=row.source_id,
+                url=row.url,
+                title=row.title,
+                company_name=company,
+                description="",
+                location=row.location,
+            )
+            h = cross_source_hash(fake)
+            if h is None or h in seen:
+                continue
+            seen.add(h)
+            row.cross_source_hash = h
+            session.add(row)
+            updated += 1
+        if updated:
+            session.commit()
+    return updated

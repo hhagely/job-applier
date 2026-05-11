@@ -1,18 +1,24 @@
 """Source adapter registry.
 
 The DB (``SourceSlug`` table) is the runtime source of truth for which
-Greenhouse / Lever boards to ingest from. ``companies.py`` exists only as
-a one-time seed for fresh installs. Use ``job-applier refresh-slugs`` to
-expand the list from the SimplifyJobs community feed.
+per-company boards (Greenhouse / Lever / Ashby / Workday) to ingest from.
+``companies.py`` exists only as a one-time seed for fresh installs.
+
+The aggregator sources (RemoteOK, WeWorkRemotely, HackerNews) take no slug
+config — they always fetch a fixed set of feeds.
 """
 
 from sqlmodel import Session, select
 
 from job_applier.models import SourceSlug, engine
-from job_applier.sources.adzuna import AdzunaSource
+from job_applier.sources.ashby import AshbySource
 from job_applier.sources.base import RawJob, SourceAdapter
 from job_applier.sources.greenhouse import GreenhouseSource
+from job_applier.sources.hackernews import HackerNewsHiringSource
 from job_applier.sources.lever import LeverSource
+from job_applier.sources.remoteok import RemoteOKSource
+from job_applier.sources.weworkremotely import WeWorkRemotelySource
+from job_applier.sources.workday import WorkdaySource
 
 
 def _enabled_slugs(source: str) -> list[str]:
@@ -31,15 +37,23 @@ def get_all_sources() -> list[SourceAdapter]:
     return [
         GreenhouseSource(_enabled_slugs("greenhouse")),
         LeverSource(_enabled_slugs("lever")),
-        AdzunaSource(),  # silently no-ops if env vars not set
+        AshbySource(_enabled_slugs("ashby")),
+        WorkdaySource(_enabled_slugs("workday")),
+        RemoteOKSource(),
+        WeWorkRemotelySource(),
+        HackerNewsHiringSource(),
     ]
 
 
 __all__ = [
-    "AdzunaSource",
+    "AshbySource",
     "GreenhouseSource",
+    "HackerNewsHiringSource",
     "LeverSource",
     "RawJob",
+    "RemoteOKSource",
     "SourceAdapter",
+    "WeWorkRemotelySource",
+    "WorkdaySource",
     "get_all_sources",
 ]

@@ -25,7 +25,7 @@ Always run Python commands through `uv run` — there's no activated venv assump
 ## Layout pointers
 
 - [src/job_applier/api/](src/job_applier/api/) — FastAPI app + Pydantic schemas. The frontend talks to this via [web/src/lib/api.ts](web/src/lib/api.ts), which is browser-safe (no `$env/dynamic/private` imports).
-- [src/job_applier/sources/](src/job_applier/sources/) — source adapters. Add one by implementing the `SourceAdapter` protocol in [base.py](src/job_applier/sources/base.py) and registering in [__init__.py](src/job_applier/sources/__init__.py). Greenhouse + Lever slugs come from the `SourceSlug` DB table at runtime (not from `companies.py` — that file is just the seed for fresh installs). Use `job-applier refresh-slugs` to expand the list from the SimplifyJobs community feed; see [src/job_applier/sources/refresh.py](src/job_applier/sources/refresh.py).
+- [src/job_applier/sources/](src/job_applier/sources/) — source adapters. Add one by implementing the `SourceAdapter` protocol in [base.py](src/job_applier/sources/base.py) and registering in [__init__.py](src/job_applier/sources/__init__.py). Per-company sources (Greenhouse, Lever, Ashby, Workday) read slugs from the `SourceSlug` DB table at runtime; aggregators (RemoteOK, We Work Remotely, Hacker News) are config-free. `companies.py` is just the seed for fresh installs and is now per-source — adding a new source type later picks up its seed on the next `init`. Workday slugs use the packed format `{tenant}|{region}|{site}` since a tenant alone isn't enough to construct the URL.
 - [src/job_applier/filters/rules.py](src/job_applier/filters/rules.py) — the hard filter. Jobs that fail the filter are not persisted; only `passed` and `manual` postings are written. Dedupe is therefore best-effort for dropped jobs — they get re-evaluated on each ingest, which is fine because `evaluate()` is cheap regex.
 - [src/job_applier/config.py](src/job_applier/config.py) — paths and ports. Settings use `JOB_APPLIER_` env prefix.
 - [.claude/commands/match-pending.md](.claude/commands/match-pending.md) — the scoring slash command. Source of truth for the scoring contract.
@@ -40,6 +40,7 @@ Always run Python commands through `uv run` — there's no activated venv assump
 
 ## Things that have already been decided
 
-- Sources to add next: Greenhouse, Lever, Ashby, Adzuna, USAJobs.
+- Source adapters in place: Greenhouse, Lever, Ashby, Workday, RemoteOK, We Work Remotely, Hacker News "Who is hiring". Adzuna was removed — its API is hirer-targeted, not job-seeker-targeted.
+- Cross-source dedupe runs on `(normalized_company, normalized_title)` so the same role from multiple sources collapses to one DB row. See `cross_source_hash` in [src/job_applier/ingest.py](src/job_applier/ingest.py).
 - Forthcoming slash command: `/draft <job-id>` for cover-letter + tailored-resume drafts.
 - Jobs DB lives at [data/jobs.db](data/jobs.db); resume PDFs at [data/resumes/](data/resumes/).

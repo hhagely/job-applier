@@ -1,9 +1,14 @@
-"""Slug discovery + verification for the Greenhouse / Lever ingest sources.
+"""Slug discovery + verification for per-company ingest sources.
 
 The runtime source of truth for which slugs to fetch is the ``SourceSlug``
 table. This module fills that table — either from a small built-in seed
 (used on fresh ``job-applier init``) or from the SimplifyJobs community
 feed (the ``refresh-slugs`` CLI command).
+
+Discovery is Greenhouse + Lever only (SimplifyJobs only carries those slugs).
+Re-verification covers all four per-company sources (Greenhouse, Lever,
+Ashby, Workday) so dead boards get auto-disabled regardless of how they got
+into the table.
 """
 
 from __future__ import annotations
@@ -18,12 +23,19 @@ import httpx
 from sqlmodel import Session, select
 
 from job_applier.models import SourceSlug, engine
-from job_applier.sources.companies import GREENHOUSE_COMPANIES, LEVER_COMPANIES
+from job_applier.sources.companies import (
+    ASHBY_COMPANIES,
+    GREENHOUSE_COMPANIES,
+    LEVER_COMPANIES,
+    WORKDAY_BOARDS,
+)
+from job_applier.sources.workday import parse_slug as parse_workday_slug
 
 log = logging.getLogger(__name__)
 
 GH_VERIFY = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 LV_VERIFY = "https://api.lever.co/v0/postings/{slug}?mode=json"
+ASHBY_VERIFY = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 
 # SimplifyJobs maintains community-sourced listings.json files updated via
 # GitHub Actions on every PR. We pull both repos and union the slugs.
@@ -46,26 +58,40 @@ class RefreshStats:
     lv_reverified: int = 0
     gh_disabled: int = 0
     lv_disabled: int = 0
+    ashby_reverified: int = 0
+    ashby_disabled: int = 0
+    workday_reverified: int = 0
+    workday_disabled: int = 0
+
+
+_SEEDS: dict[str, list[str]] = {
+    "greenhouse": GREENHOUSE_COMPANIES,
+    "lever": LEVER_COMPANIES,
+    "ashby": ASHBY_COMPANIES,
+    "workday": WORKDAY_BOARDS,
+}
 
 
 def seed_if_empty() -> int:
-    """Populate the SourceSlug table from companies.py if it's empty.
+    """Seed each source's slugs from companies.py if that source has no rows.
 
-    Returns the number of rows inserted (0 if the table already has data).
+    Per-source so adding a new source (e.g. Ashby) on an existing install picks
+    up its seed on the next ``init`` without disturbing the populated sources.
+    Returns total rows inserted across all sources.
     """
+    inserted = 0
     with Session(engine()) as session:
-        existing = session.exec(select(SourceSlug).limit(1)).first()
-        if existing is not None:
-            return 0
-
-        rows: list[SourceSlug] = []
-        for slug in GREENHOUSE_COMPANIES:
-            rows.append(SourceSlug(source="greenhouse", slug=slug))
-        for slug in LEVER_COMPANIES:
-            rows.append(SourceSlug(source="lever", slug=slug))
-        session.add_all(rows)
-        session.commit()
-        return len(rows)
+        for source, slugs in _SEEDS.items():
+            existing = session.exec(
+                select(SourceSlug).where(SourceSlug.source == source).limit(1)
+            ).first()
+            if existing is not None:
+                continue
+            session.add_all(SourceSlug(source=source, slug=s) for s in slugs)
+            inserted += len(slugs)
+        if inserted:
+            session.commit()
+    return inserted
 
 
 def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> RefreshStats:
@@ -130,35 +156,76 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 stats.lv_added += 1
 
         if reverify_existing:
-            gh_existing = sorted(existing_gh)
-            lv_existing = sorted(existing_lv)
-            for slug, ok, count, err in _verify_many(gh_existing, GH_VERIFY, max_workers):
-                row = existing_gh[slug]
-                row.last_fetched_at = now
-                row.last_job_count = count if ok else row.last_job_count
-                row.last_error = None if ok else err
-                if not ok and row.enabled:
-                    row.enabled = False
-                    stats.gh_disabled += 1
-                row.updated_at = now
-                session.add(row)
-                stats.gh_reverified += 1
+            existing_ashby = {
+                r.slug: r
+                for r in session.exec(
+                    select(SourceSlug).where(SourceSlug.source == "ashby")
+                ).all()
+            }
+            existing_workday = {
+                r.slug: r
+                for r in session.exec(
+                    select(SourceSlug).where(SourceSlug.source == "workday")
+                ).all()
+            }
 
-            for slug, ok, count, err in _verify_many(lv_existing, LV_VERIFY, max_workers):
-                row = existing_lv[slug]
-                row.last_fetched_at = now
-                row.last_job_count = count if ok else row.last_job_count
-                row.last_error = None if ok else err
-                if not ok and row.enabled:
-                    row.enabled = False
-                    stats.lv_disabled += 1
-                row.updated_at = now
-                session.add(row)
-                stats.lv_reverified += 1
+            _apply_reverify(
+                rows=existing_gh,
+                results=_verify_many(sorted(existing_gh), GH_VERIFY, max_workers),
+                now=now,
+                stats=stats,
+                reverified_field="gh_reverified",
+                disabled_field="gh_disabled",
+            )
+            _apply_reverify(
+                rows=existing_lv,
+                results=_verify_many(sorted(existing_lv), LV_VERIFY, max_workers),
+                now=now,
+                stats=stats,
+                reverified_field="lv_reverified",
+                disabled_field="lv_disabled",
+            )
+            _apply_reverify(
+                rows=existing_ashby,
+                results=_verify_many(sorted(existing_ashby), ASHBY_VERIFY, max_workers),
+                now=now,
+                stats=stats,
+                reverified_field="ashby_reverified",
+                disabled_field="ashby_disabled",
+            )
+            _apply_reverify(
+                rows=existing_workday,
+                results=_verify_workday(sorted(existing_workday), max_workers),
+                now=now,
+                stats=stats,
+                reverified_field="workday_reverified",
+                disabled_field="workday_disabled",
+            )
 
         session.commit()
 
     return stats
+
+
+def _apply_reverify(
+    *,
+    rows: dict[str, SourceSlug],
+    results: list[tuple[str, bool, int | None, str | None]],
+    now: datetime,
+    stats: RefreshStats,
+    reverified_field: str,
+    disabled_field: str,
+) -> None:
+    for slug, ok, count, err in results:
+        row = rows[slug]
+        row.last_fetched_at = now
+        row.last_job_count = count if ok else row.last_job_count
+        row.last_error = None if ok else err
+        if not ok and row.enabled:
+            row.enabled = False
+            setattr(stats, disabled_field, getattr(stats, disabled_field) + 1)
+        row.updated_at = now
+        setattr(stats, reverified_field, getattr(stats, reverified_field) + 1)
 
 
 def _fetch_candidates_from_simplify() -> tuple[set[str], set[str]]:
@@ -207,6 +274,50 @@ def _verify_many(
                 count = 0
             return (slug, True, count, None)
         except Exception as e:  # noqa: BLE001 — we want to capture the error string
+            return (slug, False, None, str(e))
+
+    results: list[tuple[str, bool, int | None, str | None]] = []
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for r in ex.map(check, slugs):
+            results.append(r)
+    return results
+
+
+def _verify_workday(
+    slugs: list[str], max_workers: int
+) -> list[tuple[str, bool, int | None, str | None]]:
+    """Workday's CXS jobs endpoint is POST-only and tenant-specific, so it
+    can't share ``_verify_many``. Slugs are ``tenant|region|site``.
+
+    A 422 ("Unprocessable Entity") means the tenant rejects the public CXS
+    body shape — that's a permanent rejection, not a transient error, so we
+    treat it as failure and let the disable path mark the row.
+    """
+    if not slugs:
+        return []
+
+    def check(slug: str) -> tuple[str, bool, int | None, str | None]:
+        board = parse_workday_slug(slug)
+        if board is None:
+            return (slug, False, None, "malformed slug")
+        try:
+            r = httpx.post(
+                board.jobs_url,
+                json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0 (compatible; job-applier/0.1)",
+                },
+                timeout=20,
+                follow_redirects=True,
+            )
+            if r.status_code != 200:
+                return (slug, False, None, f"HTTP {r.status_code}")
+            payload = r.json()
+            count = payload.get("total") if isinstance(payload, dict) else None
+            return (slug, True, count, None)
+        except Exception as e:  # noqa: BLE001 — capture the error string
             return (slug, False, None, str(e))
 
     results: list[tuple[str, bool, int | None, str | None]] = []

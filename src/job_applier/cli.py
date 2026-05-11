@@ -5,7 +5,11 @@ import json
 import typer
 
 from job_applier.config import settings
-from job_applier.ingest import archive_existing_duplicates, run_ingest
+from job_applier.ingest import (
+    archive_existing_duplicates,
+    backfill_cross_source_hash,
+    run_ingest,
+)
 from job_applier.models import create_db_and_tables, engine
 from job_applier.sources.refresh import refresh_slugs, seed_if_empty
 from sqlmodel import Session
@@ -18,9 +22,12 @@ def init() -> None:
     """Create the SQLite database and tables, seed slugs if empty."""
     create_db_and_tables()
     seeded = seed_if_empty()
+    backfilled = backfill_cross_source_hash()
     typer.echo(f"DB ready at {settings.db_path}")
     if seeded:
         typer.echo(f"Seeded {seeded} source slugs from companies.py")
+    if backfilled:
+        typer.echo(f"Backfilled cross_source_hash on {backfilled} existing postings")
 
 
 @app.command()
