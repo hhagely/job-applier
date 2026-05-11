@@ -6,8 +6,8 @@ resume via Claude Code, and surfaces the results in a SvelteKit review UI so you
 can decide which ones are worth tailoring an application for.
 
 No LinkedIn or Indeed scraping — those violate ToS and risk account bans.
-Sources are open ATS endpoints (Greenhouse + Lever today, Ashby coming) and
-aggregator APIs (Adzuna today, USAJobs coming).
+Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday) and
+aggregator feeds (RemoteOK, We Work Remotely, Hacker News "Who is hiring").
 
 ## Architecture
 
@@ -67,7 +67,7 @@ src/job_applier/
   api/         # FastAPI app + Pydantic schemas
   filters/     # Hard-rule filter (remote, Senior+, JS/TS, no Angular)
   models/      # SQLModel definitions + DB engine
-  sources/     # Source adapters (Greenhouse, Lever, Adzuna today; more coming)
+  sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, RemoteOK, WWR, HN)
   ingest.py    # Pipeline: fetch → dedupe → filter → persist
   resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
@@ -101,49 +101,56 @@ Adjust `src/job_applier/filters/rules.py` if your criteria change.
 
 ## Sources
 
-| Source     | Auth needed                                  | Notes                                                                |
-| ---------- | -------------------------------------------- | -------------------------------------------------------------------- |
-| Greenhouse | none                                         | Per-company boards. Slugs live in the `SourceSlug` DB table.         |
-| Lever      | none                                         | Per-company postings. Slugs live in the `SourceSlug` DB table.       |
-| Adzuna     | `JOB_APPLIER_ADZUNA_APP_ID` + `..._APP_KEY`  | Free tier at developer.adzuna.com. Skipped silently if unset.        |
+| Source           | Config                          | Notes                                                                 |
+| ---------------- | ------------------------------- | --------------------------------------------------------------------- |
+| Greenhouse       | DB slug list (`SourceSlug`)     | `boards-api.greenhouse.io/v1/boards/{slug}/jobs`                      |
+| Lever            | DB slug list (`SourceSlug`)     | `api.lever.co/v0/postings/{slug}`                                     |
+| Ashby            | DB slug list (`SourceSlug`)     | `api.ashbyhq.com/posting-api/job-board/{slug}`. Slugs are case-sensitive (`Notion`, not `notion`). |
+| Workday          | DB slug list, packed format     | Slug is `{tenant}\|{region}\|{site}` — e.g. `salesforce\|wd12\|External_Career_Site`. List call returns only titles; descriptions need a per-posting detail fetch, so the adapter pre-filters titles before going deep. |
+| RemoteOK         | none                            | Single-endpoint aggregator (`remoteok.com/api`).                      |
+| We Work Remotely | none                            | Per-category RSS feeds; engineering categories only.                  |
+| Hacker News      | none                            | Most recent monthly "Who is hiring" thread, parsed via Algolia HN API. Top-level comments are individual postings. |
 
 ### Managing the company slug list
 
-The Greenhouse + Lever slug list lives in the database (`SourceSlug` table),
-not in code. Initial setup seeds the table from `src/job_applier/sources/companies.py`
-on first `job-applier init`; after that, manage slugs through the CLI:
+Per-company slugs (Greenhouse / Lever / Ashby / Workday) live in the database
+(`SourceSlug` table), not in code. Initial setup seeds the table from
+`src/job_applier/sources/companies.py` on first `job-applier init` — and the
+seed is per-source, so adding a new source type later picks up its seed on the
+next `init` without disturbing the populated tables.
 
 ```sh
-# Pull new candidates from the SimplifyJobs community feed and verify them
+# Pull new Greenhouse/Lever candidates from the SimplifyJobs feed and verify
 make refresh-slugs
 
 # Same, but also re-verify every existing slug; auto-disable dead boards
 make refresh-slugs-full
 ```
 
-Run `make refresh-slugs` whenever the list feels stale — once a month is
-plenty. No scheduler / cron needed.
+The SimplifyJobs feed is heavily new-grad / intern biased — it's only useful
+as a wide net for *valid* slugs, not relevant ones. To add a target company
+by hand, insert into the DB directly (or edit `companies.py` before your first
+`init`). Failed fetches during ingest log a warning but don't break the run.
 
-To add a single slug by hand, insert into the DB or edit `companies.py` *before*
-your first `init` (it's only consulted when the table is empty). Failed fetches
-during ingest log a warning but don't break the run.
+### Cross-source dedupe
 
-### Enabling Adzuna
+Two dedupe layers run on every ingest:
 
-```sh
-# .env at repo root
-JOB_APPLIER_ADZUNA_APP_ID=your_id
-JOB_APPLIER_ADZUNA_APP_KEY=your_key
-JOB_APPLIER_ADZUNA_PAGES=3      # optional, default 3
-JOB_APPLIER_ADZUNA_COUNTRY=us   # optional, default us
-```
+- **Per-source hash** (`source + source_id`) — catches the same job appearing
+  twice in the same source.
+- **Cross-source hash** (normalized `(company, title)`) — collapses the same
+  role surfaced via multiple sources (e.g. Stripe via Greenhouse + RemoteOK).
+
+The cross-source hash is populated on every new insert; on existing rows it's
+backfilled by `job-applier init`.
 
 ### Adding a brand-new source type
 
 Create a file under `src/job_applier/sources/` that implements the
 `SourceAdapter` protocol from `sources/base.py` (one method:
-`fetch() -> Iterable[RawJob]`), then add an instance to `ALL_SOURCES` in
-`sources/__init__.py`.
+`fetch() -> Iterable[RawJob]`), then add an instance to `get_all_sources()` in
+`sources/__init__.py`. If the source needs per-company config, add a seed list
+to `companies.py` and a key to `_SEEDS` in `sources/refresh.py`.
 
 ## Why no Anthropic API calls?
 

@@ -53,6 +53,11 @@ class JobPosting(SQLModel, table=True):
     ingested_at: datetime = Field(default_factory=_utcnow)
 
     dedupe_hash: str = Field(index=True, unique=True)
+    # Cross-source fingerprint: normalized (company, title). Lets the same role
+    # surfaced via multiple sources (Greenhouse + aggregator, etc.) collapse to
+    # one row. Nullable for backward-compat with rows ingested before this column
+    # existed; new inserts always populate it.
+    cross_source_hash: Optional[str] = Field(default=None, index=True)
     raw: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
     filter_status: FilterStatus = FilterStatus.passed
@@ -141,6 +146,26 @@ def engine():
 
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine())
+    _ensure_cross_source_hash_column()
+
+
+def _ensure_cross_source_hash_column() -> None:
+    """Add JobPosting.cross_source_hash on existing DBs that pre-date the column.
+
+    SQLModel.metadata.create_all is a no-op for tables that already exist, so
+    ALTER TABLE here covers the migration path. Cheap to call every startup.
+    """
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobposting)")}
+        if "cross_source_hash" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobposting ADD COLUMN cross_source_hash VARCHAR"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_jobposting_cross_source_hash "
+                "ON jobposting (cross_source_hash)"
+            )
+            conn.commit()
 
 
 def get_session() -> Iterator[Session]:

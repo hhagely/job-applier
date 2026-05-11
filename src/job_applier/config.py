@@ -17,11 +17,5 @@ class Settings(BaseSettings):
     api_port: int = 8000
     web_origin: str = "http://localhost:5174"
 
-    # Adzuna source — leave both blank to skip Adzuna ingestion entirely.
-    adzuna_app_id: str | None = None
-    adzuna_app_key: str | None = None
-    adzuna_country: str = "us"
-    adzuna_pages: int = 3
-
 
 settings = Settings()

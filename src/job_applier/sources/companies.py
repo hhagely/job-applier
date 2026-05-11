@@ -9,13 +9,17 @@ when the table is empty. After that, manage slugs via the DB:
 - ``job-applier refresh-slugs --reverify`` — also re-check existing slugs
   and auto-disable ones that have gone dead.
 
-Slugs originally sourced from SimplifyJobs/New-Grad-Positions and
-SimplifyJobs/Summer2026-Internships listings.json (which crowdsource ATS
-URLs from active job postings) and verified live against the public boards
-APIs at the time of writing.
+Greenhouse / Lever lists below were originally sourced from SimplifyJobs and
+verified live against the public boards APIs at the time of writing.
+
+Ashby slugs are case-sensitive (boards live under e.g. ``Notion``, not
+``notion``). Workday slugs are packed as ``{tenant}|{region}|{site}`` since a
+tenant alone isn't enough to construct the URL.
 
 Greenhouse: https://boards-api.greenhouse.io/v1/boards/{slug}/jobs
 Lever:      https://api.lever.co/v0/postings/{slug}?mode=json
+Ashby:      https://api.ashbyhq.com/posting-api/job-board/{slug}
+Workday:    https://{tenant}.{region}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs
 """
 
 GREENHOUSE_COMPANIES: list[str] = [
@@ -1115,4 +1119,26 @@ LEVER_COMPANIES: list[str] = [
     "zopa",
     "zuru",
     "zushealth",
+]
+
+# Ashby boards. Case-sensitive — these are the actual board slugs.
+ASHBY_COMPANIES: list[str] = [
+    "Notion",
+    "Linear",
+    "Vercel",
+    "Ramp",
+    "OpenAI",
+    "Posthog",
+    "Replit",
+]
+
+# Workday boards. Verified live; many tenants reject the public CXS body shape
+# (HTTP 422) and need per-tenant tweaks the adapter doesn't yet do — those are
+# omitted from the seed.
+WORKDAY_BOARDS: list[str] = [
+    "salesforce|wd12|External_Career_Site",
+    "adobe|wd5|external_experienced",
+    "nvidia|wd5|NVIDIAExternalCareerSite",
+    "redhat|wd5|Jobs",
+    "target|wd5|targetcareers",
 ]

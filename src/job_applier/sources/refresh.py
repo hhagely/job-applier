@@ -18,7 +18,12 @@ import httpx
 from sqlmodel import Session, select
 
 from job_applier.models import SourceSlug, engine
-from job_applier.sources.companies import GREENHOUSE_COMPANIES, LEVER_COMPANIES
+from job_applier.sources.companies import (
+    ASHBY_COMPANIES,
+    GREENHOUSE_COMPANIES,
+    LEVER_COMPANIES,
+    WORKDAY_BOARDS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,24 +53,34 @@ class RefreshStats:
     lv_disabled: int = 0
 
 
+_SEEDS: dict[str, list[str]] = {
+    "greenhouse": GREENHOUSE_COMPANIES,
+    "lever": LEVER_COMPANIES,
+    "ashby": ASHBY_COMPANIES,
+    "workday": WORKDAY_BOARDS,
+}
+
+
 def seed_if_empty() -> int:
-    """Populate the SourceSlug table from companies.py if it's empty.
+    """Seed each source's slugs from companies.py if that source has no rows.
 
-    Returns the number of rows inserted (0 if the table already has data).
+    Per-source so adding a new source (e.g. Ashby) on an existing install picks
+    up its seed on the next ``init`` without disturbing the populated sources.
+    Returns total rows inserted across all sources.
     """
+    inserted = 0
     with Session(engine()) as session:
-        existing = session.exec(select(SourceSlug).limit(1)).first()
-        if existing is not None:
-            return 0
-
-        rows: list[SourceSlug] = []
-        for slug in GREENHOUSE_COMPANIES:
-            rows.append(SourceSlug(source="greenhouse", slug=slug))
-        for slug in LEVER_COMPANIES:
-            rows.append(SourceSlug(source="lever", slug=slug))
-        session.add_all(rows)
-        session.commit()
-        return len(rows)
+        for source, slugs in _SEEDS.items():
+            existing = session.exec(
+                select(SourceSlug).where(SourceSlug.source == source).limit(1)
+            ).first()
+            if existing is not None:
+                continue
+            session.add_all(SourceSlug(source=source, slug=s) for s in slugs)
+            inserted += len(slugs)
+        if inserted:
+            session.commit()
+    return inserted
 
 
 def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> RefreshStats:
