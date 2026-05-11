@@ -29,7 +29,9 @@ class AshbySource:
         self.company_slugs = company_slugs
 
     def fetch(self) -> Iterable[RawJob]:
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        # OpenAI's board is ~10MB / ~45s — give every Ashby board a generous
+        # ceiling rather than tuning per-slug.
+        with httpx.Client(timeout=120.0, follow_redirects=True) as client:
             for slug in self.company_slugs:
                 try:
                     resp = client.get(
