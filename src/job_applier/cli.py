@@ -8,6 +8,7 @@ from job_applier.config import settings
 from job_applier.ingest import (
     archive_existing_duplicates,
     backfill_cross_source_hash,
+    prune_old_postings,
     run_ingest,
 )
 from job_applier.models import create_db_and_tables, engine
@@ -61,6 +62,16 @@ def dedupe_existing_cmd() -> None:
     with Session(engine()) as session:
         n = archive_existing_duplicates(session)
     typer.echo(f"Archived {n} duplicate postings")
+
+
+@app.command()
+def prune() -> None:
+    """Clear description + raw on archived/rejected, old, or untouched postings.
+    Dedupe hashes are preserved so future ingests still skip these as dupes."""
+    create_db_and_tables()
+    with Session(engine()) as session:
+        stats = prune_old_postings(session)
+    typer.echo(json.dumps(stats.__dict__, indent=2))
 
 
 @app.command()
