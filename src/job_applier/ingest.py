@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -255,6 +256,88 @@ def archive_existing_duplicates(session: Session) -> int:
             archived += 1
     session.commit()
     return archived
+
+
+# Postings that match prune criteria have their description + raw blob cleared
+# to keep the DB small. The dedupe columns (source/source_id/dedupe_hash/
+# cross_source_hash) and the normalized-title inputs (title/location/company)
+# stay intact so future ingests still see these as duplicates.
+PRUNE_POSTED_AFTER_DAYS = 30
+PRUNE_INGESTED_AFTER_DAYS = 14
+
+
+@dataclass
+class PruneStats:
+    scanned: int = 0
+    lightened: int = 0
+    bytes_freed: int = 0
+
+
+def prune_old_postings(session: Session, now: datetime | None = None) -> PruneStats:
+    """Null out heavy fields (description, raw) on postings we no longer need
+    in full. Targets:
+
+    - archived or rejected applications
+    - postings whose posted_at is over PRUNE_POSTED_AFTER_DAYS old
+    - postings ingested over PRUNE_INGESTED_AFTER_DAYS ago that haven't been
+      applied to
+
+    Dedupe still works against these rows because the hash columns and the
+    normalized-title inputs are untouched.
+    """
+    now = now or datetime.now(timezone.utc)
+    posted_cutoff = now - timedelta(days=PRUNE_POSTED_AFTER_DAYS)
+    ingested_cutoff = now - timedelta(days=PRUNE_INGESTED_AFTER_DAYS)
+
+    app_status_by_job: dict[int, ApplicationStatus] = {
+        a.job_id: a.status for a in session.exec(select(Application)).all()
+    }
+
+    stats = PruneStats()
+    postings = session.exec(select(JobPosting)).all()
+    for p in postings:
+        stats.scanned += 1
+        if not p.description and not p.raw:
+            continue
+
+        status = app_status_by_job.get(p.id) if p.id is not None else None
+        prune = False
+        if status in (ApplicationStatus.archived, ApplicationStatus.rejected):
+            prune = True
+        else:
+            posted = p.posted_at
+            if posted is not None and posted.tzinfo is None:
+                posted = posted.replace(tzinfo=timezone.utc)
+            if posted is not None and posted < posted_cutoff:
+                prune = True
+            else:
+                ingested = p.ingested_at
+                if ingested is not None and ingested.tzinfo is None:
+                    ingested = ingested.replace(tzinfo=timezone.utc)
+                if (
+                    ingested is not None
+                    and ingested < ingested_cutoff
+                    and status != ApplicationStatus.applied
+                ):
+                    prune = True
+
+        if not prune:
+            continue
+
+        stats.bytes_freed += len(p.description or "")
+        if p.raw:
+            try:
+                stats.bytes_freed += len(json.dumps(p.raw))
+            except (TypeError, ValueError):
+                pass
+        p.description = ""
+        p.raw = {}
+        session.add(p)
+        stats.lightened += 1
+
+    if stats.lightened:
+        session.commit()
+    return stats
 
 
 def backfill_cross_source_hash() -> int:

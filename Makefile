@@ -1,4 +1,4 @@
-.PHONY: setup api web dev ingest clean lint test test-api test-web help
+.PHONY: setup api web dev ingest prune clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies
 	uv sync
@@ -16,6 +16,9 @@ dev: ## Run backend + frontend together (requires GNU parallel or two terminals)
 
 ingest: ## Pull jobs from configured sources
 	uv run job-applier ingest
+
+prune: ## Lighten old/archived postings (clears description + raw, keeps dedupe hashes)
+	uv run job-applier prune
 
 refresh-slugs: ## Discover new Greenhouse/Lever slugs from the SimplifyJobs feed
 	uv run job-applier refresh-slugs

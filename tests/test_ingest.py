@@ -7,14 +7,17 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from job_applier.ingest import (
+    PRUNE_INGESTED_AFTER_DAYS,
+    PRUNE_POSTED_AFTER_DAYS,
     STALE_AFTER_DAYS,
     IngestStats,
     _is_stale,
     archive_existing_duplicates,
     cross_source_hash,
     ingest_one,
+    prune_old_postings,
 )
-from job_applier.models import Application, ApplicationStatus, JobPosting
+from job_applier.models import Application, ApplicationStatus, Company, JobPosting
 from job_applier.sources.base import RawJob
 
 
@@ -203,6 +206,183 @@ class TestCrossSourceHash:
         # Single-letter company / very short title => no fingerprint
         assert cross_source_hash(_raw(company_name="X", title="Eng")) is None
         assert cross_source_hash(_raw(company_name="", title="Senior Engineer")) is None
+
+
+def _insert_posting(
+    session,
+    *,
+    source_id: str,
+    company: Company,
+    posted_at=None,
+    ingested_at=None,
+    description: str = "lots of text",
+    raw: dict | None = None,
+) -> JobPosting:
+    p = JobPosting(
+        source="test",
+        source_id=source_id,
+        url=f"https://example.com/{source_id}",
+        title=f"Senior Engineer {source_id}",
+        description=description,
+        dedupe_hash=f"h-{source_id}",
+        company_id=company.id,
+        posted_at=posted_at,
+        raw=raw if raw is not None else {"body": "x" * 50},
+    )
+    session.add(p)
+    session.flush()
+    if ingested_at is not None:
+        p.ingested_at = ingested_at
+        session.add(p)
+        session.flush()
+    return p
+
+
+class TestPruneOldPostings:
+    def _company(self, session) -> Company:
+        c = Company(name="Acme")
+        session.add(c)
+        session.flush()
+        return c
+
+    def test_archived_application_is_lightened(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        p = _insert_posting(
+            session, source_id="t-1", company=c, posted_at=now, ingested_at=now
+        )
+        session.add(Application(job_id=p.id, status=ApplicationStatus.archived))
+        session.commit()
+
+        stats = prune_old_postings(session, now=now)
+        assert stats.lightened == 1
+        assert stats.bytes_freed > 0
+        session.refresh(p)
+        assert p.description == ""
+        assert p.raw == {}
+        # Dedupe inputs preserved
+        assert p.dedupe_hash == "h-t-1"
+        assert p.title == "Senior Engineer t-1"
+
+    def test_rejected_application_is_lightened(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        p = _insert_posting(
+            session, source_id="t-r", company=c, posted_at=now, ingested_at=now
+        )
+        session.add(Application(job_id=p.id, status=ApplicationStatus.rejected))
+        session.commit()
+
+        prune_old_postings(session, now=now)
+        session.refresh(p)
+        assert p.description == ""
+
+    def test_old_posted_at_is_lightened(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        old_posted = now - timedelta(days=PRUNE_POSTED_AFTER_DAYS + 1)
+        p = _insert_posting(
+            session, source_id="t-old", company=c, posted_at=old_posted, ingested_at=now
+        )
+        session.commit()
+
+        stats = prune_old_postings(session, now=now)
+        assert stats.lightened == 1
+        session.refresh(p)
+        assert p.description == ""
+
+    def test_old_ingested_without_applied_is_lightened(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        old_ingested = now - timedelta(days=PRUNE_INGESTED_AFTER_DAYS + 1)
+        p = _insert_posting(
+            session, source_id="t-ing", company=c, posted_at=now, ingested_at=old_ingested
+        )
+        session.commit()
+
+        prune_old_postings(session, now=now)
+        session.refresh(p)
+        assert p.description == ""
+
+    def test_old_ingested_with_applied_is_kept(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        old_ingested = now - timedelta(days=PRUNE_INGESTED_AFTER_DAYS + 1)
+        p = _insert_posting(
+            session, source_id="t-app", company=c, posted_at=now, ingested_at=old_ingested
+        )
+        session.add(Application(job_id=p.id, status=ApplicationStatus.applied))
+        session.commit()
+
+        stats = prune_old_postings(session, now=now)
+        assert stats.lightened == 0
+        session.refresh(p)
+        assert p.description != ""
+
+    def test_fresh_posting_is_kept(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        p = _insert_posting(
+            session, source_id="t-fresh", company=c, posted_at=now, ingested_at=now
+        )
+        session.commit()
+
+        stats = prune_old_postings(session, now=now)
+        assert stats.lightened == 0
+        session.refresh(p)
+        assert p.description != ""
+
+    def test_already_lightened_is_skipped(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        _insert_posting(
+            session,
+            source_id="t-empty",
+            company=c,
+            posted_at=now - timedelta(days=PRUNE_POSTED_AFTER_DAYS + 1),
+            ingested_at=now,
+            description="",
+            raw={},
+        )
+        session.commit()
+
+        stats = prune_old_postings(session, now=now)
+        assert stats.lightened == 0
+
+    def test_dedupe_after_prune_still_works(self, session):
+        c = self._company(session)
+        now = datetime.now(timezone.utc)
+        # Pre-load a posting that will get pruned (old posted_at)
+        old = now - timedelta(days=PRUNE_POSTED_AFTER_DAYS + 1)
+        session.add(
+            JobPosting(
+                source="test",
+                source_id="t-1",
+                url="https://example.com/1",
+                title="Senior Software Engineer",
+                description="big description",
+                dedupe_hash="h-t-1",
+                company_id=c.id,
+                posted_at=old,
+                ingested_at=now,
+                raw={"body": "x" * 100},
+            )
+        )
+        session.commit()
+        prune_old_postings(session, now=now)
+
+        # Now an ingest of a different source_id but same source + company + title
+        # should be caught by the existing-duplicate check, which relies on title
+        # being intact.
+        stats = IngestStats()
+        ingest_one(
+            session,
+            _raw(source_id="t-2", title="Senior Software Engineer"),
+            stats,
+        )
+        session.commit()
+        assert stats.skipped_duplicate == 1
+        assert stats.inserted == 0
 
 
 class TestIngestCrossSourceDedupe:
