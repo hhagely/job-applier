@@ -13,6 +13,9 @@ from xml.etree import ElementTree as ET
 from job_applier.sources.ashby import _normalize as ashby_normalize
 from job_applier.sources.hackernews import _html_to_text, _parse_header
 from job_applier.sources.remoteok import _normalize as remoteok_normalize
+from job_applier.sources.weworkremotely import (
+    _extract_company_url as wwr_extract_url,
+)
 from job_applier.sources.weworkremotely import _normalize as wwr_normalize
 from job_applier.sources.workday import TITLE_GATE, parse_slug
 
@@ -52,13 +55,18 @@ class TestRemoteOK:
 
 
 class TestWeWorkRemotely:
-    def _item_xml(self, title: str, link: str = "https://wwr.example/jobs/1") -> ET.Element:
+    def _item_xml(
+        self,
+        title: str,
+        link: str = "https://wwr.example/jobs/1",
+        body_html: str = '<p>We use TypeScript. <a href="https://boards.greenhouse.io/acme/jobs/1">Apply here</a></p>',
+    ) -> ET.Element:
         xml = f"""
         <item>
           <title>{title}</title>
           <region>Anywhere in the World</region>
           <category>Full-Stack Programming</category>
-          <description><![CDATA[<p>Some description with TypeScript and React.</p>]]></description>
+          <description><![CDATA[{body_html}]]></description>
           <pubDate>Fri, 17 Apr 2026 20:31:02 +0000</pubDate>
           <link>{link}</link>
           <guid>{link}</guid>
@@ -75,6 +83,14 @@ class TestWeWorkRemotely:
         assert raw.remote is True
         assert raw.location == "Anywhere in the World"
 
+    def test_url_points_at_extracted_company_link_not_wwr(self):
+        item = self._item_xml("Acme: Senior Eng")
+        raw = wwr_normalize(item)
+        assert raw is not None
+        assert raw.url == "https://boards.greenhouse.io/acme/jobs/1"
+        assert raw.source_id == "https://wwr.example/jobs/1"  # stable WWR link
+        assert raw.raw["wwr_link"] == "https://wwr.example/jobs/1"
+
     def test_position_with_colon_in_it_keeps_only_first_split(self):
         item = self._item_xml("Acme: Engineer: Backend, Senior")
         raw = wwr_normalize(item)
@@ -90,6 +106,58 @@ class TestWeWorkRemotely:
     def test_missing_link_returns_none(self):
         xml = "<item><title>Acme: X</title></item>"
         assert wwr_normalize(ET.fromstring(xml)) is None
+
+    def test_description_without_external_link_is_dropped(self):
+        item = self._item_xml(
+            "Acme: Senior Eng",
+            body_html="<p>No apply link, just prose about TypeScript.</p>",
+        )
+        assert wwr_normalize(item) is None
+
+    def test_only_wwr_link_in_description_is_dropped(self):
+        item = self._item_xml(
+            "Acme: Senior Eng",
+            body_html='<p><a href="https://weworkremotely.com/remote-jobs/foo">Apply</a></p>',
+        )
+        assert wwr_normalize(item) is None
+
+
+class TestWWRURLExtraction:
+    def test_prefers_known_ats_over_arbitrary_url(self):
+        html = (
+            '<p>See <a href="https://acme.com/about">about us</a> '
+            'or <a href="https://jobs.lever.co/acme/abc">apply</a>.</p>'
+        )
+        assert wwr_extract_url(html) == "https://jobs.lever.co/acme/abc"
+
+    def test_falls_back_to_first_external_url_when_no_ats(self):
+        html = '<p>Visit <a href="https://acme.com/careers">our careers page</a>.</p>'
+        assert wwr_extract_url(html) == "https://acme.com/careers"
+
+    def test_skips_social_hosts(self):
+        html = (
+            '<p><a href="https://twitter.com/acme">tweet</a> '
+            '<a href="https://acme.com/careers">careers</a></p>'
+        )
+        assert wwr_extract_url(html) == "https://acme.com/careers"
+
+    def test_skips_wwr_self_links(self):
+        html = '<p><a href="https://weworkremotely.com/jobs/123">Apply</a></p>'
+        assert wwr_extract_url(html) is None
+
+    def test_ignores_non_http_schemes(self):
+        html = (
+            '<p><a href="mailto:jobs@acme.com">email</a> '
+            '<a href="#section">jump</a></p>'
+        )
+        assert wwr_extract_url(html) is None
+
+    def test_recognises_workday_subdomain(self):
+        html = '<a href="https://acme.wd5.myworkdayjobs.com/External/job/X">Apply</a>'
+        assert wwr_extract_url(html) == "https://acme.wd5.myworkdayjobs.com/External/job/X"
+
+    def test_empty_input(self):
+        assert wwr_extract_url("") is None
 
 
 class TestAshby:
