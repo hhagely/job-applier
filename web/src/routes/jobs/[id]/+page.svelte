@@ -21,6 +21,22 @@
 		const d = new Date(iso);
 		return d.toLocaleString();
 	}
+
+	const SOURCE_META: Record<string, { label: string; ease: 'easy' | 'med' | 'hard' }> = {
+		greenhouse: { label: 'Greenhouse', ease: 'easy' },
+		lever: { label: 'Lever', ease: 'easy' },
+		ashby: { label: 'Ashby', ease: 'easy' },
+		remoteok: { label: 'RemoteOK', ease: 'med' },
+		weworkremotely: { label: 'WWR', ease: 'med' },
+		workday: { label: 'Workday', ease: 'hard' },
+		hackernews: { label: 'HN', ease: 'med' }
+	};
+
+	function sourceInfo(source: string): { label: string; ease: 'easy' | 'med' | 'hard' } {
+		return SOURCE_META[source] ?? { label: source, ease: 'med' };
+	}
+
+	let si = $derived(sourceInfo(job.source));
 </script>
 
 <a href="/" class="back">← back to queue</a>
@@ -28,6 +44,9 @@
 <header class="job-header">
 	<h1>{job.title}</h1>
 	<p class="company">
+		<span class="source" data-ease={si.ease} title="Apply friction: {si.ease}">
+			{si.label}
+		</span>
 		{job.company?.name ?? 'Unknown'}
 		{#if job.location}· {job.location}{/if}
 		{#if job.employment_type}· {job.employment_type}{/if}
@@ -136,6 +155,30 @@
 	.company {
 		color: var(--muted);
 		margin: 0 0 0.5rem;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+	.source {
+		font-size: 0.7rem;
+		letter-spacing: 0.02em;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: #20262d;
+		color: var(--muted);
+	}
+	.source[data-ease='easy'] {
+		background: rgba(46, 160, 67, 0.18);
+		color: var(--ok);
+	}
+	.source[data-ease='med'] {
+		background: rgba(210, 153, 34, 0.18);
+		color: var(--warn);
+	}
+	.source[data-ease='hard'] {
+		background: rgba(248, 81, 73, 0.16);
+		color: var(--bad);
 	}
 	.grid {
 		display: grid;

@@ -8,6 +8,13 @@
 
 	type SortKey = 'score-desc' | 'score-asc' | 'posted-desc' | 'ingested-desc' | 'title-asc';
 	type StatusFilter = ApplicationStatus | 'none';
+	type Ease = 'easy' | 'med' | 'hard';
+
+	const EASE_FILTERS: { key: Ease; label: string }[] = [
+		{ key: 'easy', label: 'easy' },
+		{ key: 'med', label: 'medium' },
+		{ key: 'hard', label: 'hard' }
+	];
 
 	const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
 		{ key: 'none', label: 'unset' },
@@ -29,6 +36,8 @@
 
 	let sortBy = $state<SortKey>('score-desc');
 	let activeStatuses = $state<Set<StatusFilter>>(new Set());
+	let activeEases = $state<Set<Ease>>(new Set());
+	let activeSources = $state<Set<string>>(new Set());
 	let unscoredOnly = $state(false);
 	let minScoreInput = $state('');
 	let selected = $state<Set<number>>(new Set());
@@ -67,6 +76,20 @@
 		return 'low';
 	}
 
+	const SOURCE_META: Record<string, { label: string; ease: Ease }> = {
+		greenhouse: { label: 'Greenhouse', ease: 'easy' },
+		lever: { label: 'Lever', ease: 'easy' },
+		ashby: { label: 'Ashby', ease: 'easy' },
+		remoteok: { label: 'RemoteOK', ease: 'med' },
+		weworkremotely: { label: 'WWR', ease: 'med' },
+		workday: { label: 'Workday', ease: 'hard' },
+		hackernews: { label: 'HN', ease: 'med' }
+	};
+
+	function sourceInfo(source: string): { label: string; ease: Ease } {
+		return SOURCE_META[source] ?? { label: source, ease: 'med' };
+	}
+
 	function jobStatusKey(job: Job): StatusFilter {
 		return job.application?.status ?? 'none';
 	}
@@ -78,8 +101,24 @@
 		activeStatuses = next;
 	}
 
+	function toggleEase(key: Ease) {
+		const next = new Set(activeEases);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		activeEases = next;
+	}
+
+	function toggleSource(key: string) {
+		const next = new Set(activeSources);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		activeSources = next;
+	}
+
 	function clearFilters() {
 		activeStatuses = new Set();
+		activeEases = new Set();
+		activeSources = new Set();
 		unscoredOnly = false;
 		minScoreInput = '';
 	}
@@ -93,6 +132,12 @@
 		let list = data.jobs.slice();
 		if (activeStatuses.size > 0) {
 			list = list.filter((j) => activeStatuses.has(jobStatusKey(j)));
+		}
+		if (activeEases.size > 0) {
+			list = list.filter((j) => activeEases.has(sourceInfo(j.source).ease));
+		}
+		if (activeSources.size > 0) {
+			list = list.filter((j) => activeSources.has(j.source));
 		}
 		if (unscoredOnly) {
 			list = list.filter((j) => j.score == null);
@@ -146,6 +191,16 @@
 	function statusCount(key: StatusFilter): number {
 		return data.jobs.filter((j) => jobStatusKey(j) === key).length;
 	}
+
+	function easeCount(key: Ease): number {
+		return data.jobs.filter((j) => sourceInfo(j.source).ease === key).length;
+	}
+
+	function sourceCount(key: string): number {
+		return data.jobs.filter((j) => j.source === key).length;
+	}
+
+	const SOURCE_FILTERS = Object.keys(SOURCE_META);
 </script>
 
 <section class="header-row">
@@ -187,26 +242,72 @@
 			Unscored only
 		</label>
 
-		{#if activeStatuses.size > 0 || unscoredOnly || minScoreInput !== ''}
+		{#if activeStatuses.size > 0 || activeEases.size > 0 || activeSources.size > 0 || unscoredOnly || minScoreInput !== ''}
 			<button type="button" class="clear" onclick={clearFilters}>Clear filters</button>
 		{/if}
 	</div>
 
-	<div class="chips">
-		{#each STATUS_FILTERS as f (f.key)}
-			{@const n = statusCount(f.key)}
-			{#if n > 0}
-				<button
-					type="button"
-					class="chip"
-					class:active={activeStatuses.has(f.key)}
-					onclick={() => toggleStatus(f.key)}
-				>
-					{f.label}
-					<span class="chip-count">{n}</span>
-				</button>
-			{/if}
-		{/each}
+	<div class="chips-row">
+		<span class="chips-label">Ease</span>
+		<div class="chips">
+			{#each EASE_FILTERS as f (f.key)}
+				{@const n = easeCount(f.key)}
+				{#if n > 0}
+					<button
+						type="button"
+						class="chip"
+						data-ease={f.key}
+						class:active={activeEases.has(f.key)}
+						onclick={() => toggleEase(f.key)}
+					>
+						{f.label}
+						<span class="chip-count">{n}</span>
+					</button>
+				{/if}
+			{/each}
+		</div>
+	</div>
+
+	<div class="chips-row">
+		<span class="chips-label">Source</span>
+		<div class="chips">
+			{#each SOURCE_FILTERS as key (key)}
+				{@const n = sourceCount(key)}
+				{#if n > 0}
+					{@const meta = SOURCE_META[key]}
+					<button
+						type="button"
+						class="chip"
+						data-ease={meta.ease}
+						class:active={activeSources.has(key)}
+						onclick={() => toggleSource(key)}
+					>
+						{meta.label}
+						<span class="chip-count">{n}</span>
+					</button>
+				{/if}
+			{/each}
+		</div>
+	</div>
+
+	<div class="chips-row">
+		<span class="chips-label">Status</span>
+		<div class="chips">
+			{#each STATUS_FILTERS as f (f.key)}
+				{@const n = statusCount(f.key)}
+				{#if n > 0}
+					<button
+						type="button"
+						class="chip"
+						class:active={activeStatuses.has(f.key)}
+						onclick={() => toggleStatus(f.key)}
+					>
+						{f.label}
+						<span class="chip-count">{n}</span>
+					</button>
+				{/if}
+			{/each}
+		</div>
 	</div>
 </section>
 
@@ -231,6 +332,7 @@
 
 	<ul class="jobs">
 		{#each visible as job (job.id)}
+			{@const si = sourceInfo(job.source)}
 			<li class="row" class:selected={selected.has(job.id)}>
 				<label class="check-cell" aria-label="select job">
 					<input
@@ -246,6 +348,18 @@
 					<span class="main">
 						<span class="title">{job.title}</span>
 						<span class="meta">
+							{#if job.application}
+								<span class="status status-{job.application.status}">
+									{job.application.status}
+								</span>
+							{/if}
+							<span
+								class="source"
+								data-ease={si.ease}
+								title="Apply friction: {si.ease}"
+							>
+								{si.label}
+							</span>
 							<span class="company">{job.company?.name ?? 'Unknown'}</span>
 							{#if job.location}
 								<span class="dot">·</span><span>{job.location}</span>
@@ -259,12 +373,6 @@
 								{/if}
 								· ingested {relTime(job.ingested_at)}
 							</span>
-							{#if job.application}
-								<span class="dot">·</span>
-								<span class="status status-{job.application.status}">
-									{job.application.status}
-								</span>
-							{/if}
 						</span>
 						{#if job.filter_reason}
 							<span class="reason">{job.filter_reason}</span>
@@ -380,6 +488,19 @@
 		color: var(--fg);
 		border-color: var(--accent);
 	}
+	.chips-row {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+	}
+	.chips-label {
+		font-size: 0.75rem;
+		color: var(--muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		min-width: 3.5rem;
+	}
 	.chips {
 		display: flex;
 		flex-wrap: wrap;
@@ -404,6 +525,21 @@
 		background: rgba(88, 166, 255, 0.18);
 		color: var(--accent);
 		border-color: var(--accent);
+	}
+	.chip[data-ease='easy'].active {
+		background: rgba(46, 160, 67, 0.2);
+		color: var(--ok);
+		border-color: var(--ok);
+	}
+	.chip[data-ease='med'].active {
+		background: rgba(210, 153, 34, 0.2);
+		color: var(--warn);
+		border-color: var(--warn);
+	}
+	.chip[data-ease='hard'].active {
+		background: rgba(248, 81, 73, 0.18);
+		color: var(--bad);
+		border-color: var(--bad);
 	}
 	.chip-count {
 		font-variant-numeric: tabular-nums;
@@ -534,6 +670,28 @@
 		padding: 0.1rem 0.4rem;
 		border-radius: 4px;
 		background: #20262d;
+	}
+	.source {
+		font-size: 0.7rem;
+		letter-spacing: 0.02em;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: #20262d;
+		color: var(--muted);
+		border: 1px solid transparent;
+		font-variant-numeric: tabular-nums;
+	}
+	.source[data-ease='easy'] {
+		background: rgba(46, 160, 67, 0.18);
+		color: var(--ok);
+	}
+	.source[data-ease='med'] {
+		background: rgba(210, 153, 34, 0.18);
+		color: var(--warn);
+	}
+	.source[data-ease='hard'] {
+		background: rgba(248, 81, 73, 0.16);
+		color: var(--bad);
 	}
 	.status-applied {
 		background: rgba(46, 160, 67, 0.2);
