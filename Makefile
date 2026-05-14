@@ -1,4 +1,4 @@
-.PHONY: setup api web dev ingest prune clean lint test test-api test-web help
+.PHONY: setup api web dev ingest prune dedupe-jd clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies
 	uv sync
@@ -19,6 +19,9 @@ ingest: ## Pull jobs from configured sources
 
 prune: ## Lighten old/archived postings (clears description + raw, keeps dedupe hashes)
 	uv run job-applier prune
+
+dedupe-jd: ## Backfill JD SimHash fingerprints and soft-link near-duplicate postings
+	uv run job-applier dedupe-jd
 
 refresh-slugs: ## Discover new Greenhouse/Lever slugs from the SimplifyJobs feed
 	uv run job-applier refresh-slugs
