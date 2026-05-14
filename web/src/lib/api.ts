@@ -30,6 +30,7 @@ export interface Score {
 	scored_at: string;
 	resume_id?: number | null;
 	resume_filename?: string | null;
+	score_kind: 'baseline' | 'tailored';
 }
 
 export interface Application {

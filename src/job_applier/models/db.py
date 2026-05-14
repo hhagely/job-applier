@@ -86,6 +86,7 @@ class MatchScore(SQLModel, table=True):
     scored_by: str = "claude-code"
     scored_at: datetime = Field(default_factory=_utcnow)
     resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")
+    score_kind: str = Field(default="baseline", index=True)
 
     job: Optional[JobPosting] = Relationship(back_populates="score")
 
@@ -100,6 +101,7 @@ class MatchScoreHistory(SQLModel, table=True):
     scored_by: str = "claude-code"
     scored_at: datetime = Field(default_factory=_utcnow)
     resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")
+    score_kind: str = Field(default="baseline", index=True)
 
 
 class Application(SQLModel, table=True):
@@ -161,6 +163,7 @@ def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine())
     _ensure_cross_source_hash_column()
     _ensure_matchscore_resume_id_column()
+    _ensure_score_kind_columns()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -188,6 +191,22 @@ def _ensure_matchscore_resume_id_column() -> None:
         if "resume_id" not in cols:
             conn.exec_driver_sql("ALTER TABLE matchscore ADD COLUMN resume_id INTEGER")
             conn.commit()
+
+
+def _ensure_score_kind_columns() -> None:
+    with engine().connect() as conn:
+        for table in ("matchscore", "matchscorehistory"):
+            cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            if "score_kind" not in cols:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN score_kind VARCHAR "
+                    "DEFAULT 'baseline'"
+                )
+                conn.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS ix_{table}_score_kind "
+                    f"ON {table} (score_kind)"
+                )
+        conn.commit()
 
 
 def get_session() -> Iterator[Session]:

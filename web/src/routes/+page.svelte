@@ -382,6 +382,12 @@
 									onclick={(e) => e.stopPropagation()}
 									onkeydown={(e) => e.key === 'Escape' && closeRubric()}
 								>
+									<p class="rubric-head">
+										<span class="rubric-score">{job.score.score}/100</span>
+										<span class="kind" data-kind={job.score.score_kind}>
+											{job.score.score_kind}
+										</span>
+									</p>
 									{#if entries.length === 0}
 										<p class="rubric-empty">No rubric recorded.</p>
 									{:else}
@@ -747,6 +753,36 @@
 	.rubric-empty {
 		margin: 0;
 		color: var(--muted);
+	}
+	.rubric-head {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin: 0 0 0.45rem;
+		padding-bottom: 0.4rem;
+		border-bottom: 1px solid var(--panel-border);
+	}
+	.rubric-score {
+		font-weight: 600;
+		color: var(--fg);
+		font-variant-numeric: tabular-nums;
+	}
+	.kind {
+		font-size: 0.7rem;
+		letter-spacing: 0.02em;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: #20262d;
+		color: var(--muted);
+		text-transform: lowercase;
+	}
+	.kind[data-kind='tailored'] {
+		background: rgba(88, 166, 255, 0.18);
+		color: var(--accent);
+	}
+	.kind[data-kind='baseline'] {
+		background: rgba(210, 153, 34, 0.18);
+		color: var(--warn);
 	}
 	.score-pill[data-score='high'] {
 		background: rgba(46, 160, 67, 0.2);
