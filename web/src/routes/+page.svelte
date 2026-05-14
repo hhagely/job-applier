@@ -884,12 +884,12 @@
 		color: var(--ok);
 	}
 	.status-screening {
-		background: rgba(210, 153, 34, 0.2);
-		color: var(--warn);
+		background: rgba(163, 113, 247, 0.22);
+		color: #d2a8ff;
 	}
 	.status-interviewing {
-		background: rgba(88, 166, 255, 0.18);
-		color: var(--accent);
+		background: rgba(57, 208, 216, 0.18);
+		color: #56d4dd;
 	}
 	.followup-chip {
 		font-size: 0.7rem;
