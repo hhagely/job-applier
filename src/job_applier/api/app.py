@@ -30,6 +30,7 @@ from job_applier.models.db import (
     FilterStatus,
     JobPosting,
     MatchScore,
+    MatchScoreHistory,
     Resume,
     create_db_and_tables,
     get_session,
@@ -57,12 +58,17 @@ def _company_out(c: Optional[Company]) -> Optional[CompanyOut]:
     return CompanyOut(id=c.id, name=c.name, domain=c.domain, is_blocked=c.is_blocked, notes=c.notes)
 
 
-def _score_out(s: Optional[MatchScore]) -> Optional[ScoreOut]:
+def _score_out(
+    s: Optional[MatchScore | MatchScoreHistory],
+    *,
+    resume_filename: Optional[str] = None,
+) -> Optional[ScoreOut]:
     if s is None:
         return None
     return ScoreOut(
         score=s.score, rubric=s.rubric, reasoning=s.reasoning,
         scored_by=s.scored_by, scored_at=s.scored_at,
+        resume_id=s.resume_id, resume_filename=resume_filename,
     )
 
 
@@ -74,7 +80,17 @@ def _application_out(a: Optional[Application]) -> Optional[ApplicationOut]:
     )
 
 
-def _job_summary(j: JobPosting) -> JobOut:
+def _resume_filename_map(session: Session) -> dict[int, str]:
+    rows = session.exec(select(Resume.id, Resume.original_filename)).all()
+    return {rid: name for rid, name in rows}
+
+
+def _job_summary(j: JobPosting, resume_names: dict[int, str]) -> JobOut:
+    score_filename = (
+        resume_names.get(j.score.resume_id)
+        if j.score and j.score.resume_id is not None
+        else None
+    )
     return JobOut(
         id=j.id,
         source=j.source,
@@ -88,7 +104,7 @@ def _job_summary(j: JobPosting) -> JobOut:
         filter_status=j.filter_status,
         filter_reason=j.filter_reason,
         company=_company_out(j.company),
-        score=_score_out(j.score),
+        score=_score_out(j.score, resume_filename=score_filename),
         application=_application_out(j.application),
     )
 
@@ -117,7 +133,8 @@ def list_jobs(
     if unscored_only:
         jobs = [j for j in jobs if j.score is None]
 
-    return [_job_summary(j) for j in jobs]
+    resume_names = _resume_filename_map(session)
+    return [_job_summary(j, resume_names) for j in jobs]
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobDetail)
@@ -125,7 +142,7 @@ def get_job(job_id: int, session: Session = Depends(get_session)):
     job = session.get(JobPosting, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
-    summary = _job_summary(job)
+    summary = _job_summary(job, _resume_filename_map(session))
     return JobDetail(**summary.model_dump(), description=job.description)
 
 
@@ -217,16 +234,57 @@ def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_sess
     if not 0 <= body.score <= 100:
         raise HTTPException(422, "score must be 0-100")
 
-    score = job.score or MatchScore(job_id=job_id)
+    existing = job.score
+    if existing is not None:
+        session.add(
+            MatchScoreHistory(
+                job_id=existing.job_id,
+                score=existing.score,
+                rubric=existing.rubric,
+                reasoning=existing.reasoning,
+                scored_by=existing.scored_by,
+                scored_at=existing.scored_at,
+                resume_id=existing.resume_id,
+            )
+        )
+
+    active_resume = session.exec(
+        select(Resume).where(Resume.is_active == True)  # noqa: E712
+    ).first()
+
+    score = existing or MatchScore(job_id=job_id)
     score.score = body.score
     score.rubric = body.rubric
     score.reasoning = body.reasoning
     score.scored_by = body.scored_by
     score.scored_at = datetime.now(timezone.utc)
+    score.resume_id = active_resume.id if active_resume else None
     session.add(score)
     session.commit()
     session.refresh(score)
-    return _score_out(score)
+    resume_filename = active_resume.original_filename if active_resume else None
+    return _score_out(score, resume_filename=resume_filename)
+
+
+@app.get("/api/jobs/{job_id}/score-history", response_model=list[ScoreOut])
+def list_score_history(job_id: int, session: Session = Depends(get_session)):
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    rows = session.exec(
+        select(MatchScoreHistory)
+        .where(MatchScoreHistory.job_id == job_id)
+        .order_by(MatchScoreHistory.scored_at.desc())
+    ).all()
+    resume_names = _resume_filename_map(session)
+    return [
+        _score_out(
+            r,
+            resume_filename=(
+                resume_names.get(r.resume_id) if r.resume_id is not None else None
+            ),
+        )
+        for r in rows
+    ]
 
 
 @app.get("/api/companies", response_model=list[CompanyOut])

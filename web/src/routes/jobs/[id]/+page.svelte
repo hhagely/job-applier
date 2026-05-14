@@ -15,6 +15,7 @@
 
 	let job = $derived(data.job);
 	let draft = $derived(data.draft);
+	let scoreHistory = $derived(data.scoreHistory);
 
 	function fmtUpdated(iso: string | null | undefined): string {
 		if (!iso) return '';
@@ -61,6 +62,13 @@
 		<h2>Match score</h2>
 		{#if job.score}
 			<div class="score-big">{job.score.score}<span>/100</span></div>
+			<p class="score-meta">
+				<span>{fmtUpdated(job.score.scored_at)}</span>
+				{#if job.score.resume_filename}
+					<span class="dot">·</span>
+					<span class="resume">{job.score.resume_filename}</span>
+				{/if}
+			</p>
 			{#if job.score.reasoning}
 				<p class="reasoning">{job.score.reasoning}</p>
 			{/if}
@@ -68,6 +76,34 @@
 				<details>
 					<summary>Rubric breakdown</summary>
 					<pre>{JSON.stringify(job.score.rubric, null, 2)}</pre>
+				</details>
+			{/if}
+			{#if scoreHistory.length > 0}
+				<details class="history">
+					<summary>Previous scores ({scoreHistory.length})</summary>
+					<ul class="history-list">
+						{#each scoreHistory as h, i (i)}
+							<li>
+								<details>
+									<summary>
+										<span class="h-score">{h.score}/100</span>
+										<span class="dot">·</span>
+										<span>{fmtUpdated(h.scored_at)}</span>
+										{#if h.resume_filename}
+											<span class="dot">·</span>
+											<span class="resume">{h.resume_filename}</span>
+										{/if}
+									</summary>
+									{#if h.reasoning}
+										<p class="reasoning">{h.reasoning}</p>
+									{/if}
+									{#if h.rubric && Object.keys(h.rubric).length > 0}
+										<pre>{JSON.stringify(h.rubric, null, 2)}</pre>
+									{/if}
+								</details>
+							</li>
+						{/each}
+					</ul>
 				</details>
 			{/if}
 		{:else}
@@ -223,6 +259,55 @@
 	.reasoning {
 		color: var(--fg);
 		margin-top: 0.5rem;
+	}
+	.score-meta {
+		color: var(--muted);
+		font-size: 0.8rem;
+		margin: 0.2rem 0 0.5rem;
+		display: flex;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+	}
+	.score-meta .dot {
+		color: var(--panel-border);
+	}
+	.resume {
+		font-family: ui-monospace, monospace;
+	}
+	.history {
+		margin-top: 0.75rem;
+	}
+	.history > summary {
+		color: var(--muted);
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.history-list {
+		list-style: none;
+		padding: 0;
+		margin: 0.5rem 0 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.history-list li {
+		border: 1px solid var(--panel-border);
+		border-radius: 6px;
+		padding: 0.4rem 0.6rem;
+	}
+	.history-list summary {
+		cursor: pointer;
+		font-size: 0.85rem;
+		color: var(--muted);
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.h-score {
+		font-weight: 600;
+		color: var(--fg);
+		font-variant-numeric: tabular-nums;
 	}
 	.muted {
 		color: var(--muted);

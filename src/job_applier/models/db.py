@@ -85,8 +85,21 @@ class MatchScore(SQLModel, table=True):
     reasoning: Optional[str] = None
     scored_by: str = "claude-code"
     scored_at: datetime = Field(default_factory=_utcnow)
+    resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")
 
     job: Optional[JobPosting] = Relationship(back_populates="score")
+
+
+class MatchScoreHistory(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="jobposting.id", index=True)
+
+    score: int
+    rubric: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    reasoning: Optional[str] = None
+    scored_by: str = "claude-code"
+    scored_at: datetime = Field(default_factory=_utcnow)
+    resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")
 
 
 class Application(SQLModel, table=True):
@@ -147,6 +160,7 @@ def engine():
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine())
     _ensure_cross_source_hash_column()
+    _ensure_matchscore_resume_id_column()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -165,6 +179,14 @@ def _ensure_cross_source_hash_column() -> None:
                 "CREATE INDEX IF NOT EXISTS ix_jobposting_cross_source_hash "
                 "ON jobposting (cross_source_hash)"
             )
+            conn.commit()
+
+
+def _ensure_matchscore_resume_id_column() -> None:
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(matchscore)")}
+        if "resume_id" not in cols:
+            conn.exec_driver_sql("ALTER TABLE matchscore ADD COLUMN resume_id INTEGER")
             conn.commit()
 
 
