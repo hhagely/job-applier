@@ -63,6 +63,8 @@
 		{#if job.score}
 			<div class="score-big">{job.score.score}<span>/100</span></div>
 			<p class="score-meta">
+				<span class="kind" data-kind={job.score.score_kind}>{job.score.score_kind}</span>
+				<span class="dot">·</span>
 				<span>{fmtUpdated(job.score.scored_at)}</span>
 				{#if job.score.resume_filename}
 					<span class="dot">·</span>
@@ -87,6 +89,7 @@
 								<details>
 									<summary>
 										<span class="h-score">{h.score}/100</span>
+										<span class="kind" data-kind={h.score_kind}>{h.score_kind}</span>
 										<span class="dot">·</span>
 										<span>{fmtUpdated(h.scored_at)}</span>
 										{#if h.resume_filename}
@@ -270,6 +273,23 @@
 	}
 	.score-meta .dot {
 		color: var(--panel-border);
+	}
+	.kind {
+		font-size: 0.7rem;
+		letter-spacing: 0.02em;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: #20262d;
+		color: var(--muted);
+		text-transform: lowercase;
+	}
+	.kind[data-kind='tailored'] {
+		background: rgba(88, 166, 255, 0.18);
+		color: var(--accent);
+	}
+	.kind[data-kind='baseline'] {
+		background: rgba(210, 153, 34, 0.18);
+		color: var(--warn);
 	}
 	.resume {
 		font-family: ui-monospace, monospace;

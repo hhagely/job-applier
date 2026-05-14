@@ -124,3 +124,56 @@ def test_score_without_active_resume_records_none(client):
     assert res.status_code == 200
     assert res.json()["resume_id"] is None
     assert res.json()["resume_filename"] is None
+
+
+def test_default_score_kind_is_baseline(client):
+    c, engine = client
+    job_id = _seed_job(engine)
+    _seed_resume(engine, filename="v1.pdf", active=True)
+
+    res = c.post(f"/api/jobs/{job_id}/score", json={"score": 70, "rubric": {}})
+    assert res.status_code == 200
+    assert res.json()["score_kind"] == "baseline"
+
+
+def test_tailored_score_records_kind_and_null_resume(client):
+    c, engine = client
+    job_id = _seed_job(engine)
+    _seed_resume(engine, filename="v1.pdf", active=True)
+
+    res = c.post(
+        f"/api/jobs/{job_id}/score",
+        json={"score": 80, "rubric": {}, "score_kind": "tailored"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["score_kind"] == "tailored"
+    assert body["resume_id"] is None
+    assert body["resume_filename"] is None
+
+
+def test_history_preserves_prior_score_kind(client):
+    c, engine = client
+    job_id = _seed_job(engine)
+    _seed_resume(engine, filename="v1.pdf", active=True)
+
+    c.post(f"/api/jobs/{job_id}/score", json={"score": 60, "rubric": {}})
+    c.post(
+        f"/api/jobs/{job_id}/score",
+        json={"score": 85, "rubric": {}, "score_kind": "tailored"},
+    )
+
+    history = c.get(f"/api/jobs/{job_id}/score-history").json()
+    assert len(history) == 1
+    assert history[0]["score_kind"] == "baseline"
+    assert history[0]["score"] == 60
+
+
+def test_rejects_unknown_score_kind(client):
+    c, engine = client
+    job_id = _seed_job(engine)
+    res = c.post(
+        f"/api/jobs/{job_id}/score",
+        json={"score": 50, "rubric": {}, "score_kind": "bogus"},
+    )
+    assert res.status_code == 422

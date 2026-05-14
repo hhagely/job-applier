@@ -264,9 +264,23 @@ Category order should lead with the JD's priorities.
      -d '{"status":"drafted"}'
    ```
 
-10. **After all jobs are processed, report once** with one block per job:
+10. **Score the tailored draft**. Immediately after saving the draft for this
+    job, invoke `/score-draft <id>` for that same id and wait for it to
+    complete before moving on. The score it writes feeds into this job's line
+    in the final report. If `/score-draft` errors or skips for this job
+    (e.g. the save somehow produced no markdown), record `tailored: —` for
+    that job and continue.
+
+11. **After all jobs are processed, report once** with one block per job:
     - Job id + title + company.
     - One sentence summarizing how you tailored it (what you led with).
+    - **Score**: one line in the form `Score: <baseline> → <tailored>`.
+      - Pull `<baseline>` from `GET /api/jobs/<id>/score-history` (most-recent
+        entry — that's the row snapshotted when `/score-draft` overwrote the
+        active score). If history is empty (the job was never scored before
+        drafting), use `—`.
+      - Pull `<tailored>` from `GET /api/jobs/<id>` (the current active
+        `score`). If `/score-draft` errored or skipped, use `—`.
     - **ATS keywords mirrored**: short comma-separated list of the JD's hard
       terms that made it into Skills + bullets verbatim.
     - **JD asks the resume doesn't support**: anything in the JD the resume

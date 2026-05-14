@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -22,6 +22,7 @@ class ScoreOut(BaseModel):
     scored_at: datetime
     resume_id: Optional[int] = None
     resume_filename: Optional[str] = None
+    score_kind: str = "baseline"
 
 
 class ApplicationOut(BaseModel):
@@ -71,6 +72,7 @@ class ScoreIn(BaseModel):
     rubric: dict = {}
     reasoning: Optional[str] = None
     scored_by: str = "claude-code"
+    score_kind: Literal["baseline", "tailored"] = "baseline"
 
 
 class PendingMatchJob(BaseModel):

@@ -69,6 +69,7 @@ def _score_out(
         score=s.score, rubric=s.rubric, reasoning=s.reasoning,
         scored_by=s.scored_by, scored_at=s.scored_at,
         resume_id=s.resume_id, resume_filename=resume_filename,
+        score_kind=s.score_kind,
     )
 
 
@@ -245,6 +246,7 @@ def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_sess
                 scored_by=existing.scored_by,
                 scored_at=existing.scored_at,
                 resume_id=existing.resume_id,
+                score_kind=existing.score_kind,
             )
         )
 
@@ -258,11 +260,19 @@ def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_sess
     score.reasoning = body.reasoning
     score.scored_by = body.scored_by
     score.scored_at = datetime.now(timezone.utc)
-    score.resume_id = active_resume.id if active_resume else None
+    score.score_kind = body.score_kind
+    # Tailored scores are scored against a per-job draft, not a Resume row.
+    score.resume_id = (
+        active_resume.id if active_resume and body.score_kind == "baseline" else None
+    )
     session.add(score)
     session.commit()
     session.refresh(score)
-    resume_filename = active_resume.original_filename if active_resume else None
+    resume_filename = (
+        active_resume.original_filename
+        if active_resume and score.resume_id is not None
+        else None
+    )
     return _score_out(score, resume_filename=resume_filename)
 
 
