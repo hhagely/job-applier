@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
@@ -13,6 +13,7 @@ from job_applier.api.schemas import (
     CompanyOut,
     DraftIn,
     DraftOut,
+    FollowupUpdate,
     JobDetail,
     JobOut,
     NotesUpdate,
@@ -77,7 +78,13 @@ def _application_out(a: Optional[Application]) -> Optional[ApplicationOut]:
     if a is None:
         return None
     return ApplicationOut(
-        status=a.status, notes=a.notes, applied_at=a.applied_at, updated_at=a.updated_at,
+        status=a.status,
+        notes=a.notes,
+        applied_at=a.applied_at,
+        updated_at=a.updated_at,
+        next_followup_at=a.next_followup_at,
+        last_contact_at=a.last_contact_at,
+        outcome=a.outcome,
     )
 
 
@@ -147,6 +154,40 @@ def get_job(job_id: int, session: Session = Depends(get_session)):
     return JobDetail(**summary.model_dump(), description=job.description)
 
 
+def _apply_status_transition(
+    app_row: Application,
+    *,
+    new_status: ApplicationStatus,
+    now: datetime,
+    next_followup_at: Optional[datetime],
+    last_contact_at: Optional[datetime],
+    outcome: Optional[str],
+) -> None:
+    """Mutate ``app_row`` for a status change, defaulting the follow-up date.
+
+    When transitioning into ``applied`` and the client didn't supply a
+    ``next_followup_at``, fall back to ``applied_at + followup_default_days``.
+    """
+    app_row.status = new_status
+    if new_status == ApplicationStatus.applied and app_row.applied_at is None:
+        app_row.applied_at = now
+    if next_followup_at is not None:
+        app_row.next_followup_at = next_followup_at
+    elif (
+        new_status == ApplicationStatus.applied
+        and app_row.next_followup_at is None
+        and app_row.applied_at is not None
+    ):
+        app_row.next_followup_at = app_row.applied_at + timedelta(
+            days=settings.followup_default_days
+        )
+    if last_contact_at is not None:
+        app_row.last_contact_at = last_contact_at
+    if outcome is not None:
+        app_row.outcome = outcome
+    app_row.updated_at = now
+
+
 @app.patch("/api/jobs/{job_id}/status", response_model=ApplicationOut)
 def set_status(job_id: int, body: StatusUpdate, session: Session = Depends(get_session)):
     job = session.get(JobPosting, job_id)
@@ -154,12 +195,16 @@ def set_status(job_id: int, body: StatusUpdate, session: Session = Depends(get_s
         raise HTTPException(404, "job not found")
 
     app_row = job.application or Application(job_id=job_id)
-    app_row.status = body.status
     if body.notes is not None:
         app_row.notes = body.notes
-    if body.status == ApplicationStatus.applied and app_row.applied_at is None:
-        app_row.applied_at = datetime.now(timezone.utc)
-    app_row.updated_at = datetime.now(timezone.utc)
+    _apply_status_transition(
+        app_row,
+        new_status=body.status,
+        now=datetime.now(timezone.utc),
+        next_followup_at=body.next_followup_at,
+        last_contact_at=body.last_contact_at,
+        outcome=body.outcome,
+    )
     session.add(app_row)
     session.commit()
     session.refresh(app_row)
@@ -177,14 +222,64 @@ def set_status_bulk(body: BulkStatusUpdate, session: Session = Depends(get_sessi
         if job is None:
             raise HTTPException(404, f"job {job_id} not found")
         app_row = job.application or Application(job_id=job_id)
-        app_row.status = body.status
-        if body.status == ApplicationStatus.applied and app_row.applied_at is None:
-            app_row.applied_at = now
-        app_row.updated_at = now
+        _apply_status_transition(
+            app_row,
+            new_status=body.status,
+            now=now,
+            next_followup_at=body.next_followup_at,
+            last_contact_at=body.last_contact_at,
+            outcome=body.outcome,
+        )
         session.add(app_row)
         results.append(app_row)
     session.commit()
     return [_application_out(a) for a in results]
+
+
+@app.get("/api/followups", response_model=list[JobOut])
+def list_followups(session: Session = Depends(get_session)):
+    """Applications past their follow-up date without an outcome recorded yet.
+
+    Ordered by most-overdue first.
+    """
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(JobPosting)
+        .join(Application, Application.job_id == JobPosting.id)
+        .where(Application.status == ApplicationStatus.applied)
+        .where(Application.outcome.is_(None))
+        .where(Application.next_followup_at.is_not(None))
+        .where(Application.next_followup_at <= now)
+    )
+    jobs = list(session.exec(stmt).all())
+    jobs.sort(key=lambda j: j.application.next_followup_at)
+    resume_names = _resume_filename_map(session)
+    return [_job_summary(j, resume_names) for j in jobs]
+
+
+@app.post("/api/jobs/{job_id}/followup", response_model=ApplicationOut)
+def set_followup(
+    job_id: int, body: FollowupUpdate, session: Session = Depends(get_session)
+):
+    job = session.get(JobPosting, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    app_row = job.application
+    if app_row is None:
+        raise HTTPException(
+            409, "no application row yet — set a status before recording follow-ups"
+        )
+    if body.next_followup_at is not None:
+        app_row.next_followup_at = body.next_followup_at
+    if body.last_contact_at is not None:
+        app_row.last_contact_at = body.last_contact_at
+    if body.outcome is not None:
+        app_row.outcome = body.outcome
+    app_row.updated_at = datetime.now(timezone.utc)
+    session.add(app_row)
+    session.commit()
+    session.refresh(app_row)
+    return _application_out(app_row)
 
 
 @app.post("/api/jobs/{job_id}/notes", response_model=ApplicationOut)

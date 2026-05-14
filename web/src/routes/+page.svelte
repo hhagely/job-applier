@@ -218,6 +218,20 @@
 		if (!rubric) return [];
 		return Object.entries(rubric);
 	}
+
+	function isFollowupDue(job: Job): boolean {
+		const due = job.application?.next_followup_at;
+		if (!due) return false;
+		if (job.application?.outcome) return false;
+		return new Date(due).getTime() <= Date.now();
+	}
+
+	function defaultFollowupDate(): string {
+		const d = new Date(Date.now() + 7 * 86_400_000);
+		return d.toISOString().slice(0, 10);
+	}
+
+	let followupDate = $state<string>(defaultFollowupDate());
 </script>
 
 <svelte:window onclick={closeRubric} />
@@ -423,6 +437,9 @@
 									{job.application.status}
 								</span>
 							{/if}
+							{#if isFollowupDue(job)}
+								<span class="followup-chip" title="Follow-up due">⏰ follow-up due</span>
+							{/if}
 							<span
 								class="source"
 								data-ease={si.ease}
@@ -485,6 +502,12 @@
 				{/each}
 			</select>
 		</label>
+		{#if bulkStatus === 'applied'}
+			<label class="action-status">
+				Follow up
+				<input type="date" name="next_followup_at" bind:value={followupDate} />
+			</label>
+		{/if}
 		<button type="submit" class="action-apply" disabled={submitting}>
 			{submitting ? 'Applying…' : 'Apply'}
 		</button>
@@ -855,6 +878,14 @@
 	.status-applied {
 		background: rgba(46, 160, 67, 0.2);
 		color: var(--ok);
+	}
+	.followup-chip {
+		font-size: 0.7rem;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: rgba(210, 153, 34, 0.2);
+		color: var(--warn);
+		letter-spacing: 0.02em;
 	}
 	.status-rejected {
 		background: rgba(248, 81, 73, 0.18);

@@ -113,6 +113,10 @@ class Application(SQLModel, table=True):
     applied_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=_utcnow)
 
+    next_followup_at: Optional[datetime] = None
+    last_contact_at: Optional[datetime] = None
+    outcome: Optional[str] = None
+
     job: Optional[JobPosting] = Relationship(back_populates="application")
 
 
@@ -164,6 +168,7 @@ def create_db_and_tables() -> None:
     _ensure_cross_source_hash_column()
     _ensure_matchscore_resume_id_column()
     _ensure_score_kind_columns()
+    _ensure_application_followup_columns()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -207,6 +212,23 @@ def _ensure_score_kind_columns() -> None:
                     f"ON {table} (score_kind)"
                 )
         conn.commit()
+
+
+def _ensure_application_followup_columns() -> None:
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(application)")}
+        added = False
+        if "next_followup_at" not in cols:
+            conn.exec_driver_sql("ALTER TABLE application ADD COLUMN next_followup_at DATETIME")
+            added = True
+        if "last_contact_at" not in cols:
+            conn.exec_driver_sql("ALTER TABLE application ADD COLUMN last_contact_at DATETIME")
+            added = True
+        if "outcome" not in cols:
+            conn.exec_driver_sql("ALTER TABLE application ADD COLUMN outcome VARCHAR")
+            added = True
+        if added:
+            conn.commit()
 
 
 def get_session() -> Iterator[Session]:

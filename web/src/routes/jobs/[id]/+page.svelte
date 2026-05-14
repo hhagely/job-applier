@@ -38,6 +38,23 @@
 	}
 
 	let si = $derived(sourceInfo(job.source));
+
+	function defaultFollowupDate(): string {
+		return new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+	}
+
+	function followupDefault(): string {
+		const existing = job.application?.next_followup_at;
+		if (existing) return new Date(existing).toISOString().slice(0, 10);
+		return defaultFollowupDate();
+	}
+
+	let pendingStatus = $state<ApplicationStatus>('new');
+	let followupInput = $state<string>('');
+	$effect(() => {
+		pendingStatus = job.application?.status ?? 'new';
+		followupInput = followupDefault();
+	});
 </script>
 
 <a href="/" class="back">← back to queue</a>
@@ -119,13 +136,27 @@
 	<div class="panel">
 		<h2>Status</h2>
 		<form method="POST" action="?/setStatus" class="status-form">
-			<select name="status" value={job.application?.status ?? 'new'}>
+			<select name="status" bind:value={pendingStatus}>
 				{#each statuses as s}
 					<option value={s}>{s}</option>
 				{/each}
 			</select>
+			{#if pendingStatus === 'applied'}
+				<input type="date" name="next_followup_at" bind:value={followupInput} />
+			{/if}
 			<button type="submit">Update</button>
 		</form>
+		{#if job.application?.next_followup_at}
+			<p class="followup-meta">
+				Next follow-up: {new Date(job.application.next_followup_at).toLocaleDateString()}
+				{#if job.application.last_contact_at}
+					· last contact {new Date(job.application.last_contact_at).toLocaleDateString()}
+				{/if}
+				{#if job.application.outcome}
+					· outcome: <strong>{job.application.outcome}</strong>
+				{/if}
+			</p>
+		{/if}
 
 		<h3>Notes</h3>
 		<form method="POST" action="?/setNotes">
@@ -335,6 +366,13 @@
 	.status-form {
 		display: flex;
 		gap: 0.5rem;
+		flex-wrap: wrap;
+		align-items: center;
+	}
+	.followup-meta {
+		margin: 0.5rem 0 0;
+		color: var(--muted);
+		font-size: 0.85rem;
 	}
 	select,
 	textarea,

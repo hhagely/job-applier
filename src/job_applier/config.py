@@ -17,5 +17,7 @@ class Settings(BaseSettings):
     api_port: int = 8000
     web_origin: str = "http://localhost:5174"
 
+    followup_default_days: int = 7
+
 
 settings = Settings()
