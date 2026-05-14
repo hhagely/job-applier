@@ -236,17 +236,25 @@ def set_status_bulk(body: BulkStatusUpdate, session: Session = Depends(get_sessi
     return [_application_out(a) for a in results]
 
 
+FOLLOWUP_ACTIVE_STATUSES = (
+    ApplicationStatus.applied,
+    ApplicationStatus.screening,
+    ApplicationStatus.interviewing,
+)
+
+
 @app.get("/api/followups", response_model=list[JobOut])
 def list_followups(session: Session = Depends(get_session)):
     """Applications past their follow-up date without an outcome recorded yet.
 
-    Ordered by most-overdue first.
+    Covers any status where the user is still expecting to hear back —
+    ``applied``, ``screening``, ``interviewing``. Ordered most-overdue first.
     """
     now = datetime.now(timezone.utc)
     stmt = (
         select(JobPosting)
         .join(Application, Application.job_id == JobPosting.id)
-        .where(Application.status == ApplicationStatus.applied)
+        .where(Application.status.in_(FOLLOWUP_ACTIVE_STATUSES))
         .where(Application.outcome.is_(None))
         .where(Application.next_followup_at.is_not(None))
         .where(Application.next_followup_at <= now)

@@ -22,6 +22,8 @@
 		{ key: 'interested', label: 'interested' },
 		{ key: 'drafted', label: 'drafted' },
 		{ key: 'applied', label: 'applied' },
+		{ key: 'screening', label: 'screening' },
+		{ key: 'interviewing', label: 'interviewing' },
 		{ key: 'rejected', label: 'rejected' },
 		{ key: 'archived', label: 'archived' }
 	];
@@ -30,6 +32,8 @@
 		'interested',
 		'drafted',
 		'applied',
+		'screening',
+		'interviewing',
 		'rejected',
 		'archived'
 	];
@@ -878,6 +882,14 @@
 	.status-applied {
 		background: rgba(46, 160, 67, 0.2);
 		color: var(--ok);
+	}
+	.status-screening {
+		background: rgba(210, 153, 34, 0.2);
+		color: var(--warn);
+	}
+	.status-interviewing {
+		background: rgba(88, 166, 255, 0.18);
+		color: var(--accent);
 	}
 	.followup-chip {
 		font-size: 0.7rem;

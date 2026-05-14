@@ -113,6 +113,28 @@ def test_followups_endpoint_returns_overdue_only(client):
     assert ids == [overdue_id]
 
 
+def test_followups_includes_screening_and_interviewing(client):
+    c, engine = client
+    applied_id = _seed_job(engine, source_id="t-applied", title="Applied")
+    screening_id = _seed_job(engine, source_id="t-screen", title="Screening")
+    interview_id = _seed_job(engine, source_id="t-iview", title="Interviewing")
+    rejected_id = _seed_job(engine, source_id="t-rej", title="Rejected")
+
+    past = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    for jid in (applied_id, screening_id, interview_id, rejected_id):
+        c.patch(
+            f"/api/jobs/{jid}/status",
+            json={"status": "applied", "next_followup_at": past},
+        )
+    # Move two forward in the pipeline (keeping next_followup_at intact)
+    c.patch(f"/api/jobs/{screening_id}/status", json={"status": "screening"})
+    c.patch(f"/api/jobs/{interview_id}/status", json={"status": "interviewing"})
+    c.patch(f"/api/jobs/{rejected_id}/status", json={"status": "rejected"})
+
+    ids = {j["id"] for j in c.get("/api/followups").json()}
+    assert ids == {applied_id, screening_id, interview_id}
+
+
 def test_followups_excludes_rows_with_outcome(client):
     c, engine = client
     job_id = _seed_job(engine)

@@ -9,6 +9,8 @@
 		'interested',
 		'drafted',
 		'applied',
+		'screening',
+		'interviewing',
 		'rejected',
 		'archived'
 	];

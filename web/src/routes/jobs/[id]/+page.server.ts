@@ -7,6 +7,8 @@ const VALID_STATUS: ApplicationStatus[] = [
 	'interested',
 	'drafted',
 	'applied',
+	'screening',
+	'interviewing',
 	'rejected',
 	'archived'
 ];
