@@ -8,6 +8,7 @@ from job_applier.config import settings
 from job_applier.ingest import (
     archive_existing_duplicates,
     backfill_cross_source_hash,
+    dedupe_jd_backfill,
     prune_old_postings,
     run_ingest,
 )
@@ -62,6 +63,18 @@ def dedupe_existing_cmd() -> None:
     with Session(engine()) as session:
         n = archive_existing_duplicates(session)
     typer.echo(f"Archived {n} duplicate postings")
+
+
+@app.command("dedupe-jd")
+def dedupe_jd_cmd() -> None:
+    """Backfill JD SimHash fingerprints and soft-link near-duplicate postings.
+
+    Idempotent: rows that already have a fingerprint or are already flagged as
+    duplicates are skipped.
+    """
+    create_db_and_tables()
+    stats = dedupe_jd_backfill()
+    typer.echo(json.dumps(stats.__dict__, indent=2))
 
 
 @app.command()

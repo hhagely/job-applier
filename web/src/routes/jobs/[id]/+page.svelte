@@ -18,6 +18,7 @@
 	let job = $derived(data.job);
 	let draft = $derived(data.draft);
 	let scoreHistory = $derived(data.scoreHistory);
+	let canonical = $derived(data.canonical);
 
 	function fmtUpdated(iso: string | null | undefined): string {
 		if (!iso) return '';
@@ -60,6 +61,17 @@
 </script>
 
 <a href="/" class="back">← back to queue</a>
+
+{#if job.duplicate_of != null}
+	<aside class="dup-banner">
+		<strong>Duplicate</strong>
+		of
+		<a href={`/jobs/${job.duplicate_of}`}>
+			#{job.duplicate_of}{#if canonical}
+				— {canonical.title} at {canonical.company?.name ?? 'Unknown'}{/if}
+		</a>
+	</aside>
+{/if}
 
 <header class="job-header">
 	<h1>{job.title}</h1>
@@ -219,6 +231,22 @@
 		display: inline-block;
 		margin-bottom: 1rem;
 		font-size: 0.9rem;
+	}
+	.dup-banner {
+		background: rgba(210, 153, 34, 0.15);
+		border: 1px solid var(--warn);
+		border-radius: 6px;
+		padding: 0.5rem 0.85rem;
+		margin-bottom: 1rem;
+		font-size: 0.9rem;
+		color: var(--fg);
+	}
+	.dup-banner strong {
+		color: var(--warn);
+		margin-right: 0.25rem;
+	}
+	.dup-banner a {
+		color: var(--accent);
 	}
 	.job-header h1 {
 		margin: 0 0 0.25rem;

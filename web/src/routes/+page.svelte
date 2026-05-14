@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
+	import { page } from '$app/stores';
 	import type { ApplicationStatus, Job } from '$lib/api';
 	import type { PageData } from './$types';
 
@@ -236,6 +237,16 @@
 	}
 
 	let followupDate = $state<string>(defaultFollowupDate());
+
+	function toggleDuplicates() {
+		const url = new URL($page.url);
+		if (data.include_duplicates) {
+			url.searchParams.delete('duplicates');
+		} else {
+			url.searchParams.set('duplicates', '1');
+		}
+		goto(url, { invalidateAll: true });
+	}
 </script>
 
 <svelte:window onclick={closeRubric} />
@@ -277,6 +288,15 @@
 		<label class="check">
 			<input type="checkbox" bind:checked={unscoredOnly} />
 			Unscored only
+		</label>
+
+		<label class="check">
+			<input
+				type="checkbox"
+				checked={data.include_duplicates}
+				onchange={toggleDuplicates}
+			/>
+			Show duplicates
 		</label>
 
 		{#if activeStatuses.size > 0 || activeEases.size > 0 || activeSources.size > 0 || unscoredOnly || minScoreInput !== ''}
@@ -370,7 +390,11 @@
 	<ul class="jobs">
 		{#each visible as job (job.id)}
 			{@const si = sourceInfo(job.source)}
-			<li class="row" class:selected={selected.has(job.id)}>
+			<li
+				class="row"
+				class:selected={selected.has(job.id)}
+				class:duplicate={job.duplicate_of != null}
+			>
 				<label class="check-cell" aria-label="select job">
 					<input
 						type="checkbox"
@@ -436,6 +460,11 @@
 					<span class="main">
 						<span class="title">{job.title}</span>
 						<span class="meta">
+							{#if job.duplicate_of != null}
+								<span class="dup-label" title="JD-similarity duplicate">
+									dup of #{job.duplicate_of}
+								</span>
+							{/if}
 							{#if job.application}
 								<span class="status status-{job.application.status}">
 									{job.application.status}
@@ -679,6 +708,20 @@
 	.row.selected {
 		border-color: var(--accent);
 		background: rgba(88, 166, 255, 0.06);
+	}
+	.row.duplicate {
+		opacity: 0.55;
+	}
+	.row.duplicate:hover {
+		opacity: 1;
+	}
+	.dup-label {
+		font-size: 0.7rem;
+		letter-spacing: 0.02em;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: rgba(210, 153, 34, 0.18);
+		color: var(--warn);
 	}
 	.row:hover {
 		border-color: var(--accent);

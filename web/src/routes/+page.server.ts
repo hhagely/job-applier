@@ -20,10 +20,15 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 	const filter_status = (VALID.includes(filterParam as FilterStatus)
 		? filterParam
 		: 'passed') as FilterStatus;
+	const include_duplicates = url.searchParams.get('duplicates') === '1';
 
-	const all = await api.listJobs(fetch, { filter_status, limit: 200 });
+	const all = await api.listJobs(fetch, {
+		filter_status,
+		include_duplicates,
+		limit: 200
+	});
 	const jobs = all.filter((j) => j.application?.status !== 'archived');
-	return { jobs, filter_status };
+	return { jobs, filter_status, include_duplicates };
 };
 
 export const actions: Actions = {

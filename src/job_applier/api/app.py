@@ -114,6 +114,7 @@ def _job_summary(j: JobPosting, resume_names: dict[int, str]) -> JobOut:
         company=_company_out(j.company),
         score=_score_out(j.score, resume_filename=score_filename),
         application=_application_out(j.application),
+        duplicate_of=j.duplicate_of,
     )
 
 
@@ -123,6 +124,7 @@ def list_jobs(
     filter_status: Optional[FilterStatus] = FilterStatus.passed,
     min_score: Optional[int] = None,
     unscored_only: bool = False,
+    include_duplicates: bool = False,
     limit: int = 100,
     offset: int = 0,
     session: Session = Depends(get_session),
@@ -130,6 +132,8 @@ def list_jobs(
     stmt = select(JobPosting)
     if filter_status is not None:
         stmt = stmt.where(JobPosting.filter_status == filter_status)
+    if not include_duplicates:
+        stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
     stmt = stmt.order_by(JobPosting.ingested_at.desc()).offset(offset).limit(limit)
     jobs = list(session.exec(stmt).all())
 
