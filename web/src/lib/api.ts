@@ -28,6 +28,8 @@ export interface Score {
 	reasoning?: string | null;
 	scored_by: string;
 	scored_at: string;
+	resume_id?: number | null;
+	resume_filename?: string | null;
 }
 
 export interface Application {
@@ -122,6 +124,9 @@ export const api = {
 	},
 
 	getJob: (fetchFn: FetchFn, id: number) => call<JobDetail>(fetchFn, `/api/jobs/${id}`),
+
+	getScoreHistory: (fetchFn: FetchFn, jobId: number) =>
+		call<Score[]>(fetchFn, `/api/jobs/${jobId}/score-history`),
 
 	setStatus: (fetchFn: FetchFn, id: number, status: ApplicationStatus, notes?: string) =>
 		call<Application>(fetchFn, `/api/jobs/${id}/status`, {

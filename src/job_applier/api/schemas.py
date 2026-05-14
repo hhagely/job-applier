@@ -20,6 +20,8 @@ class ScoreOut(BaseModel):
     reasoning: Optional[str]
     scored_by: str
     scored_at: datetime
+    resume_id: Optional[int] = None
+    resume_filename: Optional[str] = None
 
 
 class ApplicationOut(BaseModel):

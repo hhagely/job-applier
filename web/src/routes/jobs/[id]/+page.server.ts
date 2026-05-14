@@ -15,8 +15,12 @@ export const load: PageServerLoad = async ({ params, fetch }) => {
 	const id = Number(params.id);
 	if (!Number.isFinite(id)) throw error(400, 'invalid id');
 	try {
-		const [job, draft] = await Promise.all([api.getJob(fetch, id), api.getDraft(fetch, id)]);
-		return { job, draft };
+		const [job, draft, scoreHistory] = await Promise.all([
+			api.getJob(fetch, id),
+			api.getDraft(fetch, id),
+			api.getScoreHistory(fetch, id)
+		]);
+		return { job, draft, scoreHistory };
 	} catch (e) {
 		throw error(404, (e as Error).message);
 	}

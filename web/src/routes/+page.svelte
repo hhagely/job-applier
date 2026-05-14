@@ -201,7 +201,26 @@
 	}
 
 	const SOURCE_FILTERS = Object.keys(SOURCE_META);
+
+	let openRubricFor = $state<number | null>(null);
+
+	function toggleRubric(e: MouseEvent, id: number) {
+		e.preventDefault();
+		e.stopPropagation();
+		openRubricFor = openRubricFor === id ? null : id;
+	}
+
+	function closeRubric() {
+		openRubricFor = null;
+	}
+
+	function rubricEntries(rubric: Record<string, unknown> | undefined): [string, unknown][] {
+		if (!rubric) return [];
+		return Object.entries(rubric);
+	}
 </script>
+
+<svelte:window onclick={closeRubric} />
 
 <section class="header-row">
 	<h1>
@@ -342,8 +361,53 @@
 					/>
 				</label>
 				<a href={`/jobs/${job.id}`} class="row-link">
-					<span class="score-pill" data-score={scoreBucket(job.score?.score)}>
-						{job.score ? job.score.score : '—'}
+					<span class="score-cell">
+						{#if job.score}
+							<button
+								type="button"
+								class="score-pill score-pill-btn"
+								data-score={scoreBucket(job.score.score)}
+								onclick={(e) => toggleRubric(e, job.id)}
+								aria-expanded={openRubricFor === job.id}
+								aria-label="Show rubric breakdown"
+							>
+								{job.score.score}
+							</button>
+							{#if openRubricFor === job.id}
+								{@const entries = rubricEntries(job.score.rubric)}
+								<div
+									class="rubric-popover"
+									role="dialog"
+									tabindex="-1"
+									onclick={(e) => e.stopPropagation()}
+									onkeydown={(e) => e.key === 'Escape' && closeRubric()}
+								>
+									{#if entries.length === 0}
+										<p class="rubric-empty">No rubric recorded.</p>
+									{:else}
+										<ul class="rubric-list">
+											{#each entries as [bucket, value] (bucket)}
+												<li>
+													<span class="rubric-bucket">{bucket}</span>
+													<span class="rubric-value">
+														{#if typeof value === 'object' && value !== null}
+															{JSON.stringify(value)}
+														{:else}
+															{String(value)}
+														{/if}
+													</span>
+												</li>
+											{/each}
+										</ul>
+									{/if}
+									{#if job.score.reasoning}
+										<p class="rubric-reasoning">{job.score.reasoning}</p>
+									{/if}
+								</div>
+							{/if}
+						{:else}
+							<span class="score-pill" data-score="none">—</span>
+						{/if}
 					</span>
 					<span class="main">
 						<span class="title">{job.title}</span>
@@ -578,7 +642,6 @@
 		background: var(--panel);
 		border: 1px solid var(--panel-border);
 		border-radius: 8px;
-		overflow: hidden;
 	}
 	.row.selected {
 		border-color: var(--accent);
@@ -610,12 +673,16 @@
 	.row-link:hover {
 		text-decoration: none;
 	}
-	.score-pill {
+	.score-cell {
+		position: relative;
 		flex: 0 0 3rem;
 		align-self: center;
+	}
+	.score-pill {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
+		width: 3rem;
 		min-height: 2.25rem;
 		font-weight: 700;
 		padding: 0.4rem 0.5rem;
@@ -624,6 +691,62 @@
 		color: var(--muted);
 		font-variant-numeric: tabular-nums;
 		line-height: 1;
+		box-sizing: border-box;
+	}
+	.score-pill-btn {
+		border: 1px solid transparent;
+		cursor: pointer;
+		font: inherit;
+	}
+	.score-pill-btn:hover {
+		border-color: var(--accent);
+	}
+	.rubric-popover {
+		position: absolute;
+		top: calc(100% + 0.4rem);
+		left: 0;
+		z-index: 20;
+		min-width: 16rem;
+		max-width: 22rem;
+		background: var(--panel);
+		border: 1px solid var(--accent);
+		border-radius: 8px;
+		padding: 0.6rem 0.75rem;
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+		font-size: 0.8rem;
+		color: var(--fg);
+		text-align: left;
+	}
+	.rubric-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.rubric-list li {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.6rem;
+	}
+	.rubric-bucket {
+		color: var(--muted);
+		text-transform: lowercase;
+	}
+	.rubric-value {
+		font-variant-numeric: tabular-nums;
+	}
+	.rubric-reasoning {
+		margin: 0.5rem 0 0;
+		padding-top: 0.5rem;
+		border-top: 1px solid var(--panel-border);
+		color: var(--muted);
+		font-style: italic;
+	}
+	.rubric-empty {
+		margin: 0;
+		color: var(--muted);
 	}
 	.score-pill[data-score='high'] {
 		background: rgba(46, 160, 67, 0.2);
