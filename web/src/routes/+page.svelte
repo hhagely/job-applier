@@ -642,7 +642,6 @@
 		background: var(--panel);
 		border: 1px solid var(--panel-border);
 		border-radius: 8px;
-		overflow: hidden;
 	}
 	.row.selected {
 		border-color: var(--accent);
