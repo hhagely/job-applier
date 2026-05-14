@@ -11,6 +11,8 @@ export type ApplicationStatus =
 	| 'interested'
 	| 'drafted'
 	| 'applied'
+	| 'screening'
+	| 'interviewing'
 	| 'rejected'
 	| 'archived';
 
@@ -38,6 +40,22 @@ export interface Application {
 	notes?: string | null;
 	applied_at?: string | null;
 	updated_at: string;
+	next_followup_at?: string | null;
+	last_contact_at?: string | null;
+	outcome?: string | null;
+}
+
+export interface FollowupPayload {
+	next_followup_at?: string | null;
+	last_contact_at?: string | null;
+	outcome?: string | null;
+}
+
+export interface StatusPayload {
+	notes?: string;
+	next_followup_at?: string | null;
+	last_contact_at?: string | null;
+	outcome?: string | null;
 }
 
 export interface Job {
@@ -129,16 +147,34 @@ export const api = {
 	getScoreHistory: (fetchFn: FetchFn, jobId: number) =>
 		call<Score[]>(fetchFn, `/api/jobs/${jobId}/score-history`),
 
-	setStatus: (fetchFn: FetchFn, id: number, status: ApplicationStatus, notes?: string) =>
+	setStatus: (
+		fetchFn: FetchFn,
+		id: number,
+		status: ApplicationStatus,
+		extra: StatusPayload = {}
+	) =>
 		call<Application>(fetchFn, `/api/jobs/${id}/status`, {
 			method: 'PATCH',
-			body: JSON.stringify({ status, notes })
+			body: JSON.stringify({ status, ...extra })
 		}),
 
-	bulkSetStatus: (fetchFn: FetchFn, job_ids: number[], status: ApplicationStatus) =>
+	bulkSetStatus: (
+		fetchFn: FetchFn,
+		job_ids: number[],
+		status: ApplicationStatus,
+		extra: Omit<StatusPayload, 'notes'> = {}
+	) =>
 		call<Application[]>(fetchFn, `/api/jobs/bulk-status`, {
 			method: 'POST',
-			body: JSON.stringify({ job_ids, status })
+			body: JSON.stringify({ job_ids, status, ...extra })
+		}),
+
+	getFollowups: (fetchFn: FetchFn) => call<Job[]>(fetchFn, `/api/followups`),
+
+	setFollowup: (fetchFn: FetchFn, id: number, payload: FollowupPayload) =>
+		call<Application>(fetchFn, `/api/jobs/${id}/followup`, {
+			method: 'POST',
+			body: JSON.stringify(payload)
 		}),
 
 	setNotes: (fetchFn: FetchFn, id: number, notes: string) =>

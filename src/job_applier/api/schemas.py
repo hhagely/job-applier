@@ -30,6 +30,9 @@ class ApplicationOut(BaseModel):
     notes: Optional[str]
     applied_at: Optional[datetime]
     updated_at: datetime
+    next_followup_at: Optional[datetime] = None
+    last_contact_at: Optional[datetime] = None
+    outcome: Optional[str] = None
 
 
 class JobOut(BaseModel):
@@ -56,15 +59,27 @@ class JobDetail(JobOut):
 class StatusUpdate(BaseModel):
     status: ApplicationStatus
     notes: Optional[str] = None
+    next_followup_at: Optional[datetime] = None
+    last_contact_at: Optional[datetime] = None
+    outcome: Optional[str] = None
 
 
 class BulkStatusUpdate(BaseModel):
     job_ids: list[int]
     status: ApplicationStatus
+    next_followup_at: Optional[datetime] = None
+    last_contact_at: Optional[datetime] = None
+    outcome: Optional[str] = None
 
 
 class NotesUpdate(BaseModel):
     notes: str
+
+
+class FollowupUpdate(BaseModel):
+    next_followup_at: Optional[datetime] = None
+    last_contact_at: Optional[datetime] = None
+    outcome: Optional[str] = None
 
 
 class ScoreIn(BaseModel):

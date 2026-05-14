@@ -9,6 +9,8 @@ const VALID_STATUS: ApplicationStatus[] = [
 	'interested',
 	'drafted',
 	'applied',
+	'screening',
+	'interviewing',
 	'rejected',
 	'archived'
 ];
@@ -36,7 +38,10 @@ export const actions: Actions = {
 			.filter((n) => Number.isFinite(n));
 		if (ids.length === 0) return fail(400, { error: 'no jobs selected' });
 
-		await api.bulkSetStatus(fetch, ids, status);
+		const followupRaw = (form.get('next_followup_at') as string | null) || '';
+		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
+
+		await api.bulkSetStatus(fetch, ids, status, { next_followup_at });
 		return { ok: true, count: ids.length, status };
 	}
 };

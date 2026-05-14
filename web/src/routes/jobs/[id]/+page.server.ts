@@ -7,6 +7,8 @@ const VALID_STATUS: ApplicationStatus[] = [
 	'interested',
 	'drafted',
 	'applied',
+	'screening',
+	'interviewing',
 	'rejected',
 	'archived'
 ];
@@ -32,8 +34,10 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const status = String(form.get('status') ?? '') as ApplicationStatus;
 		const notes = (form.get('notes') as string | null) || undefined;
+		const followupRaw = (form.get('next_followup_at') as string | null) || '';
+		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
 		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
-		await api.setStatus(fetch, id, status, notes);
+		await api.setStatus(fetch, id, status, { notes, next_followup_at });
 		return { ok: true };
 	},
 	setNotes: async ({ request, params, fetch }) => {
