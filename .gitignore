@@ -43,3 +43,5 @@ web/.env
 
 # Claude Code runtime
 .claude/scheduled_tasks.lock
+
+plans/
