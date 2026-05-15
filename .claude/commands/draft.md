@@ -257,12 +257,15 @@ Category order should lead with the JD's priorities.
          --data-binary @-
    ```
 
-9. **Optionally set application status to `drafted`**:
+9. **Set application status to `drafted`** (always, once the save in step 8
+   succeeded — this keeps the queue's status filters honest so drafted jobs
+   stop showing up as still-to-do):
    ```
    curl -sS -X PATCH http://127.0.0.1:8000/api/jobs/<id>/status \
      -H 'content-type: application/json' \
      -d '{"status":"drafted"}'
    ```
+   Skip this only if step 8 failed for the job.
 
 10. **Score the tailored draft**. Immediately after saving the draft for this
     job, invoke `/score-draft <id>` for that same id and wait for it to

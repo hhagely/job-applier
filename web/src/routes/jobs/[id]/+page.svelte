@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageData } from './$types';
 	import { api, type ApplicationStatus } from '$lib/api';
+	import { draftCart } from '$lib/draftCart.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -60,7 +61,23 @@
 	});
 </script>
 
-<a href="/" class="back">← back to queue</a>
+<div class="topbar">
+	<a href="/" class="back">← back to queue</a>
+	<button
+		type="button"
+		class="cart-toggle"
+		class:in-cart={draftCart.has(job.id)}
+		onclick={() => draftCart.toggle(job.id)}
+		title="Queue this job for a /draft command, shareable across pages"
+	>
+		{draftCart.has(job.id) ? '✓ In draft list' : '+ Add to draft list'}
+	</button>
+	{#if draftCart.ids.length > 0}
+		<span class="cart-hint">
+			{draftCart.ids.length} queued — copy the command from the queue page
+		</span>
+	{/if}
+</div>
 
 {#if job.duplicate_of != null}
 	<aside class="dup-banner">
@@ -232,10 +249,37 @@
 </section>
 
 <style>
-	.back {
-		display: inline-block;
+	.topbar {
+		display: flex;
+		align-items: center;
+		gap: 0.85rem;
+		flex-wrap: wrap;
 		margin-bottom: 1rem;
+	}
+	.back {
 		font-size: 0.9rem;
+	}
+	.cart-toggle {
+		font: inherit;
+		font-size: 0.85rem;
+		padding: 0.3rem 0.7rem;
+		border-radius: 6px;
+		border: 1px solid var(--panel-border);
+		background: var(--panel);
+		color: var(--fg);
+		cursor: pointer;
+	}
+	.cart-toggle:hover {
+		border-color: var(--accent);
+	}
+	.cart-toggle.in-cart {
+		background: rgba(46, 160, 67, 0.18);
+		color: var(--ok);
+		border-color: var(--ok);
+	}
+	.cart-hint {
+		font-size: 0.8rem;
+		color: var(--muted);
 	}
 	.dup-banner {
 		background: rgba(210, 153, 34, 0.15);
