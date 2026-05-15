@@ -21,6 +21,9 @@ from job_applier.api.schemas import (
     ResumeOut,
     ScoreIn,
     ScoreOut,
+    SearchProfileBody,
+    SearchProfileOut,
+    SearchProfileRecommendationIn,
     StatusUpdate,
 )
 from job_applier.config import settings
@@ -33,6 +36,7 @@ from job_applier.models.db import (
     MatchScore,
     MatchScoreHistory,
     Resume,
+    SearchProfile,
     create_db_and_tables,
     get_session,
 )
@@ -569,6 +573,86 @@ def download_current_resume(session: Session = Depends(get_session)):
 def get_current_resume_markdown(session: Session = Depends(get_session)):
     r = _active_resume(session)
     return resume_io.to_markdown(r.extracted_text)
+
+
+def _profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
+    if p is None:
+        return SearchProfileOut(using_defaults=True)
+    using_defaults = not p.required_tech or not p.seniority_terms
+    return SearchProfileOut(
+        id=p.id,
+        role_titles=list(p.role_titles or []),
+        seniority_terms=list(p.seniority_terms or []),
+        required_tech=list(p.required_tech or []),
+        excluded_tech=list(p.excluded_tech or []),
+        extracted_skills=list(p.extracted_skills or []),
+        recommendations_draft=p.recommendations_draft,
+        updated_at=p.updated_at,
+        using_defaults=using_defaults,
+    )
+
+
+def _load_or_create_profile(session: Session) -> SearchProfile:
+    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+    if p is None:
+        p = SearchProfile()
+        session.add(p)
+        session.flush()
+    return p
+
+
+@app.get("/api/search-profile", response_model=SearchProfileOut)
+def get_search_profile(session: Session = Depends(get_session)):
+    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+    return _profile_out(p)
+
+
+@app.put("/api/search-profile", response_model=SearchProfileOut)
+def put_search_profile(
+    body: SearchProfileBody, session: Session = Depends(get_session)
+):
+    p = _load_or_create_profile(session)
+    p.role_titles = body.role_titles
+    p.seniority_terms = body.seniority_terms
+    p.required_tech = body.required_tech
+    p.excluded_tech = body.excluded_tech
+    p.extracted_skills = body.extracted_skills
+    p.updated_at = datetime.now(timezone.utc)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _profile_out(p)
+
+
+@app.post("/api/search-profile/recommendations", response_model=SearchProfileOut)
+def post_recommendations(
+    body: SearchProfileRecommendationIn, session: Session = Depends(get_session)
+):
+    """Save an LLM-generated proposal as a draft on the profile.
+
+    Does NOT mutate the active fields — the user reviews + accepts via PUT to
+    apply. Overwrites any prior draft.
+    """
+    p = _load_or_create_profile(session)
+    p.recommendations_draft = body.model_dump()
+    p.updated_at = datetime.now(timezone.utc)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _profile_out(p)
+
+
+@app.delete("/api/search-profile/recommendations", response_model=SearchProfileOut)
+def clear_recommendations(session: Session = Depends(get_session)):
+    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+    if p is None:
+        return _profile_out(None)
+    p.recommendations_draft = None
+    p.updated_at = datetime.now(timezone.utc)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _profile_out(p)
 
 
 def _draft_out(

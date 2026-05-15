@@ -165,6 +165,37 @@ class Resume(SQLModel, table=True):
     uploaded_at: datetime = Field(default_factory=_utcnow)
 
 
+class SearchProfile(SQLModel, table=True):
+    """User's configured job-search criteria. Singleton (one active row).
+
+    Drives the hard filter at ingest time. When empty, the filter falls back to
+    its built-in defaults so a fresh install still works.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # Human-readable role titles the user wants surfaced
+    # (e.g. ["Senior Software Engineer", "Staff Backend Engineer"]).
+    role_titles: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Seniority terms that gate the title regex
+    # (e.g. ["senior", "staff", "principal", "lead", "architect"]).
+    seniority_terms: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Tech/skills the posting MUST reference (any-of). Filter drops if none match.
+    required_tech: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Tech that disqualifies a posting when it's the primary stack (e.g. "angular").
+    excluded_tech: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Reference: skills extracted from the user's resume by the LLM. Not used by
+    # the filter directly — surfaced in the UI so the user can see what informed
+    # the recommendations.
+    extracted_skills: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Pending LLM-generated proposal awaiting user accept/reject. Shape mirrors
+    # the active fields (role_titles/seniority_terms/required_tech/excluded_tech
+    # /extracted_skills) plus a free-form "rationale" string. Null when no draft.
+    recommendations_draft: Optional[dict] = Field(
+        default=None, sa_column=Column(JSON)
+    )
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 _engine = None
 
 

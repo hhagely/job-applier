@@ -46,6 +46,13 @@
 			run <code>/match-pending</code> in Claude Code to refresh.
 		</p>
 	{/if}
+
+	{#if form?.ok}
+		<p class="info-banner">
+			Resume uploaded. Run <code>/suggest-roles</code> in Claude Code to refresh your
+			<a href="/search">search profile</a> recommendations.
+		</p>
+	{/if}
 </section>
 
 {#if resume}
@@ -119,6 +126,20 @@
 		font-size: 0.9rem;
 	}
 	.stale-banner code {
+		background: var(--bg);
+		padding: 0.05rem 0.3rem;
+		border-radius: 3px;
+	}
+	.info-banner {
+		margin-top: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		background: rgba(88, 166, 255, 0.1);
+		border: 1px solid var(--accent);
+		border-radius: 6px;
+		color: var(--fg);
+		font-size: 0.9rem;
+	}
+	.info-banner code {
 		background: var(--bg);
 		padding: 0.05rem 0.3rem;
 		border-radius: 3px;
