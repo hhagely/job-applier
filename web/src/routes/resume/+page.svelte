@@ -7,6 +7,7 @@
 
 	let resume = $derived(form?.resume ?? data.resume);
 	let uploading = $state(false);
+	let staleCount = $derived(form?.ok ? (form.staleCount ?? 0) : 0);
 </script>
 
 <h1>Resume</h1>
@@ -37,6 +38,13 @@
 
 	{#if form?.error}
 		<p class="error">{form.error}</p>
+	{/if}
+
+	{#if staleCount > 0}
+		<p class="stale-banner">
+			{staleCount} scored {staleCount === 1 ? 'job is' : 'jobs are'} now stale —
+			run <code>/match-pending</code> in Claude Code to refresh.
+		</p>
 	{/if}
 </section>
 
@@ -100,6 +108,20 @@
 	.error {
 		color: var(--bad);
 		margin-top: 0.5rem;
+	}
+	.stale-banner {
+		margin-top: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		background: rgba(210, 153, 34, 0.15);
+		border: 1px solid var(--warn);
+		border-radius: 6px;
+		color: var(--fg);
+		font-size: 0.9rem;
+	}
+	.stale-banner code {
+		background: var(--bg);
+		padding: 0.05rem 0.3rem;
+		border-radius: 3px;
 	}
 	form {
 		display: flex;

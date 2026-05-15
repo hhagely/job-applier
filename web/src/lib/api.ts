@@ -33,6 +33,7 @@ export interface Score {
 	resume_id?: number | null;
 	resume_filename?: string | null;
 	score_kind: 'baseline' | 'tailored';
+	is_stale: boolean;
 }
 
 export interface Application {
@@ -186,6 +187,9 @@ export const api = {
 		}),
 
 	getCurrentResume: (fetchFn: FetchFn) => callOptional<Resume>(fetchFn, '/api/resume/current'),
+
+	getStaleScoreCount: (fetchFn: FetchFn) =>
+		call<{ count: number }>(fetchFn, '/api/scores/stale-count'),
 
 	uploadResume: async (fetchFn: FetchFn, file: File): Promise<Resume> => {
 		const fd = new FormData();

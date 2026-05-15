@@ -16,7 +16,8 @@ export const actions: Actions = {
 		}
 		try {
 			const resume = await api.uploadResume(fetch, file);
-			return { ok: true, resume };
+			const { count: staleCount } = await api.getStaleScoreCount(fetch);
+			return { ok: true, resume, staleCount };
 		} catch (e) {
 			return fail(422, { error: (e as Error).message });
 		}

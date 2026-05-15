@@ -22,10 +22,13 @@ subscription instead of paying for API tokens.
    resume at http://localhost:5174/resume.
 
 3. **Fetch the queue**:
-   `curl -sS "http://127.0.0.1:8000/api/pending-match?limit=25"`
+   `curl -sS "http://127.0.0.1:8000/api/pending-match?limit=25&include_stale=true"`
 
    Each item has: `id`, `title`, `company_name`, `url`, `location`, `description`
    (the description is HTML — extract the text mentally; don't render it).
+
+   Stale scores (those against an older resume) are re-evaluated against the
+   current resume. The previous score is preserved automatically in history.
 
 4. **Score each job** against the rubric below. The total `score` must equal the sum
    of the five buckets and lie in `[0, 100]`.
