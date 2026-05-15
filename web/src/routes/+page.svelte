@@ -408,12 +408,21 @@
 							<button
 								type="button"
 								class="score-pill score-pill-btn"
+								class:stale={job.score.is_stale}
 								data-score={scoreBucket(job.score.score)}
 								onclick={(e) => toggleRubric(e, job.id)}
 								aria-expanded={openRubricFor === job.id}
-								aria-label="Show rubric breakdown"
+								aria-label={job.score.is_stale
+									? 'Stale score — older resume. Click for rubric.'
+									: 'Show rubric breakdown'}
+								title={job.score.is_stale
+									? 'Scored against an older resume — run /match-pending to refresh'
+									: undefined}
 							>
 								{job.score.score}
+								{#if job.score.is_stale}
+									<span class="stale-label">stale</span>
+								{/if}
 							</button>
 							{#if openRubricFor === job.id}
 								{@const entries = rubricEntries(job.score.rubric)}
@@ -865,6 +874,20 @@
 	.score-pill[data-score='low'] {
 		background: rgba(248, 81, 73, 0.18);
 		color: var(--bad);
+	}
+	.score-pill.stale {
+		flex-direction: column;
+		gap: 0.1rem;
+		background: #20262d;
+		color: var(--muted);
+		opacity: 0.85;
+	}
+	.stale-label {
+		font-size: 0.55rem;
+		font-weight: 500;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		opacity: 0.85;
 	}
 	.main {
 		display: flex;

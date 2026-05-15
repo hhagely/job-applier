@@ -63,14 +63,21 @@ def _score_out(
     s: Optional[MatchScore | MatchScoreHistory],
     *,
     resume_filename: Optional[str] = None,
+    active_resume_id: Optional[int] = None,
 ) -> Optional[ScoreOut]:
     if s is None:
         return None
+    # Tailored scores carry no resume_id by design — never stale.
+    is_stale = (
+        s.resume_id is not None
+        and active_resume_id is not None
+        and s.resume_id != active_resume_id
+    )
     return ScoreOut(
         score=s.score, rubric=s.rubric, reasoning=s.reasoning,
         scored_by=s.scored_by, scored_at=s.scored_at,
         resume_id=s.resume_id, resume_filename=resume_filename,
-        score_kind=s.score_kind,
+        score_kind=s.score_kind, is_stale=is_stale,
     )
 
 
@@ -93,7 +100,17 @@ def _resume_filename_map(session: Session) -> dict[int, str]:
     return {rid: name for rid, name in rows}
 
 
-def _job_summary(j: JobPosting, resume_names: dict[int, str]) -> JobOut:
+def _active_resume_id(session: Session) -> Optional[int]:
+    return session.exec(
+        select(Resume.id).where(Resume.is_active == True)  # noqa: E712
+    ).first()
+
+
+def _job_summary(
+    j: JobPosting,
+    resume_names: dict[int, str],
+    active_resume_id: Optional[int],
+) -> JobOut:
     score_filename = (
         resume_names.get(j.score.resume_id)
         if j.score and j.score.resume_id is not None
@@ -112,7 +129,11 @@ def _job_summary(j: JobPosting, resume_names: dict[int, str]) -> JobOut:
         filter_status=j.filter_status,
         filter_reason=j.filter_reason,
         company=_company_out(j.company),
-        score=_score_out(j.score, resume_filename=score_filename),
+        score=_score_out(
+            j.score,
+            resume_filename=score_filename,
+            active_resume_id=active_resume_id,
+        ),
         application=_application_out(j.application),
         duplicate_of=j.duplicate_of,
     )
@@ -146,7 +167,8 @@ def list_jobs(
         jobs = [j for j in jobs if j.score is None]
 
     resume_names = _resume_filename_map(session)
-    return [_job_summary(j, resume_names) for j in jobs]
+    active_id = _active_resume_id(session)
+    return [_job_summary(j, resume_names, active_id) for j in jobs]
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobDetail)
@@ -154,7 +176,9 @@ def get_job(job_id: int, session: Session = Depends(get_session)):
     job = session.get(JobPosting, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
-    summary = _job_summary(job, _resume_filename_map(session))
+    summary = _job_summary(
+        job, _resume_filename_map(session), _active_resume_id(session)
+    )
     return JobDetail(**summary.model_dump(), description=job.description)
 
 
@@ -266,7 +290,8 @@ def list_followups(session: Session = Depends(get_session)):
     jobs = list(session.exec(stmt).all())
     jobs.sort(key=lambda j: j.application.next_followup_at)
     resume_names = _resume_filename_map(session)
-    return [_job_summary(j, resume_names) for j in jobs]
+    active_id = _active_resume_id(session)
+    return [_job_summary(j, resume_names, active_id) for j in jobs]
 
 
 @app.post("/api/jobs/{job_id}/followup", response_model=ApplicationOut)
@@ -309,10 +334,16 @@ def set_notes(job_id: int, body: NotesUpdate, session: Session = Depends(get_ses
 
 
 @app.get("/api/pending-match", response_model=list[PendingMatchJob])
-def pending_match(limit: int = 25, session: Session = Depends(get_session)):
-    """Jobs that passed the hard filter and have no MatchScore yet.
+def pending_match(
+    limit: int = 25,
+    include_stale: bool = False,
+    session: Session = Depends(get_session),
+):
+    """Jobs that passed the hard filter and need scoring.
 
-    This is the queue that Claude Code reads when running `/match-pending`.
+    Always includes unscored jobs. With ``include_stale=true``, also includes
+    jobs whose only score is against a non-active resume — the queue that
+    Claude Code reads when refreshing scores after a resume change.
     """
     stmt = (
         select(JobPosting)
@@ -320,7 +351,17 @@ def pending_match(limit: int = 25, session: Session = Depends(get_session)):
         .order_by(JobPosting.ingested_at.desc())
     )
     jobs = list(session.exec(stmt).all())
-    pending = [j for j in jobs if j.score is None][:limit]
+    active_id = _active_resume_id(session) if include_stale else None
+
+    def _needs_scoring(j: JobPosting) -> bool:
+        if j.score is None:
+            return True
+        if include_stale and active_id is not None:
+            sid = j.score.resume_id
+            return sid is not None and sid != active_id
+        return False
+
+    pending = [j for j in jobs if _needs_scoring(j)][:limit]
     return [
         PendingMatchJob(
             id=j.id,
@@ -332,6 +373,27 @@ def pending_match(limit: int = 25, session: Session = Depends(get_session)):
         )
         for j in pending
     ]
+
+
+@app.get("/api/scores/stale-count")
+def stale_score_count(session: Session = Depends(get_session)) -> dict:
+    """Count of baseline scores not against the active resume.
+
+    Returns 0 when there's no active resume — there's nothing to be stale
+    against in that case.
+    """
+    active_id = _active_resume_id(session)
+    if active_id is None:
+        return {"count": 0}
+    count = len(
+        session.exec(
+            select(MatchScore).where(
+                MatchScore.resume_id.is_not(None),  # type: ignore[union-attr]
+                MatchScore.resume_id != active_id,
+            )
+        ).all()
+    )
+    return {"count": count}
 
 
 @app.post("/api/jobs/{job_id}/score", response_model=ScoreOut)
@@ -380,7 +442,11 @@ def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_sess
         if active_resume and score.resume_id is not None
         else None
     )
-    return _score_out(score, resume_filename=resume_filename)
+    return _score_out(
+        score,
+        resume_filename=resume_filename,
+        active_resume_id=active_resume.id if active_resume else None,
+    )
 
 
 @app.get("/api/jobs/{job_id}/score-history", response_model=list[ScoreOut])

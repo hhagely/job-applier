@@ -92,6 +92,11 @@
 	<div class="panel">
 		<h2>Match score</h2>
 		{#if job.score}
+			{#if job.score.is_stale}
+				<p class="stale-note">
+					Scored against an older resume — run <code>/match-pending</code> to refresh.
+				</p>
+			{/if}
 			<div class="score-big">{job.score.score}<span>/100</span></div>
 			<p class="score-meta">
 				<span class="kind" data-kind={job.score.score_kind}>{job.score.score_kind}</span>
@@ -314,6 +319,20 @@
 	.score-big {
 		font-size: 2.5rem;
 		font-weight: 700;
+	}
+	.stale-note {
+		margin: 0 0 0.6rem;
+		padding: 0.4rem 0.6rem;
+		background: rgba(210, 153, 34, 0.15);
+		border: 1px solid var(--warn);
+		border-radius: 6px;
+		color: var(--fg);
+		font-size: 0.85rem;
+	}
+	.stale-note code {
+		background: var(--bg);
+		padding: 0.05rem 0.3rem;
+		border-radius: 3px;
 	}
 	.score-big span {
 		font-size: 1rem;

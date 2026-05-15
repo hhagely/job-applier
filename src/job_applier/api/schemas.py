@@ -23,6 +23,7 @@ class ScoreOut(BaseModel):
     resume_id: Optional[int] = None
     resume_filename: Optional[str] = None
     score_kind: str = "baseline"
+    is_stale: bool = False
 
 
 class ApplicationOut(BaseModel):
