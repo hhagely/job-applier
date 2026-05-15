@@ -92,6 +92,35 @@ export interface Draft {
 	cover_letter_md?: string | null;
 }
 
+export interface SearchProfile {
+	id: number | null;
+	role_titles: string[];
+	seniority_terms: string[];
+	required_tech: string[];
+	excluded_tech: string[];
+	extracted_skills: string[];
+	recommendations_draft: SearchProfileRecommendation | null;
+	updated_at: string | null;
+	using_defaults: boolean;
+}
+
+export interface SearchProfileRecommendation {
+	role_titles: string[];
+	seniority_terms: string[];
+	required_tech: string[];
+	excluded_tech: string[];
+	extracted_skills: string[];
+	rationale?: string | null;
+}
+
+export interface SearchProfileBody {
+	role_titles: string[];
+	seniority_terms: string[];
+	required_tech: string[];
+	excluded_tech: string[];
+	extracted_skills: string[];
+}
+
 export interface Resume {
 	id: number;
 	original_filename: string;
@@ -213,5 +242,16 @@ export const api = {
 	draftResumePdfUrl: (jobId: number) => `${API_BASE}/api/jobs/${jobId}/draft/resume.pdf`,
 
 	draftCoverLetterPdfUrl: (jobId: number) =>
-		`${API_BASE}/api/jobs/${jobId}/draft/cover-letter.pdf`
+		`${API_BASE}/api/jobs/${jobId}/draft/cover-letter.pdf`,
+
+	getSearchProfile: (fetchFn: FetchFn) => call<SearchProfile>(fetchFn, '/api/search-profile'),
+
+	saveSearchProfile: (fetchFn: FetchFn, body: SearchProfileBody) =>
+		call<SearchProfile>(fetchFn, '/api/search-profile', {
+			method: 'PUT',
+			body: JSON.stringify(body)
+		}),
+
+	clearRecommendations: (fetchFn: FetchFn) =>
+		call<SearchProfile>(fetchFn, '/api/search-profile/recommendations', { method: 'DELETE' })
 };

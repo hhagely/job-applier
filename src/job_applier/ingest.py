@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
-from job_applier.filters import evaluate
+from job_applier.filters import FilterConfig, evaluate, load_active_config
 from job_applier.models import Application, ApplicationStatus, Company, JobPosting, engine
 from job_applier.models.db import FilterStatus
 from job_applier.sources import RawJob, SourceAdapter, get_all_sources
@@ -206,7 +206,13 @@ def _upsert_company(session: Session, name: str) -> Company:
     return company
 
 
-def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
+def ingest_one(
+    session: Session,
+    raw: RawJob,
+    stats: IngestStats,
+    *,
+    filter_config: FilterConfig | None = None,
+) -> None:
     stats.fetched += 1
     h = dedupe_hash(raw)
 
@@ -219,7 +225,7 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
         stats.stale += 1
         return
 
-    decision = evaluate(raw)
+    decision = evaluate(raw, filter_config)
     if decision.status == FilterStatus.dropped:
         stats.dropped_filter += 1
         return
@@ -306,9 +312,10 @@ def run_ingest(sources: list[SourceAdapter] | None = None) -> IngestStats:
         sources = get_all_sources()
     stats = IngestStats()
     with Session(engine()) as session:
+        filter_config = load_active_config(session)
         for source in sources:
             for raw in source.fetch():
-                ingest_one(session, raw, stats)
+                ingest_one(session, raw, stats, filter_config=filter_config)
         session.commit()
     return stats
 

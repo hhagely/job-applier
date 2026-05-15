@@ -110,6 +110,42 @@ class ResumeOut(BaseModel):
     extracted_text: str
 
 
+class SearchProfileBody(BaseModel):
+    """Shape used for both reading and writing the active search profile.
+
+    All fields are lists of strings so they round-trip cleanly through the JSON
+    columns. Empty lists are legal — the filter falls back to its built-in
+    defaults when ``required_tech`` or ``seniority_terms`` is empty.
+    """
+
+    role_titles: list[str] = []
+    seniority_terms: list[str] = []
+    required_tech: list[str] = []
+    excluded_tech: list[str] = []
+    extracted_skills: list[str] = []
+
+
+class SearchProfileOut(SearchProfileBody):
+    id: Optional[int] = None
+    recommendations_draft: Optional[dict] = None
+    updated_at: Optional[datetime] = None
+    using_defaults: bool = False  # True when the filter is falling back
+
+
+class SearchProfileRecommendationIn(BaseModel):
+    """Payload posted by the /suggest-roles slash command after analyzing the
+    resume. The shape mirrors ``SearchProfileBody`` plus a free-form rationale
+    sentence the UI shows alongside the accept/reject buttons.
+    """
+
+    role_titles: list[str] = []
+    seniority_terms: list[str] = []
+    required_tech: list[str] = []
+    excluded_tech: list[str] = []
+    extracted_skills: list[str] = []
+    rationale: Optional[str] = None
+
+
 class DraftIn(BaseModel):
     resume_md: Optional[str] = None
     cover_letter_md: Optional[str] = None
