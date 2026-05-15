@@ -1,8 +1,11 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/stores';
 	import type { ApplicationStatus, Job } from '$lib/api';
+	import { draftCart } from '$lib/draftCart.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -45,11 +48,64 @@
 	let activeSources = $state<Set<string>>(new Set());
 	let unscoredOnly = $state(false);
 	let minScoreInput = $state('');
+
+	const FILTERS_STORAGE_KEY = 'job-applier:queue-filters';
+	let filtersLoaded = $state(false);
+
+	onMount(() => {
+		try {
+			const raw = localStorage.getItem(FILTERS_STORAGE_KEY);
+			if (raw) {
+				const s = JSON.parse(raw);
+				if (typeof s.sortBy === 'string') sortBy = s.sortBy;
+				if (Array.isArray(s.statuses)) activeStatuses = new Set(s.statuses);
+				if (Array.isArray(s.eases)) activeEases = new Set(s.eases);
+				if (Array.isArray(s.sources)) activeSources = new Set(s.sources);
+				if (typeof s.unscoredOnly === 'boolean') unscoredOnly = s.unscoredOnly;
+				if (typeof s.minScoreInput === 'string') minScoreInput = s.minScoreInput;
+			}
+		} catch {
+			// corrupt entry — fall through to defaults
+		}
+		filtersLoaded = true;
+	});
+
+	$effect(() => {
+		if (!browser || !filtersLoaded) return;
+		const payload = {
+			sortBy,
+			statuses: [...activeStatuses],
+			eases: [...activeEases],
+			sources: [...activeSources],
+			unscoredOnly,
+			minScoreInput
+		};
+		try {
+			localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(payload));
+		} catch {
+			// quota / privacy mode — ignore
+		}
+	});
 	let selected = $state<Set<number>>(new Set());
 	let bulkStatus = $state<ApplicationStatus>('interested');
 	let submitting = $state(false);
 	let copied = $state(false);
 	let copyTimer: ReturnType<typeof setTimeout> | null = null;
+	let draftCopied = $state(false);
+	let draftCopyTimer: ReturnType<typeof setTimeout> | null = null;
+
+	async function copyDraftCommand() {
+		try {
+			await navigator.clipboard.writeText(draftCart.command);
+			draftCopied = true;
+			if (draftCopyTimer) clearTimeout(draftCopyTimer);
+			draftCopyTimer = setTimeout(() => {
+				draftCopied = false;
+			}, 1500);
+		} catch {
+			// clipboard write failed (e.g., insecure context) — leave state false
+		}
+	}
 
 	async function copySelectedIds() {
 		const ids = [...selected].sort((a, b) => a - b).join(' ');
@@ -511,6 +567,19 @@
 			</li>
 		{/each}
 	</ul>
+{/if}
+
+{#if draftCart.ids.length > 0}
+	<div class="draft-cart-bar" class:stacked={selectedCount > 0}>
+		<span class="cart-count">
+			Draft list: {draftCart.ids.length} job{draftCart.ids.length === 1 ? '' : 's'}
+		</span>
+		<code class="cart-cmd" title={draftCart.command}>{draftCart.command}</code>
+		<button type="button" class="cart-copy" onclick={copyDraftCommand}>
+			{draftCopied ? 'Copied!' : 'Copy /draft command'}
+		</button>
+		<button type="button" class="cart-clear" onclick={() => draftCart.clear()}>Clear</button>
+	</div>
 {/if}
 
 {#if selectedCount > 0}
@@ -1033,6 +1102,69 @@
 	}
 	.action-copy:hover,
 	.action-clear:hover {
+		color: var(--fg);
+		border-color: var(--accent);
+	}
+
+	.draft-cart-bar {
+		position: fixed;
+		left: 50%;
+		transform: translateX(-50%);
+		bottom: 1.25rem;
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		padding: 0.55rem 0.85rem;
+		background: var(--panel);
+		border: 1px solid var(--ok);
+		border-radius: 10px;
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+		font-size: 0.85rem;
+		z-index: 11;
+		max-width: 90vw;
+	}
+	.draft-cart-bar.stacked {
+		bottom: 5rem;
+	}
+	.cart-count {
+		color: var(--ok);
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.cart-cmd {
+		background: var(--bg);
+		border: 1px solid var(--panel-border);
+		border-radius: 4px;
+		padding: 0.2rem 0.45rem;
+		color: var(--fg);
+		font-family: ui-monospace, monospace;
+		font-size: 0.8rem;
+		max-width: 22rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.cart-copy {
+		background: var(--ok);
+		color: #0d1117;
+		border: 0;
+		border-radius: 4px;
+		padding: 0.35rem 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.cart-copy:hover {
+		filter: brightness(1.1);
+	}
+	.cart-clear {
+		background: transparent;
+		color: var(--muted);
+		border: 1px solid var(--panel-border);
+		border-radius: 4px;
+		padding: 0.3rem 0.6rem;
+		cursor: pointer;
+	}
+	.cart-clear:hover {
 		color: var(--fg);
 		border-color: var(--accent);
 	}
