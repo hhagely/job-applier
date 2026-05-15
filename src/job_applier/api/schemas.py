@@ -50,6 +50,7 @@ class JobOut(BaseModel):
     company: Optional[CompanyOut]
     score: Optional[ScoreOut]
     application: Optional[ApplicationOut]
+    duplicate_of: Optional[int] = None
 
 
 class JobDetail(JobOut):

@@ -30,6 +30,7 @@ class IngestStats:
     dropped_filter: int = 0
     manual_review: int = 0
     stale: int = 0
+    flagged_jd_similar: int = 0
 
 
 def _is_stale(posted_at: datetime | None, now: datetime) -> bool:
@@ -110,6 +111,77 @@ def _normalize_title(title: str, location: str | None = None) -> str:
     return s
 
 
+_HTML_TAG = re.compile(r"<[^>]+>")
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+# Pre-fingerprint floor: SimHash on a few dozen tokens collides too readily.
+# 200 chars of cleaned text is roughly the shortest "real" JD we see.
+JD_MIN_CHARS = 200
+
+# Shingle size: 3-grams of tokens. Smaller catches more boilerplate as a match,
+# larger needs more verbatim overlap. 3 is a common starting point.
+JD_SHINGLE_K = 3
+
+# Hamming-distance threshold (out of 64 bits). 0-3 is "near-identical" for
+# SimHash on text; revisit after sweeping real data.
+JD_HAMMING_THRESHOLD = 3
+
+# How far back to look for near-duplicates at ingest. Reposts arrive within a
+# few weeks; older matches add cost without catching much.
+JD_LOOKBACK_DAYS = 14
+
+
+def _jd_clean_text(description: str) -> str:
+    stripped = _HTML_TAG.sub(" ", description or "")
+    return stripped.lower()
+
+
+def _jd_shingles(text: str) -> list[str]:
+    tokens = _TOKEN.findall(text)
+    if len(tokens) < JD_SHINGLE_K:
+        return []
+    return [
+        " ".join(tokens[i : i + JD_SHINGLE_K])
+        for i in range(len(tokens) - JD_SHINGLE_K + 1)
+    ]
+
+
+def jd_simhash(description: str) -> str | None:
+    """64-bit SimHash of a JD as a 16-char hex string.
+
+    Returns None when the cleaned text is too thin to fingerprint without
+    risking false collisions.
+    """
+    text = _jd_clean_text(description)
+    if len(text) < JD_MIN_CHARS:
+        return None
+    shingles = _jd_shingles(text)
+    if not shingles:
+        return None
+
+    bits = [0] * 64
+    for shingle in shingles:
+        h = int.from_bytes(
+            hashlib.blake2b(shingle.encode(), digest_size=8).digest(),
+            "big",
+        )
+        for i in range(64):
+            if (h >> i) & 1:
+                bits[i] += 1
+            else:
+                bits[i] -= 1
+
+    fingerprint = 0
+    for i, v in enumerate(bits):
+        if v > 0:
+            fingerprint |= 1 << i
+    return f"{fingerprint:016x}"
+
+
+def jd_hamming_distance(a: str, b: str) -> int:
+    return bin(int(a, 16) ^ int(b, 16)).count("1")
+
+
 def cross_source_hash(raw: RawJob) -> str | None:
     """Hash a normalized (company, title) so the same role from different
     sources collapses to one row. Returns None if either field is too thin
@@ -180,6 +252,24 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
             stats.skipped_cross_source += 1
             return
 
+    jd_fp = jd_simhash(raw.description)
+    duplicate_of: int | None = None
+    if jd_fp is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=JD_LOOKBACK_DAYS)
+        recent = session.exec(
+            select(JobPosting)
+            .where(JobPosting.jd_fingerprint.is_not(None))  # type: ignore[union-attr]
+            .where(JobPosting.ingested_at >= cutoff)
+        ).all()
+        for candidate in recent:
+            if candidate.jd_fingerprint is None:
+                continue
+            if jd_hamming_distance(jd_fp, candidate.jd_fingerprint) <= JD_HAMMING_THRESHOLD:
+                # First-ingested wins — chase the canonical chain so we don't
+                # link to a row that's itself flagged as a dup.
+                duplicate_of = candidate.duplicate_of or candidate.id
+                break
+
     posting = JobPosting(
         source=raw.source,
         source_id=raw.source_id,
@@ -192,9 +282,13 @@ def ingest_one(session: Session, raw: RawJob, stats: IngestStats) -> None:
         posted_at=raw.posted_at,
         dedupe_hash=h,
         cross_source_hash=cross_h,
+        jd_fingerprint=jd_fp,
+        duplicate_of=duplicate_of,
         raw=raw.raw,
         company_id=company.id,
     )
+    if duplicate_of is not None:
+        stats.flagged_jd_similar += 1
 
     posting.filter_status = decision.status
     posting.filter_reason = decision.reason
@@ -336,6 +430,91 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
         stats.lightened += 1
 
     if stats.lightened:
+        session.commit()
+    return stats
+
+
+@dataclass
+class JdDedupeStats:
+    fingerprinted: int = 0
+    flagged: int = 0
+
+
+# Clustering window for the backfill CLI. Wider than the per-ingest lookback
+# because we're sweeping historical data, not making latency-sensitive
+# decisions.
+JD_CLUSTER_WINDOW_DAYS = 30
+
+
+def dedupe_jd_backfill(session: Session | None = None) -> JdDedupeStats:
+    """Populate jd_fingerprint on legacy rows and soft-link near-duplicates.
+
+    Clustering rule: for each row missing duplicate_of, find earlier rows
+    within JD_CLUSTER_WINDOW_DAYS whose fingerprint is within
+    JD_HAMMING_THRESHOLD bits. First match wins; the later row gets the link.
+
+    Passing an explicit ``session`` makes the helper unit-testable; otherwise
+    it opens its own session against the global engine.
+    """
+    if session is None:
+        with Session(engine()) as s:
+            return _dedupe_jd_backfill(s)
+    return _dedupe_jd_backfill(session)
+
+
+def _dedupe_jd_backfill(session: Session) -> JdDedupeStats:
+    stats = JdDedupeStats()
+    rows = session.exec(select(JobPosting).order_by(JobPosting.ingested_at)).all()
+
+    for row in rows:
+        if row.jd_fingerprint is not None:
+            continue
+        fp = jd_simhash(row.description or "")
+        if fp is None:
+            continue
+        row.jd_fingerprint = fp
+        session.add(row)
+        stats.fingerprinted += 1
+    if stats.fingerprinted:
+        session.commit()
+
+    rows = session.exec(
+        select(JobPosting)
+        .where(JobPosting.jd_fingerprint.is_not(None))  # type: ignore[union-attr]
+        .order_by(JobPosting.ingested_at)
+    ).all()
+
+    window = timedelta(days=JD_CLUSTER_WINDOW_DAYS)
+    for i, later in enumerate(rows):
+        if later.duplicate_of is not None:
+            continue
+        later_ingested = later.ingested_at
+        if later_ingested is not None and later_ingested.tzinfo is None:
+            later_ingested = later_ingested.replace(tzinfo=timezone.utc)
+        for earlier in rows[:i]:
+            if earlier.id == later.id:
+                continue
+            earlier_ingested = earlier.ingested_at
+            if earlier_ingested is not None and earlier_ingested.tzinfo is None:
+                earlier_ingested = earlier_ingested.replace(tzinfo=timezone.utc)
+            if (
+                later_ingested is not None
+                and earlier_ingested is not None
+                and (later_ingested - earlier_ingested) > window
+            ):
+                continue
+            if (
+                jd_hamming_distance(
+                    later.jd_fingerprint,  # type: ignore[arg-type]
+                    earlier.jd_fingerprint,  # type: ignore[arg-type]
+                )
+                <= JD_HAMMING_THRESHOLD
+            ):
+                later.duplicate_of = earlier.duplicate_of or earlier.id
+                session.add(later)
+                stats.flagged += 1
+                break
+    if stats.flagged:
         session.commit()
     return stats
 

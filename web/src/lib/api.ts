@@ -73,6 +73,7 @@ export interface Job {
 	company?: Company | null;
 	score?: Score | null;
 	application?: Application | null;
+	duplicate_of?: number | null;
 }
 
 export interface JobDetail extends Job {
@@ -132,6 +133,7 @@ export const api = {
 			status?: ApplicationStatus;
 			min_score?: number;
 			unscored_only?: boolean;
+			include_duplicates?: boolean;
 			limit?: number;
 		} = {}
 	) => {

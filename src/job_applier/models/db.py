@@ -60,6 +60,17 @@ class JobPosting(SQLModel, table=True):
     # one row. Nullable for backward-compat with rows ingested before this column
     # existed; new inserts always populate it.
     cross_source_hash: Optional[str] = Field(default=None, index=True)
+    # 64-bit SimHash over the job description as a 16-char hex string. Used to
+    # detect near-duplicate JDs (reposts, aggregator copies with reworded titles)
+    # that get past the (source, title) checks above. Null when the description
+    # is too short to fingerprint reliably.
+    jd_fingerprint: Optional[str] = Field(default=None, index=True)
+    # Soft link to the canonical posting when this row was flagged as a JD-similar
+    # duplicate. The row is still persisted; the API hides it from the default
+    # listing.
+    duplicate_of: Optional[int] = Field(
+        default=None, foreign_key="jobposting.id", index=True
+    )
     raw: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
     filter_status: FilterStatus = FilterStatus.passed
@@ -171,6 +182,7 @@ def create_db_and_tables() -> None:
     _ensure_matchscore_resume_id_column()
     _ensure_score_kind_columns()
     _ensure_application_followup_columns()
+    _ensure_jd_dedupe_columns()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -198,6 +210,29 @@ def _ensure_matchscore_resume_id_column() -> None:
         if "resume_id" not in cols:
             conn.exec_driver_sql("ALTER TABLE matchscore ADD COLUMN resume_id INTEGER")
             conn.commit()
+
+
+def _ensure_jd_dedupe_columns() -> None:
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobposting)")}
+        if "jd_fingerprint" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobposting ADD COLUMN jd_fingerprint VARCHAR"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_jobposting_jd_fingerprint "
+                "ON jobposting (jd_fingerprint)"
+            )
+        if "duplicate_of" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobposting ADD COLUMN duplicate_of INTEGER "
+                "REFERENCES jobposting(id)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_jobposting_duplicate_of "
+                "ON jobposting (duplicate_of)"
+            )
+        conn.commit()
 
 
 def _ensure_score_kind_columns() -> None:

@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from job_applier.ingest import (
+    JD_HAMMING_THRESHOLD,
     PRUNE_INGESTED_AFTER_DAYS,
     PRUNE_POSTED_AFTER_DAYS,
     STALE_AFTER_DAYS,
@@ -14,7 +15,10 @@ from job_applier.ingest import (
     _is_stale,
     archive_existing_duplicates,
     cross_source_hash,
+    dedupe_jd_backfill,
     ingest_one,
+    jd_hamming_distance,
+    jd_simhash,
     prune_old_postings,
 )
 from job_applier.models import Application, ApplicationStatus, Company, JobPosting
@@ -410,3 +414,186 @@ class TestIngestCrossSourceDedupe:
         # cross-source hash to collide on. Filter may or may not pass them — we
         # only check that the cross-source path didn't double-block.
         assert stats.skipped_cross_source == 0
+
+
+# A real-shaped JD long enough to clear the JD_MIN_CHARS floor. Same description
+# under different titles/companies is what JD-similarity dedupe needs to catch.
+_LONG_JD = (
+    "We are looking for a senior software engineer to lead our backend platform. "
+    "You will build distributed services in TypeScript and Node.js, work closely "
+    "with product, and mentor mid-level engineers. Our stack runs on Kubernetes "
+    "with PostgreSQL and Redis. We value clean code, async-friendly patterns, "
+    "good observability, and a bias toward simple, boring infrastructure. "
+    "Remote-first; we offer competitive comp, equity, and generous PTO. "
+    "Apply if you've shipped real systems and enjoy mentoring."
+)
+
+
+class TestJdSimhash:
+    def test_long_description_produces_hex_fingerprint(self):
+        fp = jd_simhash(_LONG_JD)
+        assert fp is not None
+        assert len(fp) == 16
+        assert int(fp, 16) >= 0
+
+    def test_short_description_returns_none(self):
+        assert jd_simhash("too short") is None
+        assert jd_simhash("") is None
+
+    def test_html_is_stripped(self):
+        plain = _LONG_JD
+        wrapped = f"<p>{_LONG_JD}</p>"
+        assert jd_simhash(plain) == jd_simhash(wrapped)
+
+    def test_identical_text_collides(self):
+        assert jd_simhash(_LONG_JD) == jd_simhash(_LONG_JD)
+
+    def test_minor_edit_is_within_threshold(self):
+        a = jd_simhash(_LONG_JD)
+        b = jd_simhash(_LONG_JD + " We also love good documentation.")
+        assert a is not None and b is not None
+        assert jd_hamming_distance(a, b) <= JD_HAMMING_THRESHOLD
+
+    def test_very_different_text_exceeds_threshold(self):
+        other = (
+            "Marketing manager needed for our consumer goods company. "
+            "Five years of brand management, agency relationships, and "
+            "campaign analytics. Strong copywriting required. Reports to "
+            "the VP of Marketing. Hybrid Chicago office, four days per week."
+        ) * 2
+        a = jd_simhash(_LONG_JD)
+        b = jd_simhash(other)
+        assert a is not None and b is not None
+        assert jd_hamming_distance(a, b) > JD_HAMMING_THRESHOLD
+
+
+class TestIngestJdSimilarity:
+    def test_same_jd_across_sources_is_flagged(self, session):
+        stats = IngestStats()
+        # First post from Greenhouse — company name matches so cross-source-hash
+        # would fire; use different company names to force the JD path.
+        first = _raw(
+            source="greenhouse",
+            source_id="gh-1",
+            company_name="Acme",
+            title="Senior Backend Engineer",
+            description=_LONG_JD,
+        )
+        # Second post from RemoteOK reblasted under an aggregator-style company
+        # name and a slightly reworded title. Different cross-source hash, but
+        # the JD is the same.
+        second = _raw(
+            source="remoteok",
+            source_id="rok-1",
+            company_name="Acme Staffing",
+            title="Senior Software Engineer (Backend)",
+            description=_LONG_JD,
+        )
+        ingest_one(session, first, stats)
+        ingest_one(session, second, stats)
+        session.commit()
+
+        assert stats.inserted == 2
+        assert stats.flagged_jd_similar == 1
+        rows = session.exec(
+            select(JobPosting).order_by(JobPosting.id)
+        ).all()
+        assert rows[0].duplicate_of is None
+        assert rows[1].duplicate_of == rows[0].id
+        assert rows[0].jd_fingerprint is not None
+        assert rows[0].jd_fingerprint == rows[1].jd_fingerprint
+
+    def test_unrelated_descriptions_are_not_flagged(self, session):
+        stats = IngestStats()
+        a = _raw(
+            source="greenhouse",
+            source_id="gh-a",
+            company_name="Acme",
+            title="Senior Backend Engineer",
+            description=_LONG_JD,
+        )
+        b = _raw(
+            source="lever",
+            source_id="lv-b",
+            company_name="Globex",
+            title="Senior Frontend Engineer",
+            description=(
+                "Globex needs a senior frontend engineer to build our customer "
+                "portal in React. Five years experience with TypeScript, SSR, "
+                "and design systems. Tight collaboration with design and product. "
+                "Strong CSS chops required; accessibility background a plus. "
+                "Remote in North America, occasional travel for offsites."
+            ),
+        )
+        ingest_one(session, a, stats)
+        ingest_one(session, b, stats)
+        session.commit()
+
+        assert stats.flagged_jd_similar == 0
+        rows = session.exec(select(JobPosting).order_by(JobPosting.id)).all()
+        assert all(r.duplicate_of is None for r in rows)
+
+
+class TestDedupeJdBackfill:
+    def _seed(self, session, ingested_at_offsets: list[timedelta]):
+        c1 = Company(name="Acme")
+        c2 = Company(name="Acme Staffing")
+        session.add(c1)
+        session.add(c2)
+        session.flush()
+        now = datetime.now(timezone.utc)
+        postings: list[JobPosting] = []
+        for i, offset in enumerate(ingested_at_offsets):
+            p = JobPosting(
+                source="greenhouse" if i == 0 else "remoteok",
+                source_id=f"src-{i}",
+                url=f"https://example.com/{i}",
+                title="Senior Backend Engineer",
+                description=_LONG_JD,
+                dedupe_hash=f"h-{i}",
+                company_id=(c1.id if i == 0 else c2.id),
+                ingested_at=now + offset,
+            )
+            session.add(p)
+            postings.append(p)
+        session.commit()
+        return postings
+
+    def test_backfill_fingerprints_and_links_recent_duplicates(self, session):
+        earlier, later = self._seed(
+            session, [timedelta(days=-2), timedelta(0)]
+        )
+
+        stats = dedupe_jd_backfill(session=session)
+
+        assert stats.fingerprinted == 2
+        assert stats.flagged == 1
+        session.refresh(earlier)
+        session.refresh(later)
+        assert earlier.duplicate_of is None
+        assert later.duplicate_of == earlier.id
+        assert earlier.jd_fingerprint is not None
+
+    def test_backfill_respects_cluster_window(self, session):
+        # 60 days apart > 30-day window → should NOT be linked even though the
+        # JDs are identical.
+        earlier, later = self._seed(
+            session, [timedelta(days=-60), timedelta(0)]
+        )
+
+        stats = dedupe_jd_backfill(session=session)
+
+        assert stats.fingerprinted == 2
+        assert stats.flagged == 0
+        session.refresh(later)
+        assert later.duplicate_of is None
+
+    def test_backfill_is_idempotent(self, session):
+        self._seed(session, [timedelta(days=-2), timedelta(0)])
+        first = dedupe_jd_backfill(session=session)
+        second = dedupe_jd_backfill(session=session)
+
+        assert first.flagged == 1
+        # Second pass: fingerprints already populated, links already set.
+        assert second.fingerprinted == 0
+        assert second.flagged == 0

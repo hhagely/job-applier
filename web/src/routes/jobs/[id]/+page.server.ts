@@ -22,7 +22,9 @@ export const load: PageServerLoad = async ({ params, fetch }) => {
 			api.getDraft(fetch, id),
 			api.getScoreHistory(fetch, id)
 		]);
-		return { job, draft, scoreHistory };
+		const canonical =
+			job.duplicate_of != null ? await api.getJob(fetch, job.duplicate_of) : null;
+		return { job, draft, scoreHistory, canonical };
 	} catch (e) {
 		throw error(404, (e as Error).message);
 	}
