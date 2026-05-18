@@ -1,9 +1,11 @@
 # job-applier
 
 A personal job board. Pulls remote roles from open job sources, filters them
-against hard rules (Senior+ JS/TS, no Angular), scores survivors against your
-resume via Claude Code, and surfaces the results in a SvelteKit review UI so you
-can decide which ones are worth tailoring an application for.
+against a configurable search profile (role titles, seniority, required and
+excluded tech), scores survivors against your resume via Claude Code, and
+surfaces the results in a SvelteKit review UI so you can decide which ones are
+worth tailoring an application for. Tailored resume + cover-letter drafts and
+follow-up tracking are built in.
 
 No LinkedIn or Indeed scraping — those violate ToS and risk account bans.
 Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday) and
@@ -36,6 +38,11 @@ make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
 
+> **This is a single-user local tool.** The FastAPI server binds to `127.0.0.1`
+> and has no authentication. CORS is locked to the local SvelteKit origin. Do
+> not expose it on a public interface — anyone who can reach it can mutate your
+> queue, your resume, and your search profile.
+
 ## Daily flow
 
 1. **Run the API + UI** in two terminals:
@@ -46,39 +53,63 @@ uv run job-applier init   # create the SQLite DB
 2. **Upload your resume** at http://localhost:5174/resume — pick the PDF you
    actually send to employers. The API extracts plain text via `pypdf` and stores
    it as the active resume. Older uploads are kept but inactive.
-3. **Ingest** new postings:
+3. **Configure your search profile** at http://localhost:5174/search — set role
+   titles, seniority terms, required tech, and excluded tech. These drive the
+   hard filter at ingest. Run `/suggest-roles` in Claude Code to have it propose
+   a profile based on your resume; you accept or edit before it applies.
+4. **Ingest** new postings:
    ```sh
    make ingest
    ```
-4. **Score the queue** — open Claude Code in this repo and run:
+5. **Score the queue** — open Claude Code in this repo and run:
    ```
    /match-pending
    ```
-   It pulls the active resume from `/api/resume/current`, fetches unscored jobs,
-   and writes scores back. Refresh the UI to see them.
-5. **Review** in the UI — change a job's status to `interested`, `applied`,
-   `rejected`, etc. Status changes use SvelteKit form actions, so they round-trip
-   through the backend without client-side fetch code.
+   It pulls the active resume from `/api/resume/current`, fetches unscored jobs
+   (plus any whose score is stale because the resume changed), and writes scores
+   back. Refresh the UI to see them.
+6. **Review** in the UI — change a job's status to `interested`, `drafted`,
+   `applied`, `screening`, `interviewing`, `rejected`, etc. Status changes use
+   SvelteKit form actions, so they round-trip through the backend without
+   client-side fetch code. Add jobs to the draft cart from any row; the cart
+   persists across `/`, `/jobs/[id]`, and `/followups`.
+7. **Draft tailored applications** for the jobs you want to apply to:
+   ```
+   /draft <job-id> [<job-id> ...]
+   ```
+   Writes a tailored resume + cover-letter markdown per job, renders both PDFs
+   via weasyprint under `applications/<id>/`, and re-scores the tailored draft
+   against the JD so you see a `baseline → tailored` delta. The job's status is
+   moved to `drafted`.
+8. **Track follow-ups** at http://localhost:5174/followups — applied jobs past
+   their follow-up date surface here so nothing goes silent.
 
 ## Project layout
 
 ```
 src/job_applier/
   api/         # FastAPI app + Pydantic schemas
-  filters/     # Hard-rule filter (remote, Senior+, JS/TS, no Angular)
-  models/      # SQLModel definitions + DB engine
+  filters/     # Hard-rule filter, driven by SearchProfile
+  models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
   sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, RemoteOK, WWR, HN)
-  ingest.py    # Pipeline: fetch → dedupe → filter → persist
+  ingest.py    # Pipeline: fetch → dedupe (per-source, cross-source, JD-SimHash) → filter → persist
+  drafts.py    # Tailored resume / cover-letter markdown + weasyprint PDF rendering
   resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
   config.py    # Settings (paths, ports, DB location)
 web/           # SvelteKit app
-  src/lib/api.ts                                 # typed client used by +page.server.ts
-  src/routes/+page.{svelte,server.ts}            # queue
-  src/routes/jobs/[id]/+page.{svelte,server.ts}  # detail + status form actions
-  src/routes/resume/+page.{svelte,server.ts}     # resume upload + view
+  src/lib/api.ts                                       # typed client used by +page.server.ts
+  src/lib/draftCart.svelte.ts                          # cross-route draft cart (Svelte rune-based store)
+  src/routes/+page.{svelte,server.ts}                  # queue (persisted filters, source/status/ease chips)
+  src/routes/jobs/[id]/+page.{svelte,server.ts}        # detail, status form actions, rubric popover, drafts
+  src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft)
+  src/routes/followups/+page.{svelte,server.ts}        # applied jobs past their follow-up date
+  src/routes/resume/+page.{svelte,server.ts}           # resume upload + view
 .claude/commands/
-  match-pending.md   # slash command Claude Code uses to score the queue
+  match-pending.md   # score the pending queue against the active resume
+  draft.md           # /draft <job-id>...  tailored resume + cover letter
+  score-draft.md     # /score-draft <job-id>...  re-score a tailored draft for the baseline → tailored delta
+  suggest-roles.md   # propose a SearchProfile from the active resume
 applications/        # generated tailored resumes / cover letters per job (gitignored)
 data/jobs.db         # SQLite (gitignored)
 data/resumes/        # uploaded PDFs (gitignored)
@@ -86,18 +117,40 @@ data/resumes/        # uploaded PDFs (gitignored)
 
 ## Hard filter rules
 
-Applied at ingest time; failed jobs are kept in the DB but marked `dropped` (auditable):
+Applied at ingest time. Jobs that fail the role criteria are dropped before
+persistence (cheap to re-evaluate on every ingest). Jobs that fail the location
+or remote checks are still written to the DB so they're auditable.
+
+The role-specific criteria — seniority terms, required tech, excluded tech — live
+on the `SearchProfile` row and are edited at http://localhost:5174/search. The
+fixed rules, always applied, are:
 
 - **Remote only** — drops `hybrid`, `on-site`, anything mentioning relocation.
-- **Senior level** — title must include Senior, Sr., Staff, Principal, Lead, Architect,
-  Distinguished, Head of, Director, VP.
-- **JS/TS stack** — must reference JavaScript/TypeScript or a JS framework
-  (React, Vue, Svelte, Next.js, Node, etc.).
-- **No Angular as primary** — Angular in the title disqualifies; Angular in tags
-  without another modern framework also disqualifies. Mentions in description
-  alongside other frameworks are surfaced as `manual` for you to judge.
+- **US-locatable** — if the posting names a non-US country/region and has no US
+  marker, drop. Specific "City, Region" locations without a US hint also drop.
+- **State allow-list must include Missouri** — postings that say "we can only
+  hire in X, Y, Z" and don't list MO drop. Phrased as "any US state" or
+  "nationwide" overrides.
+- **Not a sales / pre-sales / biz-dev title** — `Senior Solutions Engineer`,
+  `Head of Partnerships`, etc. are dropped even when they pass seniority.
 
-Adjust `src/job_applier/filters/rules.py` if your criteria change.
+Then the per-profile rules:
+
+- **Seniority** — title must contain one of `seniority_terms`.
+- **Required tech** — posting body or tags must reference one of `required_tech`.
+  Short tokens (≤2 chars, e.g. `js`, `ts`, `go`) only mark a posting as `manual`
+  on their own; long-form matches pass cleanly.
+- **Excluded tech** — an `excluded_tech` term in the title disqualifies; in the
+  tags it disqualifies unless a competing framework from `required_tech` is also
+  tagged. A mention only in the description with no positive required-tech
+  signal there is surfaced as `manual` so you can decide.
+
+Defaults shipped for fresh installs: senior+/staff/principal/lead seniority,
+JS/TS family stacks, Angular excluded. Run `/suggest-roles` to have Claude Code
+propose a profile from your resume; the recommendation is saved as a draft on
+`SearchProfile.recommendations_draft` and applied only when you click through
+the UI. The filter falls back to the built-in defaults whenever no profile row
+exists or its required-tech list is empty.
 
 ## Sources
 
@@ -139,17 +192,23 @@ as a wide net for *valid* slugs, not relevant ones. To add a target company
 by hand, insert into the DB directly (or edit `companies.py` before your first
 `init`). Failed fetches during ingest log a warning but don't break the run.
 
-### Cross-source dedupe
+### Dedupe
 
-Two dedupe layers run on every ingest:
+Three dedupe layers run during/after ingest:
 
 - **Per-source hash** (`source + source_id`) — catches the same job appearing
   twice in the same source.
 - **Cross-source hash** (normalized `(company, title)`) — collapses the same
   role surfaced via multiple sources (e.g. Stripe via Greenhouse + RemoteOK).
+- **JD SimHash** — a 64-bit fingerprint of the description catches near-duplicate
+  postings (reposts, aggregator copies with reworded titles) that slip past the
+  first two. The match isn't dropped; it's soft-linked to its canonical posting
+  via `JobPosting.duplicate_of` and hidden from the default listing.
 
-The cross-source hash is populated on every new insert; on existing rows it's
-backfilled by `job-applier init`.
+Cross-source hashes are populated on every new insert. The SimHash pass is
+incremental on each ingest and can be re-run / backfilled via `make dedupe-jd`.
+On existing rows without a cross-source hash, it's backfilled by `job-applier
+init`.
 
 ### Adding a brand-new source type
 
@@ -159,19 +218,35 @@ Create a file under `src/job_applier/sources/` that implements the
 `sources/__init__.py`. If the source needs per-company config, add a seed list
 to `companies.py` and a key to `_SEEDS` in `sources/refresh.py`.
 
-## Why no Anthropic API calls?
+## Slash commands
 
-You pay for Claude Code already. The `/match-pending` slash command (and the
-forthcoming `/draft <job-id>`) lets the Claude Code session itself do the
-reasoning, which keeps the project free of API keys and token costs.
+All LLM work runs inside Claude Code on this repo — no Anthropic API calls,
+no API keys to manage. Each command reads from / writes to the local API.
+
+| Command                       | What it does                                                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `/match-pending`              | Score every unscored job (and stale-scored jobs) against the active resume. Writes baseline scores.         |
+| `/draft <id> [<id> ...]`      | Generate a tailored resume + cover letter per job (markdown + PDF), set status to `drafted`, score the tailored draft. |
+| `/score-draft <id> [<id> ...]`| Re-score a tailored draft against the JD using the same rubric as `/match-pending`. Writes a `tailored`-kind score. |
+| `/suggest-roles`              | Read the active resume and POST a recommended `SearchProfile` to `recommendations_draft` for review at `/search`. |
+
+Scores are snapshotted to `MatchScoreHistory` whenever they're overwritten, so
+the `baseline → tailored` delta and prior-resume scores remain visible.
 
 ## Make targets
 
-| Command       | Description                                       |
-| ------------- | ------------------------------------------------- |
-| `make setup`  | `uv sync` + `npm install` for the web app         |
-| `make ingest` | Pull jobs from configured sources                 |
-| `make api`    | Run FastAPI on `:8000` with auto-reload           |
-| `make web`    | Run SvelteKit dev server on `:5174`               |
-| `make lint`   | `ruff check src/`                                 |
-| `make clean`  | Remove build artifacts and caches                 |
+| Command                  | Description                                                       |
+| ------------------------ | ----------------------------------------------------------------- |
+| `make setup`             | `uv sync` + `npm install` for the web app                         |
+| `make api`               | Run FastAPI on `:8000` with auto-reload                           |
+| `make web`               | Run SvelteKit dev server on `:5174`                               |
+| `make ingest`            | Pull jobs from configured sources                                 |
+| `make refresh-slugs`     | Discover new Greenhouse/Lever slugs from the SimplifyJobs feed    |
+| `make refresh-slugs-full`| Discover + re-verify existing slugs (auto-disables dead boards)   |
+| `make prune`             | Clear description/raw on old or archived postings (keeps hashes)  |
+| `make dedupe-jd`         | Backfill JD SimHash fingerprints + soft-link near-duplicate JDs   |
+| `make lint`              | `ruff check src/`                                                 |
+| `make test`              | Run backend + frontend test suites                                |
+| `make test-api`          | Backend tests (pytest)                                            |
+| `make test-web`          | Frontend tests (vitest)                                           |
+| `make clean`             | Remove build artifacts and caches                                 |
