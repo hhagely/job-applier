@@ -4,6 +4,7 @@ from job_applier.filters.rules import (
     build_config,
     evaluate,
     load_active_config,
+    title_quick_fail,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "build_config",
     "evaluate",
     "load_active_config",
+    "title_quick_fail",
 ]

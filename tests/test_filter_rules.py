@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from job_applier.filters.rules import evaluate
+from job_applier.filters.rules import evaluate, title_quick_fail
 from job_applier.models.db import FilterStatus
 
 
@@ -160,3 +160,38 @@ def test_keeps_when_states_named_without_restriction_phrase(make_raw):
         )
     )
     assert result.status is FilterStatus.passed
+
+
+class TestTitleQuickFail:
+    """Cheap title-only pre-check used by adapters that fan out detail fetches.
+    The whole point is to drop titles before paying an HTTP round-trip, so
+    these tests pin the contract: anything that could pass full evaluation
+    must NOT quick-fail, and anything that quick-fails must also fail full
+    evaluation by the same rule."""
+
+    def test_drops_non_senior_title(self):
+        assert title_quick_fail("Software Engineer") is True
+
+    def test_drops_junior_title(self):
+        assert title_quick_fail("Junior Developer") is True
+
+    def test_keeps_senior_title(self):
+        assert title_quick_fail("Senior Software Engineer") is False
+
+    def test_keeps_staff_title(self):
+        assert title_quick_fail("Staff Engineer, Platform") is False
+
+    def test_drops_sales_engineer(self):
+        # "Senior Sales Engineer" passes seniority but is a sales role.
+        assert title_quick_fail("Senior Sales Engineer") is True
+
+    def test_drops_account_executive(self):
+        assert title_quick_fail("Senior Account Executive") is True
+
+    def test_drops_head_of_partnerships(self):
+        assert title_quick_fail("Head of Partnerships") is True
+
+    def test_keeps_blank_seniority_when_no_config(self):
+        # Edge case — empty string shouldn't crash, but it should drop since
+        # there's no seniority marker.
+        assert title_quick_fail("") is True

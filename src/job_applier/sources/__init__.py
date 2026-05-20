@@ -36,14 +36,28 @@ def _enabled_slugs(source: str) -> list[str]:
 
 
 def get_all_sources() -> list[SourceAdapter]:
-    """Build the ingest source list from current DB state."""
+    """Build the ingest source list from current DB state.
+
+    The active ``FilterConfig`` is passed into Workable + SmartRecruiters so
+    those adapters can skip the per-job detail fetch for titles that already
+    fail seniority or sales rules — the dominant cost on those sources, and
+    the only realistic way to stay under Workable's IP rate limit on a
+    multi-hundred-slug board sweep.
+    """
+    # Lazy import — ``filters.rules`` imports ``RawJob`` from ``sources.base``,
+    # so a module-level import here would form a cycle.
+    from job_applier.filters import load_active_config
+
+    filter_config = load_active_config()
     return [
         GreenhouseSource(_enabled_slugs("greenhouse")),
         LeverSource(_enabled_slugs("lever")),
         AshbySource(_enabled_slugs("ashby")),
         WorkdaySource(_enabled_slugs("workday")),
-        WorkableSource(_enabled_slugs("workable")),
-        SmartRecruitersSource(_enabled_slugs("smartrecruiters")),
+        WorkableSource(_enabled_slugs("workable"), filter_config=filter_config),
+        SmartRecruitersSource(
+            _enabled_slugs("smartrecruiters"), filter_config=filter_config
+        ),
         RemoteOKSource(),
         WeWorkRemotelySource(),
         HackerNewsHiringSource(),

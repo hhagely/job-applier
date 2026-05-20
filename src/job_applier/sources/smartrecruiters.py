@@ -20,9 +20,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from datetime import datetime
+from typing import Optional
 
 import httpx
 
+from job_applier.filters import FilterConfig, title_quick_fail
 from job_applier.sources.base import RawJob
 
 log = logging.getLogger(__name__)
@@ -38,8 +40,16 @@ PAGE_LIMIT = 100
 class SmartRecruitersSource:
     name = "smartrecruiters"
 
-    def __init__(self, company_slugs: list[str]) -> None:
+    def __init__(
+        self,
+        company_slugs: list[str],
+        filter_config: Optional[FilterConfig] = None,
+    ) -> None:
         self.company_slugs = company_slugs
+        # Used to skip per-posting detail fetches when the title alone
+        # disqualifies. With 173 seeded slugs this is what keeps the run
+        # under ~10 minutes instead of nearly an hour.
+        self.filter_config = filter_config
 
     def fetch(self) -> Iterable[RawJob]:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
@@ -49,7 +59,13 @@ class SmartRecruitersSource:
     def _fetch_slug(self, client: httpx.Client, slug: str) -> Iterable[RawJob]:
         for summary in self._list_postings(client, slug):
             posting_id = summary.get("id")
+            title = summary.get("name") or ""
             if not posting_id:
+                continue
+            # Title-level pre-filter — cheap drop for non-senior or sales
+            # postings. The list response carries enough metadata to make
+            # this decision without a second HTTP call.
+            if title_quick_fail(title, self.filter_config):
                 continue
             try:
                 resp = client.get(DETAIL_URL.format(slug=slug, posting_id=posting_id))
