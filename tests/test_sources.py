@@ -13,11 +13,17 @@ from xml.etree import ElementTree as ET
 from job_applier.sources.ashby import _normalize as ashby_normalize
 from job_applier.sources.hackernews import _html_to_text, _parse_header
 from job_applier.sources.remoteok import _normalize as remoteok_normalize
+from job_applier.sources.smartrecruiters import _normalize as sr_normalize
 from job_applier.sources.weworkremotely import (
     _extract_company_url as wwr_extract_url,
 )
 from job_applier.sources.weworkremotely import _normalize as wwr_normalize
+from job_applier.sources.workable import _normalize as workable_normalize
 from job_applier.sources.workday import TITLE_GATE, parse_slug
+from job_applier.sources.ycombinator import (
+    _extract_jobposting_ld,
+    _split_hn_title,
+)
 
 
 class TestRemoteOK:
@@ -286,3 +292,165 @@ class TestHackerNewsParser:
         company, _, location, _ = _parse_header(text)
         assert company is not None
         assert location is None
+
+
+class TestWorkable:
+    def test_basic_normalization_with_remote(self):
+        item = {
+            "id": 12345,
+            "shortcode": "ABC123",
+            "title": "Senior Software Engineer",
+            "description": "<p>We build distributed systems in TypeScript.</p>",
+            "requirements": "<p>5+ years TypeScript experience.</p>",
+            "benefits": "<p>Unlimited PTO.</p>",
+            "remote": True,
+            "workplace": "remote",
+            "type": "full",
+            "department": ["Engineering"],
+            "location": {
+                "country": "United States",
+                "countryCode": "US",
+                "city": "Remote",
+                "region": "",
+            },
+            "published": "2026-04-15T00:00:00.000Z",
+        }
+        raw = workable_normalize("rokt", item)
+        assert raw is not None
+        assert raw.source == "workable"
+        assert raw.source_id == "rokt:ABC123"
+        assert raw.title == "Senior Software Engineer"
+        assert raw.company_name == "rokt"
+        assert raw.remote is True
+        assert "Engineering" in raw.tags
+        assert "TypeScript" in raw.description
+        assert raw.url == "https://apply.workable.com/rokt/j/ABC123/"
+        assert raw.posted_at is not None
+
+    def test_onsite_flag_propagates(self):
+        item = {
+            "id": 1,
+            "shortcode": "X",
+            "title": "Engineer",
+            "description": "",
+            "remote": False,
+            "workplace": "on_site",
+            "location": {"city": "NYC", "country": "United States"},
+        }
+        raw = workable_normalize("co", item)
+        assert raw.remote is False
+        assert "on_site" in raw.tags
+
+    def test_missing_shortcode_skipped(self):
+        item = {"id": 1, "title": "X"}
+        assert workable_normalize("co", item) is None
+
+
+class TestSmartRecruiters:
+    def test_basic_normalization(self):
+        item = {
+            "id": "744000122509268",
+            "name": "Senior Software Engineer",
+            "company": {"name": "Visa", "identifier": "Visa"},
+            "location": {
+                "city": "Austin",
+                "region": "TX",
+                "country": "us",
+                "fullLocation": "Austin, TX, United States",
+                "remote": False,
+                "hybrid": True,
+            },
+            "industry": {"label": "Information Technology"},
+            "department": {"label": "Engineering"},
+            "function": {"label": "Information Technology"},
+            "typeOfEmployment": {"label": "Full-time"},
+            "releasedDate": "2026-04-23T16:54:54.835Z",
+            "postingUrl": "https://jobs.smartrecruiters.com/Visa/744000122509268",
+            "jobAd": {
+                "sections": {
+                    "jobDescription": {
+                        "title": "Job Description",
+                        "text": "<p>Build payment systems in TypeScript.</p>",
+                    },
+                    "qualifications": {
+                        "title": "Qualifications",
+                        "text": "<p>5+ years experience.</p>",
+                    },
+                }
+            },
+        }
+        raw = sr_normalize("Visa", item)
+        assert raw is not None
+        assert raw.source == "smartrecruiters"
+        assert raw.source_id == "Visa:744000122509268"
+        assert raw.company_name == "Visa"
+        assert raw.title == "Senior Software Engineer"
+        assert raw.location == "Austin, TX, United States"
+        assert "TypeScript" in raw.description
+        assert raw.employment_type == "Full-time"
+        assert "hybrid" in raw.tags
+        assert raw.remote is False  # hybrid, not remote
+
+    def test_remote_flag_set_when_location_remote(self):
+        item = {
+            "id": "1",
+            "name": "Eng",
+            "company": {"name": "Co"},
+            "location": {"remote": True, "fullLocation": "Remote, US"},
+            "jobAd": {"sections": {}},
+        }
+        raw = sr_normalize("Co", item)
+        assert raw.remote is True
+        assert "remote" in raw.tags
+
+    def test_missing_id_or_name_returns_none(self):
+        assert sr_normalize("Co", {"name": "X"}) is None
+        assert sr_normalize("Co", {"id": "1"}) is None
+
+
+class TestYCombinator:
+    def test_split_hn_title_canonical(self):
+        company, role = _split_hn_title("Kyber (YC W23) Is Hiring a Founding Marketer")
+        assert company == "Kyber"
+        assert role == "Founding Marketer"
+
+    def test_split_hn_title_sr_alias(self):
+        company, role = _split_hn_title(
+            "Pathos AI (YC S22) Is Hiring Senior Software / AI Engineer"
+        )
+        assert company == "Pathos AI"
+        assert role == "Senior Software / AI Engineer"
+
+    def test_split_hn_title_unmatched(self):
+        company, role = _split_hn_title("Acme is hiring engineers")
+        assert company is None
+        assert role is None
+
+    def test_extract_jobposting_ld_finds_block(self):
+        html = """
+        <html><head>
+        <script type="application/ld+json">
+        {"@context":"https://schema.org/","@type":"JobPosting","title":"Senior Engineer","description":"<p>Build stuff with TypeScript.</p>"}
+        </script>
+        </head><body>...</body></html>
+        """
+        ld = _extract_jobposting_ld(html)
+        assert ld is not None
+        assert ld["title"] == "Senior Engineer"
+
+    def test_extract_jobposting_ld_returns_none_when_missing(self):
+        html = "<html><body>no JSON-LD here</body></html>"
+        assert _extract_jobposting_ld(html) is None
+
+    def test_extract_jobposting_ld_inside_graph(self):
+        html = """
+        <script type="application/ld+json">
+        {"@context":"https://schema.org/","@graph":[
+            {"@type":"WebPage","name":"Page"},
+            {"@type":"JobPosting","title":"Staff Engineer","description":"x"}
+        ]}
+        </script>
+        """
+        ld = _extract_jobposting_ld(html)
+        assert ld is not None
+        assert ld["title"] == "Staff Engineer"

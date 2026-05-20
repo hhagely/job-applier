@@ -5,6 +5,7 @@ import json
 import typer
 
 from job_applier.config import settings
+from job_applier.diagnostics import diagnose_filter, format_diagnostic
 from job_applier.ingest import (
     archive_existing_duplicates,
     backfill_cross_source_hash,
@@ -48,7 +49,7 @@ def refresh_slugs_cmd(
         help="Also re-check existing slugs and disable any that no longer respond.",
     ),
 ) -> None:
-    """Discover new Greenhouse/Lever slugs from the SimplifyJobs feed and verify them."""
+    """Discover new Greenhouse/Lever/Workable/SmartRecruiters slugs from the SimplifyJobs feed and verify them."""
     create_db_and_tables()
     stats = refresh_slugs(reverify_existing=reverify)
     typer.echo(json.dumps(stats.__dict__, indent=2))
@@ -85,6 +86,25 @@ def prune() -> None:
     with Session(engine()) as session:
         stats = prune_old_postings(session)
     typer.echo(json.dumps(stats.__dict__, indent=2))
+
+
+@app.command("diagnose-filter")
+def diagnose_filter_cmd(
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit raw JSON instead of the human-readable summary.",
+    ),
+) -> None:
+    """Fetch from every source and report what the hard filter does with each
+    job — without writing to the DB. Use when ingest is producing too few
+    rows to tell whether sourcing or filtering is the bottleneck."""
+    create_db_and_tables()
+    diag = diagnose_filter()
+    if json_out:
+        typer.echo(json.dumps(diag.as_dict(), indent=2))
+    else:
+        typer.echo(format_diagnostic(diag))
 
 
 @app.command()

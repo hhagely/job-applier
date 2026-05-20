@@ -23,12 +23,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlmodel import Session, select
 
 from job_applier.models.db import FilterStatus, SearchProfile, engine
-from job_applier.sources.base import RawJob
+
+if TYPE_CHECKING:
+    # Annotation-only — importing ``RawJob`` at runtime forms a cycle
+    # (sources -> filters -> sources). ``from __future__ import annotations``
+    # keeps the references string-evaluated at runtime.
+    from job_applier.sources.base import RawJob
 
 
 def _alt_pattern(terms: list[str]) -> str:
@@ -371,6 +376,23 @@ class FilterResult:
 def _haystack(raw: RawJob) -> str:
     parts = [raw.title, raw.description, " ".join(raw.tags), raw.location or ""]
     return "\n".join(parts)
+
+
+def title_quick_fail(title: str, config: Optional[FilterConfig] = None) -> bool:
+    """Cheap title-only check — does this title fail seniority or sales rules?
+
+    Used by adapters that fan out per-job HTTP requests (Workable,
+    SmartRecruiters) to skip the expensive detail fetch when the title alone
+    already disqualifies the posting. Mirrors rules 4 and 5 of ``evaluate``;
+    deliberately conservative — anything that *could* pass returns ``False``.
+    """
+    cfg = config or _BUILTIN_DEFAULT
+    title = title or ""
+    if cfg.seniority_re is not None and not cfg.seniority_re.search(title):
+        return True
+    if SALES_TITLE.search(title) or SALES_HEAD_OF.search(title):
+        return True
+    return False
 
 
 def evaluate(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult:

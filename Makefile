@@ -1,4 +1,4 @@
-.PHONY: setup api web dev ingest prune dedupe-jd clean lint test test-api test-web help
+.PHONY: setup api web dev ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies
 	uv sync
@@ -17,16 +17,19 @@ dev: ## Run backend + frontend together (requires GNU parallel or two terminals)
 ingest: ## Pull jobs from configured sources
 	uv run job-applier ingest
 
+diagnose-filter: ## Dry-run every source and report what the hard filter is dropping
+	uv run job-applier diagnose-filter
+
 prune: ## Lighten old/archived postings (clears description + raw, keeps dedupe hashes)
 	uv run job-applier prune
 
 dedupe-jd: ## Backfill JD SimHash fingerprints and soft-link near-duplicate postings
 	uv run job-applier dedupe-jd
 
-refresh-slugs: ## Discover new Greenhouse/Lever slugs from the SimplifyJobs feed
+refresh-slugs: ## Discover new Greenhouse/Lever/Workable/SmartRecruiters slugs from the SimplifyJobs feed
 	uv run job-applier refresh-slugs
 
-refresh-slugs-full: ## Discover new slugs and re-verify existing ones (auto-disables dead boards)
+refresh-slugs-full: ## Discover new slugs and re-verify existing ones across all per-company sources (auto-disables dead boards)
 	uv run job-applier refresh-slugs --reverify
 
 clean: ## Remove build artifacts and caches
