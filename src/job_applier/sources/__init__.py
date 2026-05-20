@@ -15,6 +15,7 @@ from job_applier.sources.ashby import AshbySource
 from job_applier.sources.base import RawJob, SourceAdapter
 from job_applier.sources.greenhouse import GreenhouseSource
 from job_applier.sources.hackernews import HackerNewsHiringSource
+from job_applier.sources.jibe import JibeSource
 from job_applier.sources.lever import LeverSource
 from job_applier.sources.remoteok import RemoteOKSource
 from job_applier.sources.smartrecruiters import SmartRecruitersSource
@@ -58,6 +59,7 @@ def get_all_sources() -> list[SourceAdapter]:
         SmartRecruitersSource(
             _enabled_slugs("smartrecruiters"), filter_config=filter_config
         ),
+        JibeSource(_enabled_slugs("jibe")),
         RemoteOKSource(),
         WeWorkRemotelySource(),
         HackerNewsHiringSource(),
@@ -69,6 +71,7 @@ __all__ = [
     "AshbySource",
     "GreenhouseSource",
     "HackerNewsHiringSource",
+    "JibeSource",
     "LeverSource",
     "RawJob",
     "RemoteOKSource",

@@ -22,6 +22,7 @@ Ashby:           https://api.ashbyhq.com/posting-api/job-board/{slug}
 Workday:         https://{tenant}.{region}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs
 Workable:        https://apply.workable.com/api/v3/accounts/{slug}/jobs (POST)
 SmartRecruiters: https://api.smartrecruiters.com/v1/companies/{slug}/postings
+Jibe:            https://{tenant}.jibeapply.com/api/jobs?page={n}
 """
 
 GREENHOUSE_COMPANIES: list[str] = [
@@ -1363,4 +1364,11 @@ SMARTRECRUITERS_COMPANIES: list[str] = [
     "dstaff",
     "somfygroup",
     "systemCanadaTechnologies",
+]
+
+# Jibe tenants. Slugs are the jibeapply.com subdomain (e.g. "githubinc" for
+# https://githubinc.jibeapply.com). Jibe has no central directory and is
+# not covered by SimplifyJobs, so this list is manually curated.
+JIBE_TENANTS: list[str] = [
+    "githubinc",
 ]

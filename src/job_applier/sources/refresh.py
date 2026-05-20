@@ -26,6 +26,7 @@ from job_applier.models import SourceSlug, engine
 from job_applier.sources.companies import (
     ASHBY_COMPANIES,
     GREENHOUSE_COMPANIES,
+    JIBE_TENANTS,
     LEVER_COMPANIES,
     SMARTRECRUITERS_COMPANIES,
     WORKABLE_COMPANIES,
@@ -90,6 +91,7 @@ _SEEDS: dict[str, list[str]] = {
     "workday": WORKDAY_BOARDS,
     "workable": WORKABLE_COMPANIES,
     "smartrecruiters": SMARTRECRUITERS_COMPANIES,
+    "jibe": JIBE_TENANTS,
 }
 
 
