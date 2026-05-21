@@ -1371,4 +1371,5 @@ SMARTRECRUITERS_COMPANIES: list[str] = [
 # not covered by SimplifyJobs, so this list is manually curated.
 JIBE_TENANTS: list[str] = [
     "githubinc",
+    "spa",
 ]
