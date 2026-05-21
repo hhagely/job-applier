@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 
 from job_applier.sources.ashby import _normalize as ashby_normalize
 from job_applier.sources.hackernews import _html_to_text, _parse_header
+from job_applier.sources.jibe import _normalize as jibe_normalize
 from job_applier.sources.remoteok import _normalize as remoteok_normalize
 from job_applier.sources.smartrecruiters import _normalize as sr_normalize
 from job_applier.sources.weworkremotely import (
@@ -406,6 +407,84 @@ class TestSmartRecruiters:
     def test_missing_id_or_name_returns_none(self):
         assert sr_normalize("Co", {"name": "X"}) is None
         assert sr_normalize("Co", {"id": "1"}) is None
+
+
+class TestJibe:
+    def test_basic_normalization(self):
+        item = {
+            "slug": "5414",
+            "req_id": "5414",
+            "title": "Senior Software Engineer, Elasticsearch",
+            "description": "<strong>About GitHub</strong><br>We build TypeScript tooling.",
+            "responsibilities": "<p>Own the Elasticsearch cluster.</p>",
+            "qualifications": "<p>5+ years TypeScript / Go experience.</p>",
+            "location_name": "US Remote",
+            "full_location": "United States",
+            "location_type": "ANY",
+            "country": "United States",
+            "country_code": "US",
+            "employment_type": "FULL_TIME",
+            "posted_date": "2026-05-19T17:00:00+0000",
+            "apply_url": "https://careers-githubinc.icims.com/jobs/5414/login",
+            "categories": [{"name": "Engineering"}],
+            "tags3": ["Engineering"],
+            "tags4": ["Experienced Professional"],
+            "tags5": ["Individual Contributor"],
+            "hiring_organization": "GitHub, Inc.",
+        }
+        raw = jibe_normalize("githubinc", item)
+        assert raw is not None
+        assert raw.source == "jibe"
+        assert raw.source_id == "githubinc:5414"
+        assert raw.title == "Senior Software Engineer, Elasticsearch"
+        assert raw.company_name == "GitHub, Inc."
+        assert raw.remote is True
+        assert "Engineering" in raw.tags
+        assert "remote" in raw.tags
+        assert "TypeScript" in raw.description
+        assert "Elasticsearch cluster" in raw.description
+        assert raw.url == "https://githubinc.jibeapply.com/jobs/5414?lang=en-us"
+        assert raw.location == "US Remote"
+        assert raw.employment_type == "FULL_TIME"
+        assert raw.posted_at is not None
+
+    def test_remote_inferred_from_location_name_text(self):
+        item = {
+            "slug": "1",
+            "title": "Staff Engineer",
+            "location_name": "US Remote",
+            "full_location": "United States",
+            "description": "",
+        }
+        raw = jibe_normalize("co", item)
+        assert raw.remote is True
+        assert "remote" in raw.tags
+
+    def test_non_remote_location_marks_not_remote(self):
+        item = {
+            "slug": "2",
+            "title": "Engineer",
+            "location_name": "San Francisco, CA",
+            "description": "",
+        }
+        raw = jibe_normalize("co", item)
+        assert raw.remote is False
+        assert "remote" not in raw.tags
+
+    def test_falls_back_to_tenant_when_hiring_organization_missing(self):
+        item = {"slug": "3", "title": "Engineer", "description": ""}
+        raw = jibe_normalize("acme-corp", item)
+        assert raw.company_name == "acme-corp"
+
+    def test_missing_title_or_slug_returns_none(self):
+        assert jibe_normalize("co", {"slug": "1", "title": ""}) is None
+        assert jibe_normalize("co", {"title": "Engineer"}) is None
+
+    def test_req_id_used_when_slug_missing(self):
+        item = {"req_id": "REQ-999", "title": "Engineer", "description": ""}
+        raw = jibe_normalize("co", item)
+        assert raw.source_id == "co:REQ-999"
+        assert raw.url == "https://co.jibeapply.com/jobs/REQ-999?lang=en-us"
 
 
 class TestYCombinator:
