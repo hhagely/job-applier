@@ -46,7 +46,31 @@ hr { border: 0; border-top: 1px solid #ccc; margin: 0.7em 0; }
 strong { font-weight: 600; }
 """
 
+# Cover letters are business letters, not resumes: roomier margins, a
+# lighter name header, generous paragraph spacing, and a contact line that
+# sits just under the name. Rendered with soft-break => <br> (see _md_letter)
+# so the signature block ("Sincerely," / name) keeps its line breaks.
+_COVER_LETTER_CSS = """
+@page { size: Letter; margin: 1in 1in; }
+html { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 11pt; color: #111; }
+body { line-height: 1.5; }
+h1 { font-size: 16pt; font-weight: 600; margin: 0 0 0.1em; }
+h1 + p { margin-top: 0; color: #555; font-size: 10pt; }
+p { margin: 0 0 0.85em; }
+a { color: #2257a5; text-decoration: none; }
+strong { font-weight: 600; }
+"""
+
 _md = MarkdownIt("commonmark", {"linkify": True, "html": False}).enable("table")
+# Soft newlines become <br> so the salutation/signature lines don't collapse.
+_md_letter = MarkdownIt(
+    "commonmark", {"linkify": True, "html": False, "breaks": True}
+)
+
+_RENDER: dict[DraftKind, tuple[MarkdownIt, str]] = {
+    "resume": (_md, _PRINT_CSS),
+    "cover_letter": (_md_letter, _COVER_LETTER_CSS),
+}
 
 
 @dataclass(frozen=True)
@@ -63,10 +87,11 @@ def draft_dir(job_id: int) -> Path:
     return settings.applications_dir / str(job_id)
 
 
-def _markdown_to_pdf_bytes(md_text: str) -> bytes:
-    html_body = _md.render(md_text)
+def _markdown_to_pdf_bytes(md_text: str, kind: DraftKind) -> bytes:
+    renderer, css = _RENDER[kind]
+    html_body = renderer.render(md_text)
     full = f"<!doctype html><html><head><meta charset='utf-8'></head><body>{html_body}</body></html>"
-    return HTML(string=full).write_pdf(stylesheets=[CSS(string=_PRINT_CSS)])
+    return HTML(string=full).write_pdf(stylesheets=[CSS(string=css)])
 
 
 def save_and_render(
@@ -90,7 +115,7 @@ def render_existing(job_id: int) -> DraftStatus:
     for kind, (md_name, pdf_name) in _FILES.items():
         md_path = d / md_name
         if md_path.exists():
-            pdf_bytes = _markdown_to_pdf_bytes(md_path.read_text(encoding="utf-8"))
+            pdf_bytes = _markdown_to_pdf_bytes(md_path.read_text(encoding="utf-8"), kind)
             (d / pdf_name).write_bytes(pdf_bytes)
     return get_status(job_id)
 
@@ -129,4 +154,4 @@ def pdf_path(job_id: int, kind: DraftKind) -> Path:
 def _write_pair(d: Path, kind: DraftKind, md_text: str) -> None:
     md_name, pdf_name = _FILES[kind]
     (d / md_name).write_text(md_text, encoding="utf-8")
-    (d / pdf_name).write_bytes(_markdown_to_pdf_bytes(md_text))
+    (d / pdf_name).write_bytes(_markdown_to_pdf_bytes(md_text, kind))
