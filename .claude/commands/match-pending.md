@@ -40,8 +40,19 @@ subscription instead of paying for API tokens.
      -d '{"score": <total>, "rubric": {...}, "reasoning": "<2-3 sentences>", "scored_by": "claude-code"}'
    ```
 
-6. **Report**: print a one-line summary per job (`<id>  <score>/100  <title>`)
-   and a final count.
+6. **Auto-archive low scorers**: collect the ids of every job you scored **below 60**
+   in this run (score `< 60`, so 60 itself survives — this includes the 0-scored
+   disqualifications above). Archive them in one call:
+   ```
+   curl -sS -X POST http://127.0.0.1:8000/api/jobs/bulk-status \
+     -H 'content-type: application/json' \
+     -d '{"job_ids": [<id>, <id>, ...], "status": "archived"}'
+   ```
+   Skip this call entirely if no job scored below 60. Only archive jobs you actually
+   scored in this run — never touch unscored postings.
+
+7. **Report**: print a one-line summary per job (`<id>  <score>/100  <title>`),
+   mark which ones were archived, and a final count (scored / archived).
 
 ## Rubric (sums to 100)
 
