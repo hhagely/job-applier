@@ -294,7 +294,24 @@ Category order should lead with the JD's priorities.
       - http://127.0.0.1:8000/api/jobs/<id>/draft/resume.pdf
       - http://127.0.0.1:8000/api/jobs/<id>/draft/cover-letter.pdf
 
-    Then a one-line tally at the bottom: `N drafted, M skipped/failed`.
+    Then a one-line tally: `N drafted, M skipped/failed`.
+
+12. **Finish with a summary table** of every job that was successfully drafted
+    (skip the failed/skipped ones — they're already noted above). The job link
+    points at the local SvelteKit UI on port 5174, where the user reviews and
+    downloads. Markdown table, one row per drafted job:
+
+    ```
+    | Job | Company | Score | Review |
+    | --- | --- | --- | --- |
+    | [<title>](http://localhost:5174/jobs/<id>) | <company> | <baseline> → <tailored> | [open](http://localhost:5174/jobs/<id>) |
+    ```
+
+    - **Job** column links the title to `http://localhost:5174/jobs/<id>`.
+    - **Score** is the same `<baseline> → <tailored>` values from the per-job
+      block above.
+    - If no jobs were drafted successfully, write `No drafts produced.` instead
+      of an empty table.
 
 ## Notes
 
