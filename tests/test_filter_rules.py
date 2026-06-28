@@ -56,6 +56,37 @@ def test_drops_sales_titles(title: str, make_raw):
     assert "sales" in reason or "biz" in reason
 
 
+@pytest.mark.parametrize(
+    "title,description",
+    [
+        ("Senior Blockchain Engineer", "We use TypeScript and React."),
+        ("Senior Software Engineer", "Build our cryptocurrency exchange in TypeScript."),
+        ("Senior Software Engineer", "Web3 startup. TypeScript, React, Solidity."),
+        ("Senior Software Engineer", "Write smart contracts. TypeScript front end."),
+        ("Senior Software Engineer", "DeFi protocol on Ethereum. Node.js backend."),
+        ("Senior Software Engineer", "NFT marketplace built with React and TypeScript."),
+    ],
+)
+def test_drops_crypto_blockchain_roles(title: str, description: str, make_raw):
+    result = evaluate(make_raw(title=title, description=description))
+    assert result.status is FilterStatus.dropped
+    assert "crypto" in (result.reason or "").lower()
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        # "cryptography" / "crypto" for security must not trigger the crypto filter.
+        "Senior backend role. Strong cryptography and TLS background. TypeScript.",
+        # A Java-style Data Access Object pattern shouldn't read as a crypto DAO.
+        "We use a DAO layer over Postgres. TypeScript and React on the front end.",
+    ],
+)
+def test_keeps_non_crypto_uses_of_crypto_adjacent_words(description: str, make_raw):
+    result = evaluate(make_raw(description=description))
+    assert result.status is FilterStatus.passed
+
+
 def test_drops_angular_in_title(make_raw):
     result = evaluate(make_raw(title="Senior Angular Engineer"))
     assert result.status is FilterStatus.dropped

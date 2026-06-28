@@ -6,8 +6,9 @@ Rules (drop on any failure):
   3. If the posting names an explicit US-state allow-list, Missouri must be in it.
   4. Title must indicate one of the configured seniority terms.
   5. Title must not be a sales / pre-sales / biz-dev role.
-  6. Posting must reference one of the configured required-tech terms.
-  7. A configured excluded-tech term as the primary stack disqualifies.
+  6. Posting must not be a crypto / blockchain / web3 role.
+  7. Posting must reference one of the configured required-tech terms.
+  8. A configured excluded-tech term as the primary stack disqualifies.
 
 Ambiguous postings (e.g. tech implied via short tokens only, exclusion mentioned
 in description with no positive signal) are marked `manual` so the user can
@@ -234,6 +235,32 @@ SALES_HEAD_OF = re.compile(
     re.IGNORECASE,
 )
 
+# Cryptocurrency / blockchain / web3 industry signals. The user doesn't want
+# roles from that world, so any of these in the title/description/tags drops the
+# posting. Terms are kept deliberately unambiguous: bare "crypto" is omitted (it
+# collides with "cryptography"), and "DAO" is omitted (collides with the Java
+# Data-Access-Object pattern). "crypto" only counts when glued to a finance
+# token (crypto-currency, crypto exchange, crypto wallet, ...).
+CRYPTO_BLOCKCHAIN = re.compile(
+    r"\b("
+    r"blockchain|"
+    r"cryptocurrenc(?:y|ies)|"
+    r"crypto[\s-]?(?:currenc(?:y|ies)|exchange|wallet|trading|token|asset|native)|"
+    r"web\s?3(?:\.0)?|"
+    r"defi|"
+    r"nfts?|"
+    r"ethereum|"
+    r"bitcoin|"
+    r"solidity|"
+    r"stablecoins?|"
+    r"dapps?|"
+    r"on[\s-]?chain|"
+    r"smart\s+contracts?|"
+    r"proof[\s-]of[\s-](?:stake|work)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # Non-US country / region / major-city tokens. If the location names one of these
 # AND has no US marker, drop. "Remote", "Distributed", "Anywhere" with no country
 # is left to scoring rather than filtered here.
@@ -429,7 +456,11 @@ def evaluate(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult
     if SALES_TITLE.search(title) or SALES_HEAD_OF.search(title):
         return FilterResult(FilterStatus.dropped, "title is sales / pre-sales / biz-dev")
 
-    # 6. Excluded-tech check (before required-tech — an excluded term may itself
+    # 6. Crypto / blockchain / web3 industry
+    if CRYPTO_BLOCKCHAIN.search(haystack):
+        return FilterResult(FilterStatus.dropped, "crypto / blockchain / web3 role")
+
+    # 7. Excluded-tech check (before required-tech — an excluded term may itself
     #    satisfy required-tech, but disqualifies anyway).
     #
     #    A pure language tag (e.g. "typescript") doesn't rescue a posting tagged
@@ -452,7 +483,7 @@ def evaluate(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult
             FilterStatus.dropped, "excluded tech is the listed primary stack"
         )
 
-    # 7. Required-tech reference
+    # 8. Required-tech reference
     has_long = bool(cfg.required_long_re and cfg.required_long_re.search(haystack))
     has_short = bool(cfg.required_short_re and cfg.required_short_re.search(haystack))
     if cfg.required_long_re is not None or cfg.required_short_re is not None:
