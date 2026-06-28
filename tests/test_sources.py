@@ -13,6 +13,13 @@ from xml.etree import ElementTree as ET
 from job_applier.sources.ashby import _normalize as ashby_normalize
 from job_applier.sources.hackernews import _html_to_text, _parse_header
 from job_applier.sources.jibe import _normalize as jibe_normalize
+from job_applier.sources.oracle import (
+    _derive_company as oracle_derive_company,
+)
+from job_applier.sources.oracle import _html_to_text as oracle_html_to_text
+from job_applier.sources.oracle import _normalize as oracle_normalize
+from job_applier.sources.oracle import _parse_list as oracle_parse_list
+from job_applier.sources.oracle import parse_slug as oracle_parse_slug
 from job_applier.sources.remoteok import _normalize as remoteok_normalize
 from job_applier.sources.smartrecruiters import _normalize as sr_normalize
 from job_applier.sources.weworkremotely import (
@@ -247,6 +254,109 @@ class TestWorkday:
             "Senior Product Manager",  # no engineering token
         ]:
             assert not TITLE_GATE.search(t), f"expected drop: {t}"
+
+
+class TestOracle:
+    def test_parse_full_slug(self):
+        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch|Oracle")
+        assert s is not None
+        assert s.host == "careers.oracle.com"
+        assert s.site_number == "CX_45001"
+        assert s.site_name == "jobsearch"
+        assert s.company == "Oracle"
+        assert "recruitingCEJobRequisitions" in s.list_url
+        assert s.public_url("123") == (
+            "https://careers.oracle.com/en/sites/jobsearch/job/123"
+        )
+
+    def test_parse_slug_derives_company_when_omitted(self):
+        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
+        assert s is not None
+        assert s.company == "Oracle"
+
+    def test_parse_invalid_slug(self):
+        assert oracle_parse_slug("host|CX_1") is None  # too few fields
+        assert oracle_parse_slug("host||name") is None  # empty site number
+        assert oracle_parse_slug("") is None
+
+    def test_finder_strings_are_well_formed(self):
+        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
+        finder = s.list_finder(keyword="software engineer", limit=25, offset=50)
+        assert finder.startswith("findReqs;")
+        assert "siteNumber=CX_45001" in finder
+        assert "limit=25" in finder
+        assert "offset=50" in finder
+        assert "keyword=software engineer" in finder
+        assert s.detail_finder("999") == 'ById;Id="999",siteNumber=CX_45001'
+
+    def test_html_to_text_strips_markup(self):
+        assert oracle_html_to_text("<p>Build <b>systems</b>.</p>") == "Build systems."
+        assert oracle_html_to_text("") == ""
+
+    def test_parse_list_nested_shape(self):
+        data = {
+            "items": [
+                {
+                    "TotalJobsCount": 7,
+                    "requisitionList": [{"Id": "1"}, {"Id": "2"}],
+                }
+            ]
+        }
+        postings, total = oracle_parse_list(data)
+        assert [p["Id"] for p in postings] == ["1", "2"]
+        assert total == 7
+
+    def test_parse_list_empty(self):
+        assert oracle_parse_list({"items": []}) == ([], None)
+        assert oracle_parse_list({}) == ([], None)
+
+    def test_normalize_builds_rawjob(self):
+        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch|Oracle")
+        posting = {"Id": "44", "Title": "Senior Software Engineer"}
+        detail = {
+            "Id": "44",
+            "Title": "Senior Software Engineer",
+            "ExternalDescriptionStr": "<p>Own the platform.</p>",
+            "ExternalQualificationsStr": "<p>10y Python.</p>",
+            "PrimaryLocation": "United States",
+            "WorkplaceTypeCode": "ORA_REMOTE",
+            "JobFamily": "Engineering",
+        }
+        raw = oracle_normalize(s, posting, detail)
+        assert raw is not None
+        assert raw.source == "oracle"
+        assert raw.source_id == "careers.oracle.com:44"
+        assert raw.company_name == "Oracle"
+        assert raw.url == "https://careers.oracle.com/en/sites/jobsearch/job/44"
+        assert "Own the platform." in raw.description
+        assert "10y Python." in raw.description
+        assert raw.remote is True
+        assert raw.location == "United States"
+        assert "Engineering" in raw.tags
+
+    def test_normalize_remote_from_location_text(self):
+        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
+        raw = oracle_normalize(
+            s,
+            {"Id": "1", "Title": "Staff Engineer"},
+            {
+                "Id": "1",
+                "Title": "Staff Engineer",
+                "PrimaryLocation": "Remote, United States",
+                "WorkplaceTypeCode": "ORA_ONSITE",
+            },
+        )
+        assert raw is not None
+        assert raw.remote is True
+
+    def test_normalize_skips_missing_id_or_title(self):
+        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
+        assert oracle_normalize(s, {}, {"Title": "x"}) is None
+        assert oracle_normalize(s, {}, {"Id": "1"}) is None
+
+    def test_derive_company_skips_noise_subdomains(self):
+        assert oracle_derive_company("careers.oracle.com") == "Oracle"
+        assert oracle_derive_company("jobs.acme-corp.com") == "Acme Corp"
 
 
 class TestHackerNewsParser:
