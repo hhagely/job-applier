@@ -7,31 +7,35 @@ same call the browser makes when you load a company's careers page. (This is
 distinct from the authenticated ``recruitingJobRequisitions`` HCM API, which
 needs OAuth and is useless for crawling.)
 
+Crucially, the REST API is served by the underlying Fusion host
+(e.g. ``eeho.fa.us2.oraclecloud.com``), NOT by any vanity careers domain.
+``careers.oracle.com`` is just a front-end: it serves the candidate UI but
+302-redirects ``/hcmRestApi`` calls to the Fusion host's 404 page. So the
+slug carries the Fusion API host, and a separate public base URL is used for
+human-clickable job links.
+
 List call (titles, locations, posting dates, requisition ids)::
 
-    GET https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions
+    GET https://{apiHost}/hcmRestApi/resources/latest/recruitingCEJobRequisitions
         ?onlyData=true
         &expand=requisitionList.secondaryLocations
-        &finder=findReqs;siteNumber={CX_n},limit=N,offset=N,sortBy=POSTING_DATES_DESC[,keyword=...]
+        &finder=findReqs;siteNumber={CX_n},limit=N,offset=N,sortBy=POSTING_DATES_DESC
 
 The list payload nests the postings under ``items[0].requisitionList`` and a
-``TotalJobsCount`` alongside them. Descriptions are NOT in the list response;
-each posting needs a second detail call::
+``TotalJobsCount`` alongside them. We page through the whole site (sites are
+typically small -- low thousands) and title-gate client-side; descriptions
+are NOT in the list response, so each gated posting needs a second detail
+call::
 
-    GET https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails
+    GET https://{apiHost}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails
         ?expand=all&onlyData=true&finder=ById;Id="{id}",siteNumber={CX_n}
 
-Like the Workday adapter, we narrow up-front with keyword searches and a title
-gate so we don't download every requisition on large tenants (Oracle itself
-has thousands).
-
-Slugs are stored in ``SourceSlug.slug`` as ``{host}|{siteNumber}|{siteName}``
-with an optional fourth ``|{company}`` field -- e.g.
-``careers.oracle.com|CX_45001|jobsearch|Oracle``. ``host`` and ``siteNumber``
-drive the API; ``siteName`` builds the public job URL
-(``/en/sites/{siteName}/job/{id}``); ``company`` is the display name (derived
-from the host when omitted, which is only reliable for vanity hosts like
-``careers.oracle.com``).
+Slugs are stored in ``SourceSlug.slug`` as
+``{apiHost}|{siteNumber}|{publicJobBaseUrl}[|{company}]`` -- e.g.
+``eeho.fa.us2.oraclecloud.com|CX_45001|https://careers.oracle.com/en/sites/jobsearch|Oracle``.
+``apiHost`` and ``siteNumber`` drive the API; ``publicJobBaseUrl`` builds the
+click-through link (``{base}/job/{id}``); ``company`` is the display name
+(derived from the API host when omitted, which is only a guess).
 """
 
 from __future__ import annotations
@@ -50,14 +54,10 @@ from job_applier.sources.base import RawJob
 
 log = logging.getLogger(__name__)
 
-# Keyword searches used to narrow each site. The union catches engineering
-# roles without forcing a download of every requisition. Deduped by req id.
-SEARCH_TERMS = ["software engineer", "typescript", "javascript", "node"]
-
-# Per-(site, keyword) cap and page size. Oracle CE allows large limits, but we
-# keep pages modest and bounded so a single keyword can't pull a whole tenant.
-MAX_PER_SEARCH = 100
-PAGE_SIZE = 25
+# Page size for the list call and a hard cap on how many postings we'll page
+# through per site, so a misbehaving tenant can't spin forever.
+PAGE_SIZE = 100
+MAX_POSTINGS = 4000
 
 # Senior + engineering title gate, applied before the detail fetch. Mirrors the
 # Workday adapter's gate -- cheap pre-filter; anything that passes still goes
@@ -69,8 +69,10 @@ TITLE_GATE = re.compile(
 )
 
 # Subdomain labels that carry no company signal -- skipped when deriving a
-# display name from the host.
-_NOISE_LABELS = {"careers", "career", "jobs", "job", "www", "eeho", "fa"}
+# display name from the host. ``_REGION_LABEL`` matches Fusion datacenter codes
+# like ``us2`` / ``em2`` / ``ap1``.
+_NOISE_LABELS = {"careers", "career", "jobs", "job", "www", "eeho", "fa", "oraclecloud"}
+_REGION_LABEL = re.compile(r"^[a-z]{2}\d+$")
 
 
 class _Stripper(HTMLParser):
@@ -99,14 +101,12 @@ def _html_to_text(html: str) -> str:
 
 
 def _derive_company(host: str) -> str:
-    """Best-effort display name from a host. Reliable only for vanity hosts."""
+    """Best-effort display name from a host. Only a guess for Fusion hosts."""
     labels = [label for label in host.split(".") if label]
-    # Drop the TLD and any leading noise subdomains, then titlecase the most
-    # significant remaining label (e.g. careers.oracle.com -> "Oracle").
     meaningful = [
         label
         for label in labels[:-1]  # drop TLD
-        if label not in _NOISE_LABELS
+        if label not in _NOISE_LABELS and not _REGION_LABEL.match(label)
     ]
     if not meaningful:
         return host
@@ -115,58 +115,56 @@ def _derive_company(host: str) -> str:
 
 @dataclass(frozen=True)
 class OracleSite:
-    host: str          # e.g. careers.oracle.com
-    site_number: str   # e.g. CX_45001
-    site_name: str     # e.g. jobsearch (used only for the public URL)
-    company: str       # display name
+    api_host: str       # Fusion host that serves the REST API, e.g. eeho.fa.us2.oraclecloud.com
+    site_number: str    # e.g. CX_45001
+    public_base: str    # job-link base, e.g. https://careers.oracle.com/en/sites/jobsearch
+    company: str        # display name
 
     @property
     def list_url(self) -> str:
         return (
-            f"https://{self.host}/hcmRestApi/resources/latest/"
+            f"https://{self.api_host}/hcmRestApi/resources/latest/"
             "recruitingCEJobRequisitions"
         )
 
     @property
     def detail_url(self) -> str:
         return (
-            f"https://{self.host}/hcmRestApi/resources/latest/"
+            f"https://{self.api_host}/hcmRestApi/resources/latest/"
             "recruitingCEJobRequisitionDetails"
         )
 
-    def list_finder(self, *, keyword: str, limit: int, offset: int) -> str:
+    def list_finder(self, *, limit: int, offset: int) -> str:
         # The CE finder is a semicolon/comma-delimited string, not query params.
-        parts = [
-            f"siteNumber={self.site_number}",
-            f"limit={limit}",
-            f"offset={offset}",
-            "sortBy=POSTING_DATES_DESC",
-        ]
-        if keyword:
-            parts.append(f"keyword={keyword}")
-        return "findReqs;" + ",".join(parts)
+        return (
+            f"findReqs;siteNumber={self.site_number},limit={limit},"
+            f"offset={offset},sortBy=POSTING_DATES_DESC"
+        )
 
     def detail_finder(self, req_id: str) -> str:
         # Id must be wrapped in literal double quotes inside the finder string.
         return f'ById;Id="{req_id}",siteNumber={self.site_number}'
 
     def public_url(self, req_id: str) -> str:
-        return f"https://{self.host}/en/sites/{self.site_name}/job/{req_id}"
+        return f"{self.public_base.rstrip('/')}/job/{req_id}"
 
 
 def parse_slug(slug: str) -> OracleSite | None:
-    """Parse ``{host}|{siteNumber}|{siteName}[|{company}]``.
+    """Parse ``{apiHost}|{siteNumber}|{publicJobBaseUrl}[|{company}]``.
 
     The first three fields are required; ``company`` is optional and derived
-    from the host when omitted.
+    from the API host when omitted.
     """
     parts = [p.strip() for p in slug.split("|")]
     if len(parts) < 3 or not all(parts[:3]):
         return None
-    host, site_number, site_name = parts[0], parts[1], parts[2]
-    company = parts[3] if len(parts) >= 4 and parts[3] else _derive_company(host)
+    api_host, site_number, public_base = parts[0], parts[1], parts[2]
+    company = parts[3] if len(parts) >= 4 and parts[3] else _derive_company(api_host)
     return OracleSite(
-        host=host, site_number=site_number, site_name=site_name, company=company
+        api_host=api_host,
+        site_number=site_number,
+        public_base=public_base,
+        company=company,
     )
 
 
@@ -199,65 +197,57 @@ def _fetch_site(client: httpx.Client, site: OracleSite) -> Iterable[RawJob]:
     seen_ids: set[str] = set()
     candidates: list[dict] = []
 
-    for term in SEARCH_TERMS:
-        offset = 0
-        pulled = 0
-        while pulled < MAX_PER_SEARCH:
-            try:
-                resp = client.get(
-                    site.list_url,
-                    params={
-                        "onlyData": "true",
-                        "expand": "requisitionList.secondaryLocations",
-                        "finder": site.list_finder(
-                            keyword=term, limit=PAGE_SIZE, offset=offset
-                        ),
-                    },
-                )
-            except httpx.HTTPError as e:
-                log.warning(
-                    "oracle[%s] search %r failed: %s", site.host, term, e
-                )
-                break
+    offset = 0
+    while offset < MAX_POSTINGS:
+        try:
+            resp = client.get(
+                site.list_url,
+                params={
+                    "onlyData": "true",
+                    "expand": "requisitionList.secondaryLocations",
+                    "finder": site.list_finder(limit=PAGE_SIZE, offset=offset),
+                },
+            )
+        except httpx.HTTPError as e:
+            log.warning("oracle[%s] list fetch failed: %s", site.api_host, e)
+            break
 
-            if resp.status_code != 200:
-                log.warning(
-                    "oracle[%s] search %r returned HTTP %d, skipping site",
-                    site.host,
-                    term,
-                    resp.status_code,
-                )
-                return
+        if resp.status_code != 200:
+            log.warning(
+                "oracle[%s] list returned HTTP %d at offset %d, skipping site",
+                site.api_host,
+                resp.status_code,
+                offset,
+            )
+            return
 
-            try:
-                data = resp.json()
-            except ValueError:
-                break
+        try:
+            data = resp.json()
+        except ValueError:
+            break
 
-            postings, total = _parse_list(data)
-            if not postings:
-                break
+        postings, total = _parse_list(data)
+        if not postings:
+            break
 
-            for p in postings:
-                req_id = str(p.get("Id") or "").strip()
-                if not req_id or req_id in seen_ids:
-                    continue
-                seen_ids.add(req_id)
-                title = p.get("Title") or ""
-                if not TITLE_GATE.search(title):
-                    continue
+        for p in postings:
+            req_id = str(p.get("Id") or "").strip()
+            if not req_id or req_id in seen_ids:
+                continue
+            seen_ids.add(req_id)
+            title = p.get("Title") or ""
+            if TITLE_GATE.search(title):
                 candidates.append(p)
 
-            offset += len(postings)
-            pulled += len(postings)
-            if len(postings) < PAGE_SIZE or (total is not None and offset >= total):
-                break
+        offset += len(postings)
+        if len(postings) < PAGE_SIZE or (total is not None and offset >= total):
+            break
 
     log.info(
-        "oracle[%s] %d candidates after title gate (across %d search terms)",
-        site.host,
+        "oracle[%s] %d candidates after title gate (of %d scanned)",
+        site.api_host,
         len(candidates),
-        len(SEARCH_TERMS),
+        len(seen_ids),
     )
 
     for p in candidates:
@@ -305,7 +295,9 @@ def _fetch_detail(
         resp.raise_for_status()
         data = resp.json()
     except (httpx.HTTPError, ValueError) as e:
-        log.warning("oracle[%s] detail fetch failed for %s: %s", site.host, req_id, e)
+        log.warning(
+            "oracle[%s] detail fetch failed for %s: %s", site.api_host, req_id, e
+        )
         return None
 
     detail = _first_item(data) or {}
@@ -354,7 +346,7 @@ def _normalize(site: OracleSite, posting: dict, detail: dict) -> RawJob | None:
 
     return RawJob(
         source="oracle",
-        source_id=f"{site.host}:{req_id}",
+        source_id=f"{site.api_host}:{req_id}",
         url=site.public_url(req_id),
         title=title,
         company_name=site.company,
@@ -376,7 +368,11 @@ def _secondary_locations(posting: dict) -> str:
     locs = posting.get("secondaryLocations")
     if not isinstance(locs, list):
         return ""
-    names = [str(loc.get("Name")) for loc in locs if isinstance(loc, dict) and loc.get("Name")]
+    names = [
+        str(loc.get("Name"))
+        for loc in locs
+        if isinstance(loc, dict) and loc.get("Name")
+    ]
     return ", ".join(names)
 
 

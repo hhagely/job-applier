@@ -256,37 +256,50 @@ class TestWorkday:
             assert not TITLE_GATE.search(t), f"expected drop: {t}"
 
 
+_ORACLE_SLUG = (
+    "eeho.fa.us2.oraclecloud.com|CX_45001"
+    "|https://careers.oracle.com/en/sites/jobsearch|Oracle"
+)
+_ORACLE_SLUG_NOCO = (
+    "eeho.fa.us2.oraclecloud.com|CX_45001"
+    "|https://careers.oracle.com/en/sites/jobsearch"
+)
+
+
 class TestOracle:
     def test_parse_full_slug(self):
-        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch|Oracle")
+        s = oracle_parse_slug(_ORACLE_SLUG)
         assert s is not None
-        assert s.host == "careers.oracle.com"
+        assert s.api_host == "eeho.fa.us2.oraclecloud.com"
         assert s.site_number == "CX_45001"
-        assert s.site_name == "jobsearch"
+        assert s.public_base == "https://careers.oracle.com/en/sites/jobsearch"
         assert s.company == "Oracle"
+        assert "eeho.fa.us2.oraclecloud.com" in s.list_url
         assert "recruitingCEJobRequisitions" in s.list_url
         assert s.public_url("123") == (
             "https://careers.oracle.com/en/sites/jobsearch/job/123"
         )
 
     def test_parse_slug_derives_company_when_omitted(self):
-        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
+        # A pure Fusion host has no recoverable company name (all labels are
+        # noise/region/oraclecloud), so derivation falls back to the host
+        # itself -- which is exactly why the seed carries an explicit company.
+        s = oracle_parse_slug(_ORACLE_SLUG_NOCO)
         assert s is not None
-        assert s.company == "Oracle"
+        assert s.company == "eeho.fa.us2.oraclecloud.com"
 
     def test_parse_invalid_slug(self):
         assert oracle_parse_slug("host|CX_1") is None  # too few fields
-        assert oracle_parse_slug("host||name") is None  # empty site number
+        assert oracle_parse_slug("host||base") is None  # empty site number
         assert oracle_parse_slug("") is None
 
     def test_finder_strings_are_well_formed(self):
-        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
-        finder = s.list_finder(keyword="software engineer", limit=25, offset=50)
+        s = oracle_parse_slug(_ORACLE_SLUG)
+        finder = s.list_finder(limit=25, offset=50)
         assert finder.startswith("findReqs;")
         assert "siteNumber=CX_45001" in finder
         assert "limit=25" in finder
         assert "offset=50" in finder
-        assert "keyword=software engineer" in finder
         assert s.detail_finder("999") == 'ById;Id="999",siteNumber=CX_45001'
 
     def test_html_to_text_strips_markup(self):
@@ -311,7 +324,7 @@ class TestOracle:
         assert oracle_parse_list({}) == ([], None)
 
     def test_normalize_builds_rawjob(self):
-        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch|Oracle")
+        s = oracle_parse_slug(_ORACLE_SLUG)
         posting = {"Id": "44", "Title": "Senior Software Engineer"}
         detail = {
             "Id": "44",
@@ -325,7 +338,7 @@ class TestOracle:
         raw = oracle_normalize(s, posting, detail)
         assert raw is not None
         assert raw.source == "oracle"
-        assert raw.source_id == "careers.oracle.com:44"
+        assert raw.source_id == "eeho.fa.us2.oraclecloud.com:44"
         assert raw.company_name == "Oracle"
         assert raw.url == "https://careers.oracle.com/en/sites/jobsearch/job/44"
         assert "Own the platform." in raw.description
@@ -335,7 +348,7 @@ class TestOracle:
         assert "Engineering" in raw.tags
 
     def test_normalize_remote_from_location_text(self):
-        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
+        s = oracle_parse_slug(_ORACLE_SLUG_NOCO)
         raw = oracle_normalize(
             s,
             {"Id": "1", "Title": "Staff Engineer"},
@@ -350,7 +363,7 @@ class TestOracle:
         assert raw.remote is True
 
     def test_normalize_skips_missing_id_or_title(self):
-        s = oracle_parse_slug("careers.oracle.com|CX_45001|jobsearch")
+        s = oracle_parse_slug(_ORACLE_SLUG_NOCO)
         assert oracle_normalize(s, {}, {"Title": "x"}) is None
         assert oracle_normalize(s, {}, {"Id": "1"}) is None
 

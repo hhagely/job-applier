@@ -23,12 +23,14 @@ Workday:         https://{tenant}.{region}.myworkdayjobs.com/wday/cxs/{tenant}/{
 Workable:        https://apply.workable.com/api/v3/accounts/{slug}/jobs (POST)
 SmartRecruiters: https://api.smartrecruiters.com/v1/companies/{slug}/postings
 Jibe:            https://{tenant}.jibeapply.com/api/jobs?page={n}
-Oracle:          https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions
+Oracle:          https://{apiHost}/hcmRestApi/resources/latest/recruitingCEJobRequisitions
 
-Oracle (ORC) slugs are packed as ``{host}|{siteNumber}|{siteName}[|{company}]``
-since the candidate-experience API keys on a per-tenant host plus a numeric
-``CX_n`` site number that the public URL path (a human-readable site name)
-doesn't expose.
+Oracle (ORC) slugs are packed as
+``{apiHost}|{siteNumber}|{publicJobBaseUrl}[|{company}]``. The candidate-
+experience API is served by the underlying Fusion host (e.g.
+``eeho.fa.us2.oraclecloud.com``), not the vanity careers domain, and keys on a
+numeric ``CX_n`` site number; the public job-link base is carried separately so
+click-throughs land on the pretty careers URL.
 """
 
 GREENHOUSE_COMPANIES: list[str] = [
@@ -1380,10 +1382,14 @@ JIBE_TENANTS: list[str] = [
     "spa",
 ]
 
-# Oracle Recruiting Cloud sites. Slugs pack {host}|{siteNumber}|{siteName} with
-# an optional |{company} display-name override. The siteNumber (CX_n) is read
-# off the recruitingCEJobRequisitions network call on the site's job-search
-# page. No central directory; manually curated.
+# Oracle Recruiting Cloud sites. Slugs pack
+# {apiHost}|{siteNumber}|{publicJobBaseUrl} with an optional |{company}
+# display-name override. The apiHost is the Fusion host that serves the REST
+# API (NOT the vanity careers domain, which 302s API calls away); the
+# siteNumber (CX_n) and apiHost are read off the recruitingCEJobRequisitions
+# network call on the site's job-search page. No central directory; manually
+# curated.
 ORACLE_SITES: list[str] = [
-    "careers.oracle.com|CX_45001|jobsearch|Oracle",
+    "eeho.fa.us2.oraclecloud.com|CX_45001"
+    "|https://careers.oracle.com/en/sites/jobsearch|Oracle",
 ]
