@@ -46,7 +46,6 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from html.parser import HTMLParser
 
 import httpx
 
@@ -68,6 +67,39 @@ TITLE_GATE = re.compile(
     re.IGNORECASE,
 )
 
+# Explicit "this is a remote role" markers in the title or description. Many
+# Oracle tenants (Oracle Health, notably) leave ``WorkplaceType`` blank and
+# instead encode the work mode in the title -- "(Remote)", "[Remote]",
+# "... - Remote", or a "fully remote" / "work from home" phrase in the body.
+# Without this fallback those roles look on-site and get dropped by the hard
+# filter. Patterns are kept high-precision: the dash form requires a space
+# after the separator so it doesn't fire on "non-remote", and only unambiguous
+# body phrases count.
+_REMOTE_SIGNAL = re.compile(
+    r"\(\s*remote\b"  # "(Remote)" / "(Remote, US)"
+    r"|\[\s*remote\b"  # "[Remote]"
+    r"|[-–—|:]\s+remote\b"  # " - Remote" / " | Remote" (space skips "non-remote")
+    r"|\bremote\s*[-–—|:]"  # "Remote -" / "Remote:"
+    r"|\bfully[\s-]+remote\b"
+    r"|\b100%\s+remote\b"
+    r"|\bremote[\s-]+first\b"
+    r"|\bwork(?:s|ing)?\s+remotely\b"
+    r"|\bwork\s+from\s+home\b",
+    re.IGNORECASE,
+)
+
+# A location entry that names only a country, with no city or state component,
+# is how Oracle tenants encode a country-wide / remote requisition: a bare
+# "United States" instead of (or alongside) "City, ST, United States". On-site
+# roles always carry the city-level form, so the comma-free country string is a
+# reliable remote signal. Matched against each *individual* location entry, not
+# the joined display string, so a remote req that also lists office cities (a
+# bare "United States" sitting next to "Austin, TX, United States") is caught.
+_COUNTRY_ONLY_LOCATION = re.compile(
+    r"^(united states(?: of america)?|usa|u\.s\.a?\.?)$",
+    re.IGNORECASE,
+)
+
 # Subdomain labels that carry no company signal -- skipped when deriving a
 # display name from the host. ``_REGION_LABEL`` matches Fusion datacenter codes
 # like ``us2`` / ``em2`` / ``ap1``.
@@ -75,29 +107,28 @@ _NOISE_LABELS = {"careers", "career", "jobs", "job", "www", "eeho", "fa", "oracl
 _REGION_LABEL = re.compile(r"^[a-z]{2}\d+$")
 
 
-class _Stripper(HTMLParser):
-    """Minimal HTML-to-text. Oracle returns descriptions as HTML strings."""
+def _combine_description(detail: dict) -> str:
+    """Join Oracle's HTML description sections into one renderable blob.
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self._parts.append(data)
-
-    def text(self) -> str:
-        return "".join(self._parts)
-
-
-def _html_to_text(html: str) -> str:
-    if not html:
-        return ""
-    p = _Stripper()
-    try:
-        p.feed(html)
-    except Exception:  # pragma: no cover - defensive; malformed markup
-        return html
-    return re.sub(r"\n{3,}", "\n\n", p.text()).strip()
+    Oracle returns each section -- description, responsibilities,
+    qualifications -- as a standalone HTML string (``<p>``/``<ul>``/``<li>``
+    markup, not plain text). We keep the markup rather than stripping it: the
+    frontend renders job descriptions with ``{@html}`` and styles the block
+    elements, so plain text would collapse into one unformatted wall. Sections
+    are separated by a blank line so concatenated ``<p>``/``<ul>`` blocks stay
+    distinct, matching how the other adapters (Greenhouse, Workday, Ashby,
+    Workable) store HTML descriptions.
+    """
+    parts = [
+        text
+        for part in (
+            detail.get("ExternalDescriptionStr"),
+            detail.get("ExternalResponsibilitiesStr"),
+            detail.get("ExternalQualificationsStr"),
+        )
+        if part and (text := str(part).strip())
+    ]
+    return "\n\n".join(parts)
 
 
 def _derive_company(host: str) -> str:
@@ -320,17 +351,7 @@ def _normalize(site: OracleSite, posting: dict, detail: dict) -> RawJob | None:
     if not req_id or not title:
         return None
 
-    description = _html_to_text(
-        "\n\n".join(
-            part
-            for part in (
-                detail.get("ExternalDescriptionStr"),
-                detail.get("ExternalResponsibilitiesStr"),
-                detail.get("ExternalQualificationsStr"),
-            )
-            if part
-        )
-    )
+    description = _combine_description(detail)
 
     location = (
         detail.get("PrimaryLocation")
@@ -342,7 +363,16 @@ def _normalize(site: OracleSite, posting: dict, detail: dict) -> RawJob | None:
     workplace = (
         str(detail.get("WorkplaceTypeCode") or detail.get("WorkplaceType") or "")
     ).upper()
-    remote = "REMOTE" in workplace or "remote" in location.lower()
+    # ``WorkplaceType`` is authoritative when present, but is often blank on
+    # Oracle tenants; fall back to the location text, then to a bare-country
+    # location entry (see ``_COUNTRY_ONLY_LOCATION``), then to an explicit
+    # remote marker in the title/description (see ``_REMOTE_SIGNAL``).
+    remote = (
+        "REMOTE" in workplace
+        or "remote" in location.lower()
+        or any(_COUNTRY_ONLY_LOCATION.match(p) for p in _location_entries(posting, detail))
+        or bool(_REMOTE_SIGNAL.search(f"{title}\n{description}"))
+    )
 
     return RawJob(
         source="oracle",
@@ -362,6 +392,26 @@ def _normalize(site: OracleSite, posting: dict, detail: dict) -> RawJob | None:
         ],
         raw={"list": posting, "detail": detail},
     )
+
+
+def _location_entries(posting: dict, detail: dict) -> list[str]:
+    """All individual location strings on a posting, primary plus secondaries.
+
+    Used for the country-only remote check, which has to inspect each entry on
+    its own -- a req can list specific offices *and* a bare "United States" --
+    rather than the joined display string built in ``_normalize``.
+    """
+    entries: list[str] = []
+    for value in (detail.get("PrimaryLocation"), posting.get("PrimaryLocation")):
+        if value:
+            entries.append(str(value).strip())
+    for source in (detail, posting):
+        locs = source.get("secondaryLocations")
+        if isinstance(locs, list):
+            for loc in locs:
+                if isinstance(loc, dict) and loc.get("Name"):
+                    entries.append(str(loc["Name"]).strip())
+    return entries
 
 
 def _secondary_locations(posting: dict) -> str:

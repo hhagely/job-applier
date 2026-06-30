@@ -16,7 +16,7 @@ from job_applier.sources.jibe import _normalize as jibe_normalize
 from job_applier.sources.oracle import (
     _derive_company as oracle_derive_company,
 )
-from job_applier.sources.oracle import _html_to_text as oracle_html_to_text
+from job_applier.sources.oracle import _combine_description as oracle_combine_description
 from job_applier.sources.oracle import _normalize as oracle_normalize
 from job_applier.sources.oracle import _parse_list as oracle_parse_list
 from job_applier.sources.oracle import parse_slug as oracle_parse_slug
@@ -302,9 +302,17 @@ class TestOracle:
         assert "offset=50" in finder
         assert s.detail_finder("999") == 'ById;Id="999",siteNumber=CX_45001'
 
-    def test_html_to_text_strips_markup(self):
-        assert oracle_html_to_text("<p>Build <b>systems</b>.</p>") == "Build systems."
-        assert oracle_html_to_text("") == ""
+    def test_combine_description_keeps_html(self):
+        # Oracle descriptions are rendered with {@html} on the frontend, so we
+        # keep the markup and only join the sections with a blank line.
+        detail = {
+            "ExternalDescriptionStr": "<p>Build <b>systems</b>.</p>",
+            "ExternalResponsibilitiesStr": "<ul><li>Ship.</li></ul>",
+            "ExternalQualificationsStr": "",
+        }
+        combined = oracle_combine_description(detail)
+        assert combined == "<p>Build <b>systems</b>.</p>\n\n<ul><li>Ship.</li></ul>"
+        assert oracle_combine_description({}) == ""
 
     def test_parse_list_nested_shape(self):
         data = {
@@ -361,6 +369,123 @@ class TestOracle:
         )
         assert raw is not None
         assert raw.remote is True
+
+    def test_normalize_remote_from_bare_country_location(self):
+        # A bare "United States" primary location (no city/state) is how Oracle
+        # encodes a country-wide remote role, even with WorkplaceType blank.
+        s = oracle_parse_slug(_ORACLE_SLUG)
+        raw = oracle_normalize(
+            s,
+            {"Id": "1", "Title": "Principal Application Software Engineer"},
+            {
+                "Id": "1",
+                "Title": "Principal Application Software Engineer",
+                "PrimaryLocation": "United States",
+                "WorkplaceType": "",
+            },
+        )
+        assert raw is not None
+        assert raw.remote is True
+
+    def test_normalize_remote_from_bare_country_secondary_location(self):
+        # A req can list specific offices and *also* carry a bare "United
+        # States" secondary location -- that bare entry means it's remote.
+        s = oracle_parse_slug(_ORACLE_SLUG)
+        raw = oracle_normalize(
+            s,
+            {
+                "Id": "1",
+                "Title": "Lead Principal Platform Software Engineer",
+                "secondaryLocations": [
+                    {"Name": "Austin, TX, United States"},
+                    {"Name": "United States"},
+                ],
+            },
+            {
+                "Id": "1",
+                "Title": "Lead Principal Platform Software Engineer",
+                "PrimaryLocation": "Nashville, TN, United States",
+                "WorkplaceType": "",
+            },
+        )
+        assert raw is not None
+        assert raw.remote is True
+
+    def test_normalize_not_remote_with_only_city_locations(self):
+        # Example 3: every entry is "City, ST, United States" -- no bare country
+        # entry, so it stays on-site.
+        s = oracle_parse_slug(_ORACLE_SLUG)
+        raw = oracle_normalize(
+            s,
+            {
+                "Id": "1",
+                "Title": "Senior Manager, Data Center Software Engineering",
+                "secondaryLocations": [{"Name": "Austin, TX, United States"}],
+            },
+            {
+                "Id": "1",
+                "Title": "Senior Manager, Data Center Software Engineering",
+                "PrimaryLocation": "Nashville, TN, United States",
+                "WorkplaceType": "",
+            },
+        )
+        assert raw is not None
+        assert raw.remote is False
+
+    def test_normalize_remote_from_title_marker_when_workplace_blank(self):
+        # Oracle Health-style postings: WorkplaceType blank, location just
+        # "United States", but the title carries an explicit remote marker.
+        s = oracle_parse_slug(_ORACLE_SLUG)
+        for title in (
+            "Senior Application Developer - Backend Focus (Remote)",
+            "[Remote] Principal Software Developer - Oracle Health",
+            "Principal Software Developer - Platform Engineering- Remote",
+        ):
+            raw = oracle_normalize(
+                s,
+                {"Id": "1", "Title": title},
+                {
+                    "Id": "1",
+                    "Title": title,
+                    "PrimaryLocation": "United States",
+                    "WorkplaceType": "",
+                    "WorkplaceTypeCode": None,
+                },
+            )
+            assert raw is not None
+            assert raw.remote is True, title
+
+    def test_normalize_remote_from_description_phrase(self):
+        s = oracle_parse_slug(_ORACLE_SLUG)
+        raw = oracle_normalize(
+            s,
+            {"Id": "1", "Title": "Senior Software Engineer"},
+            {
+                "Id": "1",
+                "Title": "Senior Software Engineer",
+                "ExternalDescriptionStr": "<p>This is a fully remote role.</p>",
+                "PrimaryLocation": "United States",
+            },
+        )
+        assert raw is not None
+        assert raw.remote is True
+
+    def test_normalize_not_remote_without_signal(self):
+        # Blank workplace + a real city + no remote marker stays non-remote.
+        s = oracle_parse_slug(_ORACLE_SLUG)
+        raw = oracle_normalize(
+            s,
+            {"Id": "1", "Title": "Senior Software Engineer"},
+            {
+                "Id": "1",
+                "Title": "Senior Software Engineer",
+                "ExternalDescriptionStr": "<p>Build systems. Non-remote role.</p>",
+                "PrimaryLocation": "Nashville, TN, United States",
+                "WorkplaceType": "",
+            },
+        )
+        assert raw is not None
+        assert raw.remote is False
 
     def test_normalize_skips_missing_id_or_title(self):
         s = oracle_parse_slug(_ORACLE_SLUG_NOCO)
