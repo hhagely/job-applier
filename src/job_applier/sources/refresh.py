@@ -28,6 +28,7 @@ from job_applier.sources.companies import (
     GREENHOUSE_COMPANIES,
     JIBE_TENANTS,
     LEVER_COMPANIES,
+    ORACLE_SITES,
     SMARTRECRUITERS_COMPANIES,
     WORKABLE_COMPANIES,
     WORKDAY_BOARDS,
@@ -92,6 +93,7 @@ _SEEDS: dict[str, list[str]] = {
     "workable": WORKABLE_COMPANIES,
     "smartrecruiters": SMARTRECRUITERS_COMPANIES,
     "jibe": JIBE_TENANTS,
+    "oracle": ORACLE_SITES,
 }
 
 
