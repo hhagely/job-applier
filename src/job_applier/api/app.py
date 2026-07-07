@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sqlmodel import Session, select
 
 from job_applier import drafts, pdf, resume_io
+from job_applier.api import services
 from job_applier.api.ai import router as ai_router
 from job_applier.pdf import PdfRendererUnavailable
 from job_applier.api.schemas import (
@@ -198,38 +199,9 @@ def get_job(job_id: int, session: Session = Depends(get_session)):
     return JobDetail(**summary.model_dump(), description=job.description)
 
 
-def _apply_status_transition(
-    app_row: Application,
-    *,
-    new_status: ApplicationStatus,
-    now: datetime,
-    next_followup_at: Optional[datetime],
-    last_contact_at: Optional[datetime],
-    outcome: Optional[str],
-) -> None:
-    """Mutate ``app_row`` for a status change, defaulting the follow-up date.
-
-    When transitioning into ``applied`` and the client didn't supply a
-    ``next_followup_at``, fall back to ``applied_at + followup_default_days``.
-    """
-    app_row.status = new_status
-    if new_status == ApplicationStatus.applied and app_row.applied_at is None:
-        app_row.applied_at = now
-    if next_followup_at is not None:
-        app_row.next_followup_at = next_followup_at
-    elif (
-        new_status == ApplicationStatus.applied
-        and app_row.next_followup_at is None
-        and app_row.applied_at is not None
-    ):
-        app_row.next_followup_at = app_row.applied_at + timedelta(
-            days=settings.followup_default_days
-        )
-    if last_contact_at is not None:
-        app_row.last_contact_at = last_contact_at
-    if outcome is not None:
-        app_row.outcome = outcome
-    app_row.updated_at = now
+# Status-transition logic lives in services (shared with the background scorer's
+# auto-archive). Thin wrapper keeps the single-status endpoint's call site tidy.
+_apply_status_transition = services.apply_status_transition
 
 
 @app.patch("/api/jobs/{job_id}/status", response_model=ApplicationOut)
@@ -259,24 +231,17 @@ def set_status(job_id: int, body: StatusUpdate, session: Session = Depends(get_s
 def set_status_bulk(body: BulkStatusUpdate, session: Session = Depends(get_session)):
     if not body.job_ids:
         raise HTTPException(422, "job_ids must not be empty")
-    now = datetime.now(timezone.utc)
-    results: list[ApplicationOut] = []
-    for job_id in body.job_ids:
-        job = session.get(JobPosting, job_id)
-        if job is None:
-            raise HTTPException(404, f"job {job_id} not found")
-        app_row = job.application or Application(job_id=job_id)
-        _apply_status_transition(
-            app_row,
-            new_status=body.status,
-            now=now,
+    try:
+        results = services.bulk_set_status(
+            session,
+            body.job_ids,
+            body.status,
             next_followup_at=body.next_followup_at,
             last_contact_at=body.last_contact_at,
             outcome=body.outcome,
         )
-        session.add(app_row)
-        results.append(app_row)
-    session.commit()
+    except services.JobNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
     return [_application_out(a) for a in results]
 
 
@@ -413,23 +378,9 @@ def pending_match(
     jobs whose only score is against a non-active resume — the queue that
     Claude Code reads when refreshing scores after a resume change.
     """
-    stmt = (
-        select(JobPosting)
-        .where(JobPosting.filter_status == FilterStatus.passed)
-        .order_by(JobPosting.ingested_at.desc())
+    pending = services.select_pending_jobs(
+        session, limit=limit, include_stale=include_stale
     )
-    jobs = list(session.exec(stmt).all())
-    active_id = _active_resume_id(session) if include_stale else None
-
-    def _needs_scoring(j: JobPosting) -> bool:
-        if j.score is None:
-            return True
-        if include_stale and active_id is not None:
-            sid = j.score.resume_id
-            return sid is not None and sid != active_id
-        return False
-
-    pending = [j for j in jobs if _needs_scoring(j)][:limit]
     return [
         PendingMatchJob(
             id=j.id,
@@ -466,45 +417,14 @@ def stale_score_count(session: Session = Depends(get_session)) -> dict:
 
 @app.post("/api/jobs/{job_id}/score", response_model=ScoreOut)
 def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
+    try:
+        score = services.upsert_score(session, job_id, body)
+    except services.JobNotFound:
         raise HTTPException(404, "job not found")
-    if not 0 <= body.score <= 100:
-        raise HTTPException(422, "score must be 0-100")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
-    existing = job.score
-    if existing is not None:
-        session.add(
-            MatchScoreHistory(
-                job_id=existing.job_id,
-                score=existing.score,
-                rubric=existing.rubric,
-                reasoning=existing.reasoning,
-                scored_by=existing.scored_by,
-                scored_at=existing.scored_at,
-                resume_id=existing.resume_id,
-                score_kind=existing.score_kind,
-            )
-        )
-
-    active_resume = session.exec(
-        select(Resume).where(Resume.is_active == True)  # noqa: E712
-    ).first()
-
-    score = existing or MatchScore(job_id=job_id)
-    score.score = body.score
-    score.rubric = body.rubric
-    score.reasoning = body.reasoning
-    score.scored_by = body.scored_by
-    score.scored_at = datetime.now(timezone.utc)
-    score.score_kind = body.score_kind
-    # Tailored scores are scored against a per-job draft, not a Resume row.
-    score.resume_id = (
-        active_resume.id if active_resume and body.score_kind == "baseline" else None
-    )
-    session.add(score)
-    session.commit()
-    session.refresh(score)
+    active_resume = services.active_resume(session)
     resume_filename = (
         active_resume.original_filename
         if active_resume and score.resume_id is not None

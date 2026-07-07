@@ -8,17 +8,24 @@ degrades gracefully instead of erroring.
 
 from __future__ import annotations
 
+import functools
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
-from job_applier.ai import providers
+from job_applier.ai import providers, scoring, tasks
+from job_applier.api import services
 from job_applier.api.schemas import (
     AiTestIn,
     AiTestOut,
     ProviderOut,
     ProvidersOut,
+    ScorePendingIn,
     SelectProviderIn,
+    StartTaskOut,
+    TaskOut,
 )
+from job_applier.ai.tasks import TaskState
 from job_applier.models.db import get_session, get_setting, set_setting
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -93,3 +100,64 @@ def test_provider(
         return AiTestOut(ok=True, output=output, error=None)
     except providers.ProviderError as exc:
         return AiTestOut(ok=False, output=None, error=str(exc))
+
+
+def _run_score_pending(
+    state: TaskState, *, provider: str, model: str | None, job_ids: list[int]
+) -> None:
+    """Worker body: score the resolved job ids on the task's own DB session,
+    updating the progress state after each job."""
+
+    def _cb(outcome: scoring.JobScoreOutcome) -> None:
+        state.done += 1
+        label = f"{outcome.score}/100" if outcome.score is not None else "ERROR"
+        state.results.append(f"{outcome.job_id}  {label}  {outcome.title}")
+        if outcome.error:
+            state.errors.append(f"{outcome.job_id}: {outcome.error}")
+
+    with scoring.open_session() as session:
+        scoring.score_pending(
+            session, provider=provider, model=model, job_ids=job_ids, progress_cb=_cb
+        )
+
+
+@router.post("/score-pending", response_model=StartTaskOut)
+def start_score_pending(
+    body: ScorePendingIn, session: Session = Depends(get_session)
+) -> StartTaskOut:
+    provider = get_setting(session, AI_PROVIDER_KEY)
+    if not provider:
+        raise HTTPException(409, "no AI provider selected — pick one in Settings")
+    if services.active_resume(session) is None:
+        raise HTTPException(409, "no active resume — upload one on the Resume page")
+
+    pending = services.select_pending_jobs(
+        session, limit=200, include_stale=body.include_stale
+    )
+    if body.job_ids:
+        wanted = set(body.job_ids)
+        pending = [j for j in pending if j.id in wanted]
+    ids = [j.id for j in pending]
+
+    model = get_setting(session, AI_MODEL_KEY)
+    fn = functools.partial(
+        _run_score_pending, provider=provider, model=model, job_ids=ids
+    )
+    task_id = tasks.start_task("score_pending", len(ids), fn)
+    return StartTaskOut(task_id=task_id)
+
+
+@router.get("/tasks/{task_id}", response_model=TaskOut)
+def get_task_status(task_id: str) -> TaskOut:
+    state = tasks.get_task(task_id)
+    if state is None:
+        raise HTTPException(404, "task not found")
+    return TaskOut(
+        id=state.id,
+        kind=state.kind,
+        total=state.total,
+        done=state.done,
+        status=state.status,
+        errors=state.errors,
+        results=state.results,
+    )
