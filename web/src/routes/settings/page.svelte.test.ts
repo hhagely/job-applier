@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
+import type { Provider } from '$lib/api';
 
 // use:enhance needs a runtime action; a no-op is enough for render tests.
 vi.mock('$app/forms', () => ({ enhance: () => ({}) }));
@@ -26,7 +27,7 @@ function makeData(overrides = {}) {
 					available: false,
 					version: null
 				}
-			],
+			] as Provider[],
 			selected: 'claude',
 			model: 'llama3.1'
 		},
@@ -64,7 +65,7 @@ describe('settings page', () => {
 						available: false,
 						version: null
 					}
-				],
+				] as Provider[],
 				selected: null,
 				model: null
 			}
