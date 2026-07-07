@@ -1,7 +1,8 @@
 .PHONY: setup api web dev build-web app-dev ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
-setup: ## Install backend + frontend dependencies
+setup: ## Install backend + frontend dependencies (+ Chromium for PDF rendering)
 	uv sync
+	uv run playwright install chromium
 	cd web && npm install
 
 api: ## Run FastAPI backend on :8000
