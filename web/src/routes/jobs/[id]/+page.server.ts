@@ -65,5 +65,18 @@ export const actions: Actions = {
 		} catch (e) {
 			return fail(400, { error: (e as Error).message });
 		}
+	},
+
+	// Start a background tailored-draft run (draft -> render PDFs -> re-score).
+	// The mutation stays server-side; the client polls GET /api/ai/tasks/{id}.
+	generateDraft: async ({ params, fetch }) => {
+		const id = Number(params.id);
+		try {
+			const { task_id } = await api.startDraft(fetch, serverApiBase(), id);
+			return { ok: true, task_id };
+		} catch (e) {
+			// 409 when no provider selected / no active resume.
+			return fail(409, { error: (e as Error).message });
+		}
 	}
 };

@@ -13,7 +13,7 @@ import functools
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
-from job_applier.ai import providers, scoring, tasks
+from job_applier.ai import drafting, providers, scoring, suggest, tasks
 from job_applier.api import services
 from job_applier.api.schemas import (
     AiTestIn,
@@ -21,12 +21,13 @@ from job_applier.api.schemas import (
     ProviderOut,
     ProvidersOut,
     ScorePendingIn,
+    SearchProfileOut,
     SelectProviderIn,
     StartTaskOut,
     TaskOut,
 )
 from job_applier.ai.tasks import TaskState
-from job_applier.models.db import get_session, get_setting, set_setting
+from job_applier.models.db import JobPosting, get_session, get_setting, set_setting
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -161,3 +162,41 @@ def get_task_status(task_id: str) -> TaskOut:
         errors=state.errors,
         results=state.results,
     )
+
+
+# Stage -> progress count for the draft task (drafting/rendering/scoring/done).
+_DRAFT_STAGES = {"drafting": 1, "rendering": 2, "scoring": 3, "done": 3}
+DRAFT_TASK_STEPS = 3
+
+
+def run_generate_draft_task(
+    state: TaskState, *, provider: str, model: str | None, job_id: int
+) -> None:
+    """Worker body for a tailored-draft run on the task's own DB session."""
+
+    def _cb(stage: str) -> None:
+        state.done = _DRAFT_STAGES.get(stage, state.done)
+        state.results.append(stage)
+
+    with scoring.open_session() as session:
+        job = session.get(JobPosting, job_id)
+        if job is None:
+            raise ValueError(f"job {job_id} not found")
+        drafting.generate_draft(session, provider, job, model=model, progress_cb=_cb)
+
+
+@router.post("/suggest-roles", response_model=SearchProfileOut)
+def suggest_roles_endpoint(
+    session: Session = Depends(get_session),
+) -> SearchProfileOut:
+    provider = get_setting(session, AI_PROVIDER_KEY)
+    if not provider:
+        raise HTTPException(409, "no AI provider selected — pick one in Settings")
+    if services.active_resume(session) is None:
+        raise HTTPException(409, "no active resume — upload one on the Resume page")
+    model = get_setting(session, AI_MODEL_KEY)
+    try:
+        profile = suggest.suggest_roles(session, provider, model=model)
+    except (suggest.SuggestError, providers.ProviderError) as exc:
+        raise HTTPException(502, f"suggestion failed: {exc}") from exc
+    return services.profile_out(profile)

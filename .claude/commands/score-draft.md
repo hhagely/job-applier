@@ -57,45 +57,17 @@ When multiple ids are given, score each one **independently**: one failure
    reads back `GET /api/jobs/<id>/score-history` to build the `baseline →
    tailored` delta — you don't need to print the delta here.
 
-## Rubric (sums to 100) — identical to /match-pending
+## Rubric + output contract — single source of truth
 
-| Bucket             | Weight | What to look for                                                                 |
-| ------------------ | ------ | -------------------------------------------------------------------------------- |
-| `skills_overlap`   | 30     | Required skills/tech the resume actually demonstrates (not just mentions).       |
-| `experience_match` | 25     | Years and seniority. Senior/Staff/Principal alignment with resume's career arc.  |
-| `role_fit`         | 20     | Day-to-day work matches what the resume shows the user *actually does well*.    |
-| `domain_fit`       | 15     | Industry/domain familiarity. Adjacent counts partially.                          |
-| `hard_requirements`| 10     | Hard gates: location, work auth, degrees, certs. All-or-nothing per requirement. |
-
-For each bucket, return both a number and a one-line note in `rubric` JSON,
-e.g.:
-```json
-{
-  "skills_overlap":   {"points": 26, "note": "TS/React strong; CI/CD mirrored from JD"},
-  "experience_match": {"points": 22, "note": "Staff-level scope matches"},
-  "role_fit":         {"points": 17, "note": "platform work aligns post-tailoring"},
-  "domain_fit":       {"points":  9, "note": "fintech adjacent — payments experience"},
-  "hard_requirements":{"points": 10, "note": "remote US-OK"}
-}
-```
-
-## Reasoning text
-
-Two or three sentences. Focus on what the tailoring actually changed vs. the
+Score the tailored resume markdown against the JD using the **same rubric,
+weights, hard rules, and strict-JSON output shape** defined once in
+[`src/job_applier/ai/prompts/score.md`](../../src/job_applier/ai/prompts/score.md)
+— the same file `/match-pending` and the in-app scoring button use. One template
+powers baseline + tailored so the `baseline → tailored` delta stays meaningful.
+Read that file and apply it verbatim, treating the tailored `resume_md` as the
+resume text. Your reasoning should focus on what the tailoring changed vs. the
 baseline: which JD asks the tailored resume now mirrors verbatim, which still
-aren't supported, and the single most honest caveat. Don't sandbag and don't
-oversell.
-
-## Hard rules — drop the score (or skip + note) when:
-
-- The tailored resume is somehow Angular-primary despite the user's filter —
-  POST score 0 with reasoning explaining why.
-- The job requires on-site presence in a single location despite being tagged
-  remote — score 0, reasoning explains.
-- The role is below Senior (e.g. "Senior" in title but body says 2-4 years
-  total) — score ≤ 30 and explain.
-- The posting names a US-state allow-list that omits Missouri — score 0,
-  reasoning: "state allow-list excludes Missouri".
+aren't supported, and the single most honest caveat.
 
 ## Notes
 
@@ -103,7 +75,5 @@ oversell.
   on the draft endpoint, or a 200 with null `resume_md`, both skip cleanly.
 - The API listens on `127.0.0.1:8000`. If you POSTed and got 200 OK, the score
   is saved — no follow-up GET needed.
-- Stay in sync with [match-pending.md](match-pending.md). The two rubrics are
-  duplicated on purpose so each command is self-contained — but the weights
-  and bucket definitions must match exactly, or the `baseline → tailored`
-  delta is meaningless.
+- POST with `score_kind: "tailored"` and `scored_by: "claude-code"` (the in-app
+  path uses `"<provider>-cli"`).

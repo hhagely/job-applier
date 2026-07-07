@@ -364,5 +364,13 @@ export const api = {
 		}),
 
 	getTask: (fetchFn: FetchFn, base: string, taskId: string) =>
-		call<TaskSnapshot>(fetchFn, base, `/api/ai/tasks/${taskId}`)
+		call<TaskSnapshot>(fetchFn, base, `/api/ai/tasks/${taskId}`),
+
+	startDraft: (fetchFn: FetchFn, base: string, jobId: number) =>
+		call<{ task_id: string }>(fetchFn, base, `/api/jobs/${jobId}/ai/draft`, {
+			method: 'POST'
+		}),
+
+	suggestRoles: (fetchFn: FetchFn, base: string) =>
+		call<SearchProfile>(fetchFn, base, '/api/ai/suggest-roles', { method: 'POST' })
 };
