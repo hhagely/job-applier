@@ -4,7 +4,7 @@ import json
 
 import typer
 
-from job_applier.config import settings
+from job_applier.config import REPO_ROOT, settings
 from job_applier.diagnostics import diagnose_filter, format_diagnostic
 from job_applier.ingest import (
     archive_existing_duplicates,
@@ -108,7 +108,15 @@ def diagnose_filter_cmd(
 
 
 @app.command()
-def serve(host: str | None = None, port: int | None = None) -> None:
+def serve(
+    host: str | None = None,
+    port: int | None = None,
+    prod: bool = typer.Option(
+        False,
+        "--prod",
+        help="Production mode: disable auto-reload (the packaged app / dev launcher uses this).",
+    ),
+) -> None:
     """Run the FastAPI server."""
     import uvicorn
 
@@ -116,8 +124,116 @@ def serve(host: str | None = None, port: int | None = None) -> None:
         "job_applier.api.app:app",
         host=host or settings.api_host,
         port=port or settings.api_port,
-        reload=True,
+        reload=not prod,
     )
+
+
+def _free_port() -> int:
+    """Ask the OS for an unused localhost port (bind-to-0 trick), then release it."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_health(base: str, timeout: float = 30.0) -> bool:
+    """Poll ``{base}/api/health`` until it answers or the timeout elapses."""
+    import time
+    import urllib.error
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{base}/api/health", timeout=1) as resp:
+                if resp.status == 200:
+                    return True
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+        time.sleep(0.25)
+    return False
+
+
+@app.command("app-dev")
+def app_dev() -> None:
+    """Boot the API + built web server on free ports and open the browser.
+
+    Interim launcher that stands in for what Electron's main process will do in a
+    later phase: pick free ports, spawn both processes wired together over loopback,
+    health-check the backend, open the UI, and tear everything down on exit. Requires
+    the web frontend to be built first (``cd web && npm run build``).
+    """
+    import atexit
+    import os
+    import signal
+    import subprocess
+    import sys
+    import webbrowser
+
+    web_build = REPO_ROOT / "web" / "build" / "index.js"
+    if not web_build.exists():
+        typer.secho(
+            f"Web build not found at {web_build}. Run `cd web && npm run build` first.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    api_port = _free_port()
+    web_port = _free_port()
+    api_base = f"http://127.0.0.1:{api_port}"
+    web_url = f"http://127.0.0.1:{web_port}"
+
+    procs: list[subprocess.Popen] = []
+
+    def _shutdown(*_args: object) -> None:
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
+        for p in procs:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+    atexit.register(_shutdown)
+    signal.signal(signal.SIGINT, lambda *a: (_shutdown(), sys.exit(0)))
+    signal.signal(signal.SIGTERM, lambda *a: (_shutdown(), sys.exit(0)))
+
+    api_env = {**os.environ, "JOB_APPLIER_API_PORT": str(api_port)}
+    typer.echo(f"Starting API on {api_base} ...")
+    procs.append(
+        subprocess.Popen(
+            [sys.executable, "-m", "job_applier.cli", "serve", "--prod", "--port", str(api_port)],
+            env=api_env,
+        )
+    )
+
+    if not _wait_for_health(api_base):
+        typer.secho("API did not become healthy in time.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    web_env = {
+        **os.environ,
+        "PORT": str(web_port),
+        "JOB_APPLIER_API_BASE": api_base,
+    }
+    typer.echo(f"Starting web server on {web_url} ...")
+    procs.append(subprocess.Popen(["node", str(web_build)], env=web_env))
+
+    typer.echo(f"Opening {web_url}")
+    webbrowser.open(web_url)
+
+    try:
+        while True:
+            for p in procs:
+                if p.poll() is not None:
+                    typer.secho("A child process exited; shutting down.", fg=typer.colors.YELLOW)
+                    raise typer.Exit(code=1)
+            signal.pause()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

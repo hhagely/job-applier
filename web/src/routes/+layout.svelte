@@ -1,6 +1,17 @@
 <script lang="ts">
-	let { children } = $props();
+	import type { LayoutData } from './$types';
+
+	let { children, data }: { children: import('svelte').Snippet; data: LayoutData } = $props();
+
+	// Serialize the API base for browser-only helpers (getApiBase()). JSON.stringify
+	// yields a safe double-quoted string literal for the inline script.
+	let apiBaseScript = $derived(`window.__API_BASE__=${JSON.stringify(data.apiBase)};`);
 </script>
+
+<svelte:head>
+	<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+	{@html `<script>${apiBaseScript}</script>`}
+</svelte:head>
 
 <div class="app">
 	<header>
