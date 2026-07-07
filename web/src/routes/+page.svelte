@@ -4,11 +4,50 @@
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/stores';
-	import type { ApplicationStatus, Job } from '$lib/api';
+	import { api, type ApplicationStatus, type Job, type TaskSnapshot } from '$lib/api';
 	import { draftCart } from '$lib/draftCart.svelte';
+	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+
+	// --- In-app scoring (Phase 4) ---
+	// N = jobs on this queue that are unscored or scored against an older resume.
+	const pendingCount = $derived(
+		data.jobs.filter((j) => j.score == null || j.score?.is_stale).length
+	);
+	const hasProvider = $derived(Boolean(data.aiProvider));
+	const showScoreButton = $derived(data.filter_status === 'passed');
+
+	let scoreTask = $state<TaskSnapshot | null>(null);
+	let scorePolling = $state(false);
+	let scoreStarting = $state(false);
+	let scoreError = $state<string | null>(null);
+
+	async function pollScoreTask(taskId: string) {
+		scorePolling = true;
+		const base = data.apiBase ?? '';
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const snap = await api.getTask(fetch, base, taskId);
+				scoreTask = snap;
+				if (snap.status !== 'running') break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			// New scores landed (and low scorers were archived) — refresh the board.
+			await invalidateAll();
+		} catch (e) {
+			scoreError = (e as Error).message;
+		} finally {
+			scorePolling = false;
+		}
+	}
+
+	function dismissScorePanel() {
+		scoreTask = null;
+		scoreError = null;
+	}
 
 	type SortKey = 'score-desc' | 'score-asc' | 'posted-desc' | 'ingested-desc' | 'title-asc';
 	type StatusFilter = ApplicationStatus | 'none';
@@ -347,7 +386,56 @@
 		{visible.length}
 		{visible.length === data.jobs.length ? '' : `of ${data.jobs.length}`} jobs
 	</span>
+
+	{#if showScoreButton}
+		<div class="score-pending">
+			{#if !hasProvider}
+				<a class="score-btn disabled" href="/settings" title="Select an AI CLI in Settings">
+					Score pending — set up AI
+				</a>
+			{:else}
+				<form
+					method="POST"
+					action="?/scorePending"
+					use:enhance={() => {
+						scoreStarting = true;
+						scoreError = null;
+						return async ({ result }) => {
+							scoreStarting = false;
+							if (result.type === 'success' && result.data?.task_id) {
+								scoreTask = null;
+								pollScoreTask(result.data.task_id as string);
+							} else if (result.type === 'failure') {
+								scoreError = (result.data?.error as string) ?? 'could not start scoring';
+							}
+						};
+					}}
+				>
+					<button
+						type="submit"
+						class="score-btn"
+						disabled={pendingCount === 0 || scoreStarting || scorePolling}
+						title={pendingCount === 0 ? 'Nothing to score' : `Score ${pendingCount} pending via ${data.aiProvider}`}
+					>
+						{#if scoreStarting || scorePolling}
+							Scoring…
+						{:else}
+							Score pending ({pendingCount})
+						{/if}
+					</button>
+				</form>
+			{/if}
+		</div>
+	{/if}
 </section>
+
+{#if scoreError && !scoreTask}
+	<p class="score-error">{scoreError}</p>
+{/if}
+
+{#if scoreTask}
+	<ScoreProgress task={scoreTask} onDismiss={dismissScorePanel} />
+{/if}
 
 <section class="toolbar">
 	<div class="toolbar-row">
@@ -713,6 +801,41 @@
 		align-items: baseline;
 		gap: 1rem;
 		margin-bottom: 0.75rem;
+	}
+	.score-pending {
+		margin-left: auto;
+	}
+	.score-btn {
+		background: var(--accent);
+		color: #0d1117;
+		border: 0;
+		border-radius: 6px;
+		padding: 0.4rem 0.85rem;
+		font-weight: 600;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.score-btn:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+	.score-btn:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.score-btn.disabled {
+		background: transparent;
+		color: var(--warn);
+		border: 1px solid var(--warn);
+		display: inline-block;
+	}
+	.score-btn.disabled:hover {
+		text-decoration: none;
+		filter: brightness(1.1);
+	}
+	.score-error {
+		color: var(--bad);
+		margin: 0 0 0.75rem;
+		font-size: 0.85rem;
 	}
 	h1 {
 		font-size: 1.4rem;
