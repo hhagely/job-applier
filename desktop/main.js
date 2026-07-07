@@ -6,7 +6,7 @@
 // the window. PDFs render via Electron's printToPDF (an offscreen window), so the
 // packaged app ships no Playwright.
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { spawn, execSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
@@ -215,10 +215,29 @@ async function boot() {
 	mainWindow = new BrowserWindow({
 		width: 1280,
 		height: 860,
-		backgroundColor: '#0e1116',
+		minWidth: 940,
+		minHeight: 600,
+		// Frameless: the redesigned SvelteKit titlebar draws the brand, command
+		// search, theme toggle, and window controls (Phase 8). The renderer routes
+		// min/max/close back over IPC (see registerWindowIpc + preload.js).
+		frame: false,
+		backgroundColor: '#16181d',
 		webPreferences: { preload: path.join(__dirname, 'preload.js') }
 	});
 	await mainWindow.loadURL(loadUrl);
+}
+
+// Window controls invoked from the custom titlebar. Toggle maximize so the
+// titlebar's maximize button also restores.
+function registerWindowIpc() {
+	ipcMain.on('window:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());
+	ipcMain.on('window:maximize', (e) => {
+		const win = BrowserWindow.fromWebContents(e.sender);
+		if (!win) return;
+		if (win.isMaximized()) win.unmaximize();
+		else win.maximize();
+	});
+	ipcMain.on('window:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 }
 
 function shutdown() {
@@ -241,6 +260,7 @@ function shutdown() {
 	}
 }
 
+registerWindowIpc();
 app.whenReady().then(boot);
 app.on('before-quit', shutdown);
 app.on('window-all-closed', () => {

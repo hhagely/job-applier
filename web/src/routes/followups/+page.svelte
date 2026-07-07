@@ -8,25 +8,23 @@
 
 	function daysOverdue(iso: string | null | undefined): number {
 		if (!iso) return 0;
-		const diff = Date.now() - new Date(iso).getTime();
-		return Math.max(0, Math.floor(diff / 86_400_000));
+		return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000));
 	}
 
 	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return '—';
-		return new Date(iso).toLocaleDateString();
+		return iso ? new Date(iso).toLocaleDateString() : '—';
 	}
 
 	function appliedAt(job: Job): string | null | undefined {
 		return job.application?.applied_at;
 	}
-
 	function followupDate(job: Job): string | null | undefined {
 		return job.application?.next_followup_at;
 	}
 
-	let submitting = $state<number | null>(null);
+	const overdueCount = $derived(data.jobs.filter((j) => daysOverdue(followupDate(j)) >= 14).length);
 
+	let submitting = $state<number | null>(null);
 	function onSubmit(id: number) {
 		submitting = id;
 		return async ({ update }: { update: (opts?: { reset?: boolean }) => Promise<void> }) => {
@@ -37,195 +35,124 @@
 	}
 </script>
 
-<section class="header-row">
-	<h1>Follow-ups</h1>
-	<span class="count">{data.jobs.length} due</span>
-</section>
+<div class="view-head">
+	<div class="vh-titles">
+		<h1>Follow-ups</h1>
+		<div class="vh-sub">
+			<b class="num">{data.jobs.length}</b> due
+			{#if overdueCount > 0}· <span style="color:var(--weak)">{overdueCount} overdue by 14+ days</span>{/if}
+		</div>
+	</div>
+</div>
 
-{#if data.jobs.length === 0}
-	<p class="empty">Nothing overdue. Nice.</p>
-{:else}
-	<ul class="jobs">
-		{#each data.jobs as job (job.id)}
-			{@const overdue = daysOverdue(followupDate(job))}
-			<li class="row">
-				<div class="main">
-					<a href={`/jobs/${job.id}`} class="title">{job.title}</a>
-					<div class="meta">
-						<span class="company">{job.company?.name ?? 'Unknown'}</span>
-						<span class="dot">·</span>
-						<span>applied {fmtDate(appliedAt(job))}</span>
-						<span class="dot">·</span>
-						<span class="overdue" data-strong={overdue >= 14}>
-							{overdue === 0 ? 'due today' : `${overdue}d overdue`}
-						</span>
+<div class="view-body">
+	{#if data.jobs.length === 0}
+		<p class="banner" style="max-width:920px">Nothing overdue. Nice.</p>
+	{:else}
+		<div class="fu-list">
+			{#each data.jobs as job (job.id)}
+				{@const overdue = daysOverdue(followupDate(job))}
+				<div class="fu-card">
+					<div class="fu-main">
+						<a href={`/jobs/${job.id}`} class="fu-title">{job.title}</a>
+						<div class="fu-sub">
+							<span>{job.company?.name ?? 'Unknown'}</span>
+							· <span>applied {fmtDate(appliedAt(job))}</span>
+							· <span class="fu-over" class:soon={overdue < 14}>
+								{overdue === 0 ? 'due today' : `${overdue}d overdue`}
+							</span>
+						</div>
+					</div>
+					<div class="fu-actions">
+						<form method="POST" action="?/contacted" use:enhance={() => onSubmit(job.id)}>
+							<input type="hidden" name="id" value={job.id} />
+							<button type="submit" class="btn sm primary" disabled={submitting === job.id}>Mark contacted</button>
+						</form>
+						<form method="POST" action="?/snooze" use:enhance={() => onSubmit(job.id)}>
+							<input type="hidden" name="id" value={job.id} />
+							<input type="hidden" name="days" value="7" />
+							<button type="submit" class="btn sm" disabled={submitting === job.id}>Snooze 7d</button>
+						</form>
+						<form method="POST" action="?/rejected" use:enhance={() => onSubmit(job.id)}>
+							<input type="hidden" name="id" value={job.id} />
+							<button type="submit" class="btn sm danger" disabled={submitting === job.id}>Rejected</button>
+						</form>
+						<form method="POST" action="?/setOutcome" class="outcome-form" use:enhance={() => onSubmit(job.id)}>
+							<input type="hidden" name="id" value={job.id} />
+							<input class="mini-input fu-outcome" type="text" name="outcome" placeholder="outcome (phone screen…)" required />
+							<button type="submit" class="btn sm" disabled={submitting === job.id}>Set</button>
+						</form>
 					</div>
 				</div>
-				<div class="actions">
-					<form
-						method="POST"
-						action="?/contacted"
-						use:enhance={() => onSubmit(job.id)}
-					>
-						<input type="hidden" name="id" value={job.id} />
-						<button type="submit" class="btn primary" disabled={submitting === job.id}>
-							Mark contacted today
-						</button>
-					</form>
-					<form
-						method="POST"
-						action="?/snooze"
-						use:enhance={() => onSubmit(job.id)}
-					>
-						<input type="hidden" name="id" value={job.id} />
-						<input type="hidden" name="days" value="7" />
-						<button type="submit" class="btn" disabled={submitting === job.id}>
-							Snooze 7d
-						</button>
-					</form>
-					<form
-						method="POST"
-						action="?/rejected"
-						use:enhance={() => onSubmit(job.id)}
-					>
-						<input type="hidden" name="id" value={job.id} />
-						<button type="submit" class="btn danger" disabled={submitting === job.id}>
-							Mark rejected
-						</button>
-					</form>
-					<form
-						method="POST"
-						action="?/setOutcome"
-						class="outcome-form"
-						use:enhance={() => onSubmit(job.id)}
-					>
-						<input type="hidden" name="id" value={job.id} />
-						<input
-							type="text"
-							name="outcome"
-							placeholder="outcome (phone screen, offer…)"
-							required
-						/>
-						<button type="submit" class="btn" disabled={submitting === job.id}>
-							Set
-						</button>
-					</form>
-				</div>
-			</li>
-		{/each}
-	</ul>
-{/if}
+			{/each}
+		</div>
+	{/if}
+</div>
 
 <style>
-	.header-row {
-		display: flex;
-		align-items: baseline;
-		gap: 1rem;
-		margin-bottom: 1rem;
-	}
-	h1 {
-		font-size: 1.4rem;
-		margin: 0;
-	}
-	.count {
-		color: var(--muted);
-		font-size: 0.9rem;
-	}
-	.empty {
-		color: var(--muted);
-		padding: 2rem;
-		text-align: center;
-		border: 1px dashed var(--panel-border);
-		border-radius: 8px;
-	}
-	.jobs {
-		list-style: none;
-		padding: 0;
-		margin: 0;
+	.fu-list {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
+		gap: 11px;
+		max-width: 920px;
 	}
-	.row {
-		background: var(--panel);
-		border: 1px solid var(--panel-border);
-		border-radius: 8px;
-		padding: 0.85rem 1rem;
+	.fu-card {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 14px 16px;
 		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
+		align-items: center;
+		gap: 16px;
+		flex-wrap: wrap;
 	}
-	.main {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
+	.fu-main {
+		min-width: 220px;
+		flex: 1;
 	}
-	.title {
+	.fu-title {
 		font-weight: 600;
-		font-size: 1rem;
+		font-size: 13.5px;
 		color: var(--fg);
 	}
-	.meta {
+	.fu-title:hover {
+		color: var(--accent);
+		text-decoration: none;
+	}
+	.fu-sub {
+		font-size: 12px;
+		color: var(--faint);
+		margin-top: 4px;
 		display: flex;
-		gap: 0.4rem;
-		flex-wrap: wrap;
-		color: var(--muted);
-		font-size: 0.85rem;
-	}
-	.dot {
-		color: var(--panel-border);
-	}
-	.overdue {
-		color: var(--warn);
-	}
-	.overdue[data-strong='true'] {
-		color: var(--bad);
-		font-weight: 600;
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
+		gap: 6px;
 		align-items: center;
+		flex-wrap: wrap;
+	}
+	.fu-over {
+		color: var(--weak);
+		font-weight: 640;
+		font-family: var(--mono);
+		font-size: 11.5px;
+	}
+	.fu-over.soon {
+		color: var(--good);
+	}
+	.fu-actions {
+		display: flex;
+		gap: 7px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.fu-actions form {
+		margin: 0;
 	}
 	.outcome-form {
 		display: inline-flex;
-		gap: 0.3rem;
+		gap: 6px;
 		align-items: center;
 	}
-	.outcome-form input {
-		background: #20262d;
-		color: var(--fg);
-		border: 1px solid var(--panel-border);
-		border-radius: 4px;
-		padding: 0.3rem 0.5rem;
-		font-size: 0.85rem;
-		min-width: 14rem;
-	}
-	.btn {
-		background: var(--panel-border);
-		color: var(--fg);
-		border: 1px solid var(--panel-border);
-		border-radius: 6px;
-		padding: 0.35rem 0.75rem;
-		font-size: 0.85rem;
-		cursor: pointer;
-	}
-	.btn:hover {
-		border-color: var(--accent);
-	}
-	.btn:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-	.btn.primary {
-		background: rgba(88, 166, 255, 0.18);
-		color: var(--accent);
-		border-color: var(--accent);
-	}
-	.btn.danger {
-		background: rgba(248, 81, 73, 0.16);
-		color: var(--bad);
-		border-color: rgba(248, 81, 73, 0.4);
+	.fu-outcome {
+		width: 160px;
+		height: 27px;
 	}
 </style>

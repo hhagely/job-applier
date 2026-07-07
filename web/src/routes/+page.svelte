@@ -7,12 +7,18 @@
 	import { api, type ApplicationStatus, type Job, type TaskSnapshot } from '$lib/api';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
+	import ScoreBadge from '$lib/ScoreBadge.svelte';
+	import Icon from '$lib/Icon.svelte';
+	import { scoreBandVar } from '$lib/score';
+	import { sourceInfo, type Ease } from '$lib/sources';
+	import { onCommand } from '$lib/shell/commandBus';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
+	const isManual = $derived(data.filter_status === 'manual');
+
 	// --- In-app scoring (Phase 4) ---
-	// N = jobs on this queue that are unscored or scored against an older resume.
 	const pendingCount = $derived(
 		data.jobs.filter((j) => j.score == null || j.score?.is_stale).length
 	);
@@ -23,6 +29,7 @@
 	let scorePolling = $state(false);
 	let scoreStarting = $state(false);
 	let scoreError = $state<string | null>(null);
+	let scoreForm = $state<HTMLFormElement | null>(null);
 
 	async function pollScoreTask(taskId: string) {
 		scorePolling = true;
@@ -35,7 +42,6 @@
 				if (snap.status !== 'running') break;
 				await new Promise((r) => setTimeout(r, 1000));
 			}
-			// New scores landed (and low scorers were archived) — refresh the board.
 			await invalidateAll();
 		} catch (e) {
 			scoreError = (e as Error).message;
@@ -54,6 +60,7 @@
 	let ingestPolling = $state(false);
 	let ingestStarting = $state(false);
 	let ingestError = $state<string | null>(null);
+	let scrapeForm = $state<HTMLFormElement | null>(null);
 
 	async function pollIngestTask(taskId: string) {
 		ingestPolling = true;
@@ -66,7 +73,6 @@
 				if (snap.status !== 'running') break;
 				await new Promise((r) => setTimeout(r, 1000));
 			}
-			// New postings landed — refresh the board.
 			await invalidateAll();
 		} catch (e) {
 			ingestError = (e as Error).message;
@@ -80,9 +86,16 @@
 		ingestError = null;
 	}
 
+	// Command palette can trigger scrape/score by submitting the real forms.
+	onMount(() =>
+		onCommand((name) => {
+			if (name === 'scrape') scrapeForm?.requestSubmit();
+			else if (name === 'score' && hasProvider && pendingCount > 0) scoreForm?.requestSubmit();
+		})
+	);
+
 	type SortKey = 'score-desc' | 'score-asc' | 'posted-desc' | 'ingested-desc' | 'title-asc';
 	type StatusFilter = ApplicationStatus | 'none';
-	type Ease = 'easy' | 'med' | 'hard';
 
 	const EASE_FILTERS: { key: Ease; label: string }[] = [
 		{ key: 'easy', label: 'easy' },
@@ -165,6 +178,7 @@
 			// quota / privacy mode — ignore
 		}
 	});
+
 	let selected = $state<Set<number>>(new Set());
 	let bulkStatus = $state<ApplicationStatus>('interested');
 	let submitting = $state(false);
@@ -173,16 +187,16 @@
 	let draftCopied = $state(false);
 	let draftCopyTimer: ReturnType<typeof setTimeout> | null = null;
 
+	let selectedId = $state<number | null>(null);
+
 	async function copyDraftCommand() {
 		try {
 			await navigator.clipboard.writeText(draftCart.command);
 			draftCopied = true;
 			if (draftCopyTimer) clearTimeout(draftCopyTimer);
-			draftCopyTimer = setTimeout(() => {
-				draftCopied = false;
-			}, 1500);
+			draftCopyTimer = setTimeout(() => (draftCopied = false), 1500);
 		} catch {
-			// clipboard write failed (e.g., insecure context) — leave state false
+			/* insecure context */
 		}
 	}
 
@@ -192,11 +206,9 @@
 			await navigator.clipboard.writeText(ids);
 			copied = true;
 			if (copyTimer) clearTimeout(copyTimer);
-			copyTimer = setTimeout(() => {
-				copied = false;
-			}, 1500);
+			copyTimer = setTimeout(() => (copied = false), 1500);
 		} catch {
-			// clipboard write failed (e.g., insecure context) — leave copied false
+			/* insecure context */
 		}
 	}
 
@@ -209,57 +221,15 @@
 		return `${Math.floor(days / 30)} months ago`;
 	}
 
-	function scoreBucket(score: number | undefined | null): string {
-		if (score == null) return 'none';
-		if (score >= 80) return 'high';
-		if (score >= 60) return 'med';
-		return 'low';
-	}
-
-	const SOURCE_META: Record<string, { label: string; ease: Ease }> = {
-		greenhouse: { label: 'Greenhouse', ease: 'easy' },
-		lever: { label: 'Lever', ease: 'easy' },
-		ashby: { label: 'Ashby', ease: 'easy' },
-		remoteok: { label: 'RemoteOK', ease: 'med' },
-		weworkremotely: { label: 'WWR', ease: 'med' },
-		workday: { label: 'Workday', ease: 'hard' },
-		hackernews: { label: 'HN', ease: 'med' }
-	};
-
-	function sourceInfo(source: string): { label: string; ease: Ease } {
-		return SOURCE_META[source] ?? { label: source, ease: 'med' };
-	}
-
 	function jobStatusKey(job: Job): StatusFilter {
 		return job.application?.status ?? 'none';
 	}
 
-	function toggleStatus(key: StatusFilter) {
-		const next = new Set(activeStatuses);
+	function toggleIn<T>(set: Set<T>, key: T): Set<T> {
+		const next = new Set(set);
 		if (next.has(key)) next.delete(key);
 		else next.add(key);
-		activeStatuses = next;
-	}
-
-	function toggleEase(key: Ease) {
-		const next = new Set(activeEases);
-		if (next.has(key)) next.delete(key);
-		else next.add(key);
-		activeEases = next;
-	}
-
-	function toggleSource(key: string) {
-		const next = new Set(activeSources);
-		if (next.has(key)) next.delete(key);
-		else next.add(key);
-		activeSources = next;
-	}
-
-	function toggleUnemp(key: UnempFilter) {
-		const next = new Set(activeUnemp);
-		if (next.has(key)) next.delete(key);
-		else next.add(key);
-		activeUnemp = next;
+		return next;
 	}
 
 	function isUsedForUnemployment(job: Job): boolean {
@@ -280,28 +250,20 @@
 		return minScoreInput !== '' && Number.isFinite(n) ? n : null;
 	});
 
+	function dateVal(iso: string | null | undefined): number {
+		return iso ? new Date(iso).getTime() : 0;
+	}
+
 	const visible = $derived.by(() => {
 		let list = data.jobs.slice();
-		if (activeStatuses.size > 0) {
-			list = list.filter((j) => activeStatuses.has(jobStatusKey(j)));
-		}
-		if (activeEases.size > 0) {
-			list = list.filter((j) => activeEases.has(sourceInfo(j.source).ease));
-		}
-		if (activeSources.size > 0) {
-			list = list.filter((j) => activeSources.has(j.source));
-		}
-		if (unscoredOnly) {
-			list = list.filter((j) => j.score == null);
-		}
+		if (activeStatuses.size > 0) list = list.filter((j) => activeStatuses.has(jobStatusKey(j)));
+		if (activeEases.size > 0) list = list.filter((j) => activeEases.has(sourceInfo(j.source).ease));
+		if (activeSources.size > 0) list = list.filter((j) => activeSources.has(j.source));
+		if (unscoredOnly) list = list.filter((j) => j.score == null);
 		if (activeUnemp.size > 0) {
-			list = list.filter((j) =>
-				activeUnemp.has(isUsedForUnemployment(j) ? 'used' : 'unused')
-			);
+			list = list.filter((j) => activeUnemp.has(isUsedForUnemployment(j) ? 'used' : 'unused'));
 		}
-		if (minScore !== null) {
-			list = list.filter((j) => (j.score?.score ?? -1) >= minScore);
-		}
+		if (minScore !== null) list = list.filter((j) => (j.score?.score ?? -1) >= minScore);
 		const cmp: Record<SortKey, (a: Job, b: Job) => number> = {
 			'score-desc': (a, b) => (b.score?.score ?? -1) - (a.score?.score ?? -1),
 			'score-asc': (a, b) => (a.score?.score ?? 999) - (b.score?.score ?? 999),
@@ -313,8 +275,13 @@
 		return list;
 	});
 
-	function dateVal(iso: string | null | undefined): number {
-		return iso ? new Date(iso).getTime() : 0;
+	// Selected job for the detail pane; falls back to the first visible row.
+	const selectedJob = $derived(
+		data.jobs.find((j) => j.id === selectedId) ?? visible[0] ?? null
+	);
+
+	function selectJob(id: number) {
+		selectedId = id;
 	}
 
 	const allVisibleSelected = $derived(
@@ -323,19 +290,13 @@
 	const someVisibleSelected = $derived(visible.some((j) => selected.has(j.id)));
 
 	function toggleSelect(id: number) {
-		const next = new Set(selected);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
-		selected = next;
+		selected = toggleIn(selected, id);
 	}
 
 	function toggleSelectAllVisible() {
 		const next = new Set(selected);
-		if (allVisibleSelected) {
-			for (const j of visible) next.delete(j.id);
-		} else {
-			for (const j of visible) next.add(j.id);
-		}
+		if (allVisibleSelected) for (const j of visible) next.delete(j.id);
+		else for (const j of visible) next.add(j.id);
 		selected = next;
 	}
 
@@ -348,78 +309,94 @@
 	function statusCount(key: StatusFilter): number {
 		return data.jobs.filter((j) => jobStatusKey(j) === key).length;
 	}
-
 	function easeCount(key: Ease): number {
 		return data.jobs.filter((j) => sourceInfo(j.source).ease === key).length;
 	}
-
 	function sourceCount(key: string): number {
 		return data.jobs.filter((j) => j.source === key).length;
 	}
-
 	function unempCount(key: UnempFilter): number {
-		return data.jobs.filter(
-			(j) => isUsedForUnemployment(j) === (key === 'used')
-		).length;
+		return data.jobs.filter((j) => isUsedForUnemployment(j) === (key === 'used')).length;
 	}
 
-	const SOURCE_FILTERS = Object.keys(SOURCE_META);
-
-	let openRubricFor = $state<number | null>(null);
-
-	function toggleRubric(e: MouseEvent, id: number) {
-		e.preventDefault();
-		e.stopPropagation();
-		openRubricFor = openRubricFor === id ? null : id;
-	}
-
-	function closeRubric() {
-		openRubricFor = null;
-	}
+	// Only offer source facets that actually appear in the current queue.
+	const SOURCE_FILTERS = $derived([...new Set(data.jobs.map((j) => j.source))].sort());
 
 	function rubricEntries(rubric: Record<string, unknown> | undefined): [string, unknown][] {
 		if (!rubric) return [];
 		return Object.entries(rubric);
 	}
 
+	function rubricNumber(value: unknown): number | null {
+		return typeof value === 'number' && value >= 0 && value <= 100 ? value : null;
+	}
+
 	function isFollowupDue(job: Job): boolean {
 		const due = job.application?.next_followup_at;
-		if (!due) return false;
-		if (job.application?.outcome) return false;
+		if (!due || job.application?.outcome) return false;
 		return new Date(due).getTime() <= Date.now();
 	}
 
 	function defaultFollowupDate(): string {
-		const d = new Date(Date.now() + 7 * 86_400_000);
-		return d.toISOString().slice(0, 10);
+		return new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
 	}
-
 	let followupDate = $state<string>(defaultFollowupDate());
 
 	function toggleDuplicates() {
 		const url = new URL($page.url);
-		if (data.include_duplicates) {
-			url.searchParams.delete('duplicates');
-		} else {
-			url.searchParams.set('duplicates', '1');
-		}
+		if (data.include_duplicates) url.searchParams.delete('duplicates');
+		else url.searchParams.set('duplicates', '1');
 		goto(url, { invalidateAll: true });
+	}
+
+	function switchQueue(manual: boolean) {
+		const url = new URL($page.url);
+		if (manual) url.searchParams.set('filter', 'manual');
+		else url.searchParams.delete('filter');
+		selectedId = null;
+		goto(url, { invalidateAll: true });
+	}
+
+	const hasActiveFilters = $derived(
+		activeStatuses.size > 0 ||
+			activeEases.size > 0 ||
+			activeSources.size > 0 ||
+			activeUnemp.size > 0 ||
+			unscoredOnly ||
+			minScoreInput !== ''
+	);
+
+	// J / K move the detail selection through the visible list.
+	function onQueueKey(e: KeyboardEvent) {
+		const target = e.target as HTMLElement | null;
+		if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+		if (e.metaKey || e.ctrlKey || e.altKey) return;
+		const key = e.key.toLowerCase();
+		if (key !== 'j' && key !== 'k') return;
+		if (visible.length === 0) return;
+		e.preventDefault();
+		const cur = selectedJob ? visible.findIndex((j) => j.id === selectedJob.id) : -1;
+		const ni = key === 'j' ? Math.min(cur + 1, visible.length - 1) : Math.max(cur - 1, 0);
+		const next = visible[ni];
+		if (next) {
+			selectedId = next.id;
+			document.getElementById(`jrow-${next.id}`)?.scrollIntoView({ block: 'nearest' });
+		}
 	}
 </script>
 
-<svelte:window onclick={closeRubric} />
+<svelte:window onkeydown={onQueueKey} />
 
-<section class="header-row">
-	<h1>
-		{data.filter_status === 'passed' ? 'Queue' : 'Manual review'}
-	</h1>
-	<span class="count">
-		{visible.length}
-		{visible.length === data.jobs.length ? '' : `of ${data.jobs.length}`} jobs
-	</span>
-
-	<div class="header-actions">
+<div class="view-head">
+	<div class="vh-titles">
+		<h1>{isManual ? 'Manual review' : 'Queue'}</h1>
+		<div class="vh-sub">
+			{visible.length}{visible.length === data.jobs.length ? '' : ` of ${data.jobs.length}`} jobs · sorted by match score
+		</div>
+	</div>
+	<div class="vh-actions">
 		<form
+			bind:this={scrapeForm}
 			method="POST"
 			action="?/runIngest"
 			use:enhance={() => {
@@ -438,25 +415,23 @@
 		>
 			<button
 				type="submit"
-				class="scrape-btn"
+				class="btn"
 				disabled={ingestStarting || ingestPolling}
 				title="Pull new postings from every source"
 			>
-				{#if ingestStarting || ingestPolling}
-					Scraping…
-				{:else}
-					Run scrape
-				{/if}
+				<Icon name="refresh" size={15} stroke={2} />
+				{ingestStarting || ingestPolling ? 'Scraping…' : 'Run scrape'}
 			</button>
 		</form>
 
 		{#if showScoreButton}
 			{#if !hasProvider}
-				<a class="score-btn disabled" href="/settings" title="Select an AI CLI in Settings">
+				<a class="btn danger" href="/settings" title="Select an AI CLI in Settings">
 					Score pending — set up AI
 				</a>
 			{:else}
 				<form
+					bind:this={scoreForm}
 					method="POST"
 					action="?/scorePending"
 					use:enhance={() => {
@@ -475,328 +450,271 @@
 				>
 					<button
 						type="submit"
-						class="score-btn"
+						class="btn primary"
 						disabled={pendingCount === 0 || scoreStarting || scorePolling}
-						title={pendingCount === 0 ? 'Nothing to score' : `Score ${pendingCount} pending via ${data.aiProvider}`}
+						title={pendingCount === 0
+							? 'Nothing to score'
+							: `Score ${pendingCount} pending via ${data.aiProvider}`}
 					>
-						{#if scoreStarting || scorePolling}
-							Scoring…
-						{:else}
-							Score pending ({pendingCount})
-						{/if}
+						<Icon name="star" size={15} stroke={2} />
+						{scoreStarting || scorePolling ? 'Scoring…' : `Score pending (${pendingCount})`}
 					</button>
 				</form>
 			{/if}
 		{/if}
 	</div>
-</section>
+</div>
 
 {#if ingestError && !ingestTask}
-	<p class="score-error">{ingestError}</p>
+	<div class="q-panels"><p class="err-text">{ingestError}</p></div>
 {/if}
 {#if ingestTask}
-	<ScoreProgress
-		task={ingestTask}
-		onDismiss={dismissIngestPanel}
-		runningVerb="Scraping"
-		doneVerb="Scraped"
-		resultsLabel="sources"
-	/>
+	<div class="q-panels">
+		<ScoreProgress task={ingestTask} onDismiss={dismissIngestPanel} runningVerb="Scraping" doneVerb="Scraped" resultsLabel="sources" />
+	</div>
 {/if}
-
 {#if scoreError && !scoreTask}
-	<p class="score-error">{scoreError}</p>
+	<div class="q-panels"><p class="err-text">{scoreError}</p></div>
 {/if}
-
 {#if scoreTask}
-	<ScoreProgress task={scoreTask} onDismiss={dismissScorePanel} />
+	<div class="q-panels"><ScoreProgress task={scoreTask} onDismiss={dismissScorePanel} /></div>
 {/if}
 
-<section class="toolbar">
-	<div class="toolbar-row">
-		<label class="sort">
-			Sort
-			<select bind:value={sortBy}>
-				<option value="score-desc">Score (high → low)</option>
-				<option value="score-asc">Score (low → high)</option>
-				<option value="posted-desc">Posted (newest)</option>
-				<option value="ingested-desc">Ingested (newest)</option>
-				<option value="title-asc">Title (A → Z)</option>
-			</select>
-		</label>
+<div class="md">
+	<!-- master list -->
+	<div class="md-list">
+		<div class="toolbar">
+			<div class="qtabs">
+				<button class="qtab" aria-pressed={!isManual} onclick={() => switchQueue(false)}>
+					Review queue
+				</button>
+				<button class="qtab" aria-pressed={isManual} onclick={() => switchQueue(true)}>
+					Manual review
+				</button>
+			</div>
 
-		<label class="num">
-			Min score
-			<input
-				type="number"
-				min="0"
-				max="100"
-				placeholder="any"
-				bind:value={minScoreInput}
-			/>
-		</label>
+			<div class="toolbar-row">
+				<select class="mini-input" bind:value={sortBy} style="width:auto" aria-label="Sort">
+					<option value="score-desc">Score (high → low)</option>
+					<option value="score-asc">Score (low → high)</option>
+					<option value="posted-desc">Posted (newest)</option>
+					<option value="ingested-desc">Ingested (newest)</option>
+					<option value="title-asc">Title (A → Z)</option>
+				</select>
+				<input class="mini-input" type="number" min="0" max="100" placeholder="min score" style="width:88px" bind:value={minScoreInput} aria-label="Minimum score" />
+				<button class="chip" aria-pressed={unscoredOnly} onclick={() => (unscoredOnly = !unscoredOnly)}>Unscored only</button>
+				<button class="chip" aria-pressed={data.include_duplicates} onclick={toggleDuplicates}>Show duplicates</button>
+				{#if hasActiveFilters}
+					<button class="chip" onclick={clearFilters}>Clear filters</button>
+				{/if}
+			</div>
 
-		<label class="check">
-			<input type="checkbox" bind:checked={unscoredOnly} />
-			Unscored only
-		</label>
+			{#if !isManual}
+				<div class="toolbar-row">
+					<span class="lbl">Ease</span>
+					{#each EASE_FILTERS as f (f.key)}
+						{@const n = easeCount(f.key)}
+						{#if n > 0}
+							<button class="chip" aria-pressed={activeEases.has(f.key)} onclick={() => (activeEases = toggleIn(activeEases, f.key))}>
+								{f.label} <span class="c-n">{n}</span>
+							</button>
+						{/if}
+					{/each}
+				</div>
+				<div class="toolbar-row">
+					<span class="lbl">Source</span>
+					{#each SOURCE_FILTERS as key (key)}
+						{@const n = sourceCount(key)}
+						{#if n > 0}
+							<button class="chip" aria-pressed={activeSources.has(key)} onclick={() => (activeSources = toggleIn(activeSources, key))}>
+								{sourceInfo(key).label} <span class="c-n">{n}</span>
+							</button>
+						{/if}
+					{/each}
+				</div>
+				<div class="toolbar-row">
+					<span class="lbl">Status</span>
+					{#each STATUS_FILTERS as f (f.key)}
+						{@const n = statusCount(f.key)}
+						{#if n > 0}
+							<button class="chip" aria-pressed={activeStatuses.has(f.key)} onclick={() => (activeStatuses = toggleIn(activeStatuses, f.key))}>
+								{f.label} <span class="c-n">{n}</span>
+							</button>
+						{/if}
+					{/each}
+				</div>
+				<div class="toolbar-row">
+					<span class="lbl">Unemp.</span>
+					{#each UNEMP_FILTERS as f (f.key)}
+						<button class="chip" aria-pressed={activeUnemp.has(f.key)} onclick={() => (activeUnemp = toggleIn(activeUnemp, f.key))}>
+							{f.label} <span class="c-n">{unempCount(f.key)}</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
 
-		<label class="check">
-			<input
-				type="checkbox"
-				checked={data.include_duplicates}
-				onchange={toggleDuplicates}
-			/>
-			Show duplicates
-		</label>
+		<div class="list-scroll">
+			{#if data.jobs.length === 0}
+				<p class="list-empty">Nothing here. Run a scrape to pull new postings.</p>
+			{:else if visible.length === 0}
+				<p class="list-empty">No jobs match the current filters.</p>
+			{:else}
+				{#each visible as job (job.id)}
+					{@const si = sourceInfo(job.source)}
+					<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+					<div
+						id="jrow-{job.id}"
+						class="jrow"
+						class:sel={selectedJob?.id === job.id}
+						class:dup={job.duplicate_of != null}
+						onclick={() => selectJob(job.id)}
+					>
+						<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+						<input
+							type="checkbox"
+							checked={selected.has(job.id)}
+							onclick={(e) => e.stopPropagation()}
+							onchange={() => toggleSelect(job.id)}
+							aria-label="select job"
+						/>
+						<ScoreBadge score={job.score?.score ?? null} size="sm" stale={job.score?.is_stale ?? false} />
+						<div class="jr-main">
+							<div class="jr-title">{job.title}</div>
+							<div class="jr-meta">
+								<span class="pill src-{job.source}"><span class="dot-badge"></span>{si.label}</span>
+								<span class="co">{job.company?.name ?? 'Unknown'}</span>
+								{#if job.location}· <span>{job.location}</span>{/if}
+								{#if job.application}<span class="tag status-{job.application.status}">{job.application.status}</span>{/if}
+								{#if isFollowupDue(job)}<span class="tag" style="color:var(--good)">follow-up due</span>{/if}
+								{#if isUsedForUnemployment(job)}<span class="tag status-applied">✓ unemployment</span>{/if}
+								{#if job.duplicate_of != null}<span class="tag" style="color:var(--good)">dup #{job.duplicate_of}</span>{/if}
+								{#if draftCart.has(job.id)}<span class="tag status-draft">in draft</span>{/if}
+							</div>
+						</div>
+					</div>
+				{/each}
+			{/if}
+		</div>
 
-		{#if activeStatuses.size > 0 || activeEases.size > 0 || activeSources.size > 0 || activeUnemp.size > 0 || unscoredOnly || minScoreInput !== ''}
-			<button type="button" class="clear" onclick={clearFilters}>Clear filters</button>
+		{#if selectedCount > 0}
+			<div class="bulkbar">
+				<b>{selectedCount}</b> selected
+				<button type="button" class="btn sm" style="margin-left:auto" onclick={copySelectedIds}>
+					{copied ? 'Copied!' : 'Copy IDs'}
+				</button>
+				<button type="button" class="btn sm" onclick={clearSelection}>Clear</button>
+			</div>
+		{/if}
+
+		<div class="list-foot">
+			<label>
+				<input
+					type="checkbox"
+					checked={allVisibleSelected}
+					indeterminate={!allVisibleSelected && someVisibleSelected}
+					onchange={toggleSelectAllVisible}
+				/>
+				Select all visible ({visible.length})
+			</label>
+			<span class="mono" style="margin-left:auto">{visible.length} shown</span>
+		</div>
+	</div>
+
+	<!-- detail pane -->
+	<div class="detail">
+		{#if !selectedJob}
+			<div class="empty-detail">Select a job to see its match breakdown.</div>
+		{:else}
+			{@const j = selectedJob}
+			{@const si = sourceInfo(j.source)}
+			<div class="detail-inner">
+				<div class="d-top">
+					{#if draftCart.has(j.id)}<span class="tag status-draft">✓ in draft list</span>{/if}
+					{#if j.application}<span class="tag status-{j.application.status}">{j.application.status}</span>{/if}
+					<span class="mono" style="color:var(--faint);font-size:12px">{si.ease} apply</span>
+				</div>
+				<div class="d-title">{j.title}</div>
+				<div class="d-org">
+					<span class="pill src-{j.source}"><span class="dot-badge"></span>{si.label}</span>
+					<b style="color:var(--fg)">{j.company?.name ?? 'Unknown'}</b>
+					{#if j.location}· {j.location}{/if}
+					{#if j.posted_at}· posted {relTime(j.posted_at)}{/if}
+				</div>
+				<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+					<a class="btn sm primary" href={`/jobs/${j.id}`}>Open full page →</a>
+					<button type="button" class="btn sm" onclick={() => draftCart.toggle(j.id)}>
+						{draftCart.has(j.id) ? '✓ In draft list' : '+ Add to draft list'}
+					</button>
+					<a class="d-link" href={j.url} target="_blank" rel="noopener">
+						View original <Icon name="external" size={12} stroke={2} />
+					</a>
+				</div>
+
+				<div class="d-cols">
+					<div class="card">
+						<div class="card-h">
+							<h3>Match score</h3>
+							{#if j.score}<span class="tag" style="margin-left:auto">{j.score.score_kind}</span>{/if}
+						</div>
+						<div class="card-b">
+							{#if !j.score}
+								<div class="draft-empty">Not scored yet. Run <code>/match-pending</code> or the Score-pending button.</div>
+							{:else}
+								{#if j.score.is_stale}
+									<p class="banner warn" style="margin-bottom:12px">Scored against an older resume — re-score to refresh.</p>
+								{/if}
+								<div class="match-hero">
+									<span class="mh-n" style="color:{scoreBandVar(j.score.score)}">{j.score.score}</span>
+									<span class="mh-d">/100</span>
+								</div>
+								{#if j.score.reasoning}<div class="rationale">{j.score.reasoning}</div>{/if}
+								{#if rubricEntries(j.score.rubric).length > 0}
+									<details class="rubric">
+										<summary><Icon name="chevron" size={12} stroke={2.4} /> Rubric breakdown</summary>
+										{#each rubricEntries(j.score.rubric) as [label, value] (label)}
+											{@const num = rubricNumber(value)}
+											<div class="rub-row">
+												<div class="rr-l">{label}</div>
+												{#if num !== null}
+													<div class="rr-track"><div class="rr-fill" style="width:{num}%;background:{scoreBandVar(num)}"></div></div>
+													<div class="rr-n">{num}</div>
+												{:else}
+													<div class="rr-v">{typeof value === 'object' ? JSON.stringify(value) : String(value)}</div>
+												{/if}
+											</div>
+										{/each}
+									</details>
+								{/if}
+							{/if}
+						</div>
+					</div>
+
+					<div class="card">
+						<div class="card-h"><h3>Details</h3></div>
+						<div class="card-b">
+							<div class="meta-table">
+								<div class="d-meta-row"><span class="dm-k">Source</span><span class="dm-v">{si.label}</span></div>
+								<div class="d-meta-row"><span class="dm-k">Remote</span><span class="dm-v">{j.remote ? 'yes' : 'no'}</span></div>
+								{#if j.employment_type}<div class="d-meta-row"><span class="dm-k">Type</span><span class="dm-v">{j.employment_type}</span></div>{/if}
+								<div class="d-meta-row"><span class="dm-k">Posted</span><span class="dm-v">{j.posted_at ? relTime(j.posted_at) : '—'}</span></div>
+								<div class="d-meta-row"><span class="dm-k">Ingested</span><span class="dm-v">{relTime(j.ingested_at)}</span></div>
+							</div>
+							{#if j.filter_reason}<p class="banner warn" style="margin-top:12px">{j.filter_reason}</p>{/if}
+						</div>
+					</div>
+				</div>
+			</div>
 		{/if}
 	</div>
-
-	<div class="chips-row">
-		<span class="chips-label">Ease</span>
-		<div class="chips">
-			{#each EASE_FILTERS as f (f.key)}
-				{@const n = easeCount(f.key)}
-				{#if n > 0}
-					<button
-						type="button"
-						class="chip"
-						data-ease={f.key}
-						class:active={activeEases.has(f.key)}
-						onclick={() => toggleEase(f.key)}
-					>
-						{f.label}
-						<span class="chip-count">{n}</span>
-					</button>
-				{/if}
-			{/each}
-		</div>
-	</div>
-
-	<div class="chips-row">
-		<span class="chips-label">Source</span>
-		<div class="chips">
-			{#each SOURCE_FILTERS as key (key)}
-				{@const n = sourceCount(key)}
-				{#if n > 0}
-					{@const meta = SOURCE_META[key]}
-					<button
-						type="button"
-						class="chip"
-						data-ease={meta.ease}
-						class:active={activeSources.has(key)}
-						onclick={() => toggleSource(key)}
-					>
-						{meta.label}
-						<span class="chip-count">{n}</span>
-					</button>
-				{/if}
-			{/each}
-		</div>
-	</div>
-
-	<div class="chips-row">
-		<span class="chips-label">Status</span>
-		<div class="chips">
-			{#each STATUS_FILTERS as f (f.key)}
-				{@const n = statusCount(f.key)}
-				{#if n > 0}
-					<button
-						type="button"
-						class="chip"
-						class:active={activeStatuses.has(f.key)}
-						onclick={() => toggleStatus(f.key)}
-					>
-						{f.label}
-						<span class="chip-count">{n}</span>
-					</button>
-				{/if}
-			{/each}
-		</div>
-	</div>
-
-		<div class="chips-row">
-			<span class="chips-label">Unemp.</span>
-			<div class="chips">
-				{#each UNEMP_FILTERS as f (f.key)}
-					<button
-						type="button"
-						class="chip"
-						class:active={activeUnemp.has(f.key)}
-						onclick={() => toggleUnemp(f.key)}
-					>
-						{f.label}
-						<span class="chip-count">{unempCount(f.key)}</span>
-					</button>
-				{/each}
-			</div>
-		</div>
-	</section>
-
-{#if data.jobs.length === 0}
-	<p class="empty">
-		Nothing here. Run <code>make ingest</code> to pull new postings.
-	</p>
-{:else if visible.length === 0}
-	<p class="empty">No jobs match the current filters.</p>
-{:else}
-	<div class="select-all">
-		<label>
-			<input
-				type="checkbox"
-				checked={allVisibleSelected}
-				indeterminate={!allVisibleSelected && someVisibleSelected}
-				onchange={toggleSelectAllVisible}
-			/>
-			Select all visible ({visible.length})
-		</label>
-	</div>
-
-	<ul class="jobs">
-		{#each visible as job (job.id)}
-			{@const si = sourceInfo(job.source)}
-			<li
-				class="row"
-				class:selected={selected.has(job.id)}
-				class:duplicate={job.duplicate_of != null}
-				class:used-unemp={isUsedForUnemployment(job)}
-			>
-				<label class="check-cell" aria-label="select job">
-					<input
-						type="checkbox"
-						checked={selected.has(job.id)}
-						onchange={() => toggleSelect(job.id)}
-					/>
-				</label>
-				<a href={`/jobs/${job.id}`} class="row-link">
-					<span class="score-cell">
-						{#if job.score}
-							<button
-								type="button"
-								class="score-pill score-pill-btn"
-								class:stale={job.score.is_stale}
-								data-score={scoreBucket(job.score.score)}
-								onclick={(e) => toggleRubric(e, job.id)}
-								aria-expanded={openRubricFor === job.id}
-								aria-label={job.score.is_stale
-									? 'Stale score — older resume. Click for rubric.'
-									: 'Show rubric breakdown'}
-								title={job.score.is_stale
-									? 'Scored against an older resume — run /match-pending to refresh'
-									: undefined}
-							>
-								{job.score.score}
-								{#if job.score.is_stale}
-									<span class="stale-label">stale</span>
-								{/if}
-							</button>
-							{#if openRubricFor === job.id}
-								{@const entries = rubricEntries(job.score.rubric)}
-								<div
-									class="rubric-popover"
-									role="dialog"
-									tabindex="-1"
-									onclick={(e) => e.stopPropagation()}
-									onkeydown={(e) => e.key === 'Escape' && closeRubric()}
-								>
-									<p class="rubric-head">
-										<span class="rubric-score">{job.score.score}/100</span>
-										<span class="kind" data-kind={job.score.score_kind}>
-											{job.score.score_kind}
-										</span>
-									</p>
-									{#if entries.length === 0}
-										<p class="rubric-empty">No rubric recorded.</p>
-									{:else}
-										<ul class="rubric-list">
-											{#each entries as [bucket, value] (bucket)}
-												<li>
-													<span class="rubric-bucket">{bucket}</span>
-													<span class="rubric-value">
-														{#if typeof value === 'object' && value !== null}
-															{JSON.stringify(value)}
-														{:else}
-															{String(value)}
-														{/if}
-													</span>
-												</li>
-											{/each}
-										</ul>
-									{/if}
-									{#if job.score.reasoning}
-										<p class="rubric-reasoning">{job.score.reasoning}</p>
-									{/if}
-								</div>
-							{/if}
-						{:else}
-							<span class="score-pill" data-score="none">—</span>
-						{/if}
-					</span>
-					<span class="main">
-						<span class="title">{job.title}</span>
-						<span class="meta">
-							{#if job.duplicate_of != null}
-								<span class="dup-label" title="JD-similarity duplicate">
-									dup of #{job.duplicate_of}
-								</span>
-							{/if}
-							{#if job.application}
-								<span class="status status-{job.application.status}">
-									{job.application.status}
-								</span>
-							{/if}
-							{#if isFollowupDue(job)}
-								<span class="followup-chip" title="Follow-up due">⏰ follow-up due</span>
-							{/if}
-							{#if isUsedForUnemployment(job)}
-								<span class="unemp-chip" title="Used for an unemployment claim">
-									✓ unemployment
-								</span>
-							{/if}
-							<span
-								class="source"
-								data-ease={si.ease}
-								title="Apply friction: {si.ease}"
-							>
-								{si.label}
-							</span>
-							<span class="company">{job.company?.name ?? 'Unknown'}</span>
-							{#if job.location}
-								<span class="dot">·</span><span>{job.location}</span>
-							{/if}
-							<span class="dot">·</span>
-							<span>
-								{#if job.posted_at}
-									posted {relTime(job.posted_at)}
-								{:else}
-									posted ?
-								{/if}
-								· ingested {relTime(job.ingested_at)}
-							</span>
-						</span>
-						{#if job.filter_reason}
-							<span class="reason">{job.filter_reason}</span>
-						{/if}
-					</span>
-				</a>
-			</li>
-		{/each}
-	</ul>
-{/if}
+</div>
 
 {#if draftCart.ids.length > 0}
-	<div class="draft-cart-bar" class:stacked={selectedCount > 0}>
-		<span class="cart-count">
-			Draft list: {draftCart.ids.length} job{draftCart.ids.length === 1 ? '' : 's'}
-		</span>
+	<div class="floater draft-cart" class:stacked={selectedCount > 0}>
+		<span class="cart-count">Draft list: {draftCart.ids.length} job{draftCart.ids.length === 1 ? '' : 's'}</span>
 		<code class="cart-cmd" title={draftCart.command}>{draftCart.command}</code>
-		<button type="button" class="cart-copy" onclick={copyDraftCommand}>
-			{draftCopied ? 'Copied!' : 'Copy /draft command'}
-		</button>
-		<button type="button" class="cart-clear" onclick={() => draftCart.clear()}>Clear</button>
+		<button type="button" class="btn sm primary" onclick={copyDraftCommand}>{draftCopied ? 'Copied!' : 'Copy /draft'}</button>
+		<button type="button" class="btn sm" onclick={() => draftCart.clear()}>Clear</button>
 	</div>
 {/if}
 
@@ -804,7 +722,7 @@
 	<form
 		method="POST"
 		action="?/bulkStatus"
-		class="action-bar"
+		class="floater action-bar"
 		use:enhance={() => {
 			submitting = true;
 			return async ({ result, update }) => {
@@ -817,555 +735,384 @@
 			};
 		}}
 	>
-		<span class="action-count">
-			{selectedCount} selected
-		</span>
-		{#each [...selected] as id (id)}
-			<input type="hidden" name="ids" value={id} />
-		{/each}
+		<span class="action-count">{selectedCount} selected</span>
+		{#each [...selected] as id (id)}<input type="hidden" name="ids" value={id} />{/each}
 		<label class="action-status">
-			Set status
-			<select name="status" bind:value={bulkStatus}>
-				{#each BULK_STATUSES as s (s)}
-					<option value={s}>{s}</option>
-				{/each}
+			Status
+			<select class="mini-input" name="status" bind:value={bulkStatus}>
+				{#each BULK_STATUSES as s (s)}<option value={s}>{s}</option>{/each}
 			</select>
 		</label>
 		{#if bulkStatus === 'applied'}
 			<label class="action-status">
 				Follow up
-				<input type="date" name="next_followup_at" bind:value={followupDate} />
+				<input class="mini-input" type="date" name="next_followup_at" bind:value={followupDate} />
 			</label>
 		{/if}
-		<button type="submit" class="action-apply" disabled={submitting}>
-			{submitting ? 'Applying…' : 'Apply'}
-		</button>
+		<button type="submit" class="btn sm primary" disabled={submitting}>{submitting ? 'Applying…' : 'Apply'}</button>
 		<span class="action-sep" aria-hidden="true"></span>
-		<button
-			type="submit"
-			formaction="?/bulkUnemployment"
-			name="used"
-			value="true"
-			class="action-unemp"
-			disabled={submitting}
-			title="Mark selected as used for an unemployment claim"
-		>
-			✓ Used for unemployment
-		</button>
-		<button
-			type="submit"
-			formaction="?/bulkUnemployment"
-			name="used"
-			value="false"
-			class="action-unemp off"
-			disabled={submitting}
-			title="Clear the unemployment flag on selected"
-		>
-			Unmark
-		</button>
-		<button type="button" class="action-copy" onclick={copySelectedIds}>
-			{copied ? 'Copied!' : 'Copy IDs'}
-		</button>
-		<button type="button" class="action-clear" onclick={clearSelection}>Clear</button>
+		<button type="submit" formaction="?/bulkUnemployment" name="used" value="true" class="btn sm" disabled={submitting} title="Mark selected as used for an unemployment claim">✓ Unemployment</button>
+		<button type="submit" formaction="?/bulkUnemployment" name="used" value="false" class="btn sm ghost" disabled={submitting} title="Clear the unemployment flag on selected">Unmark</button>
+		<button type="button" class="btn sm" onclick={copySelectedIds}>{copied ? 'Copied!' : 'Copy IDs'}</button>
+		<button type="button" class="btn sm ghost" onclick={clearSelection}>Clear</button>
 	</form>
 {/if}
 
 <style>
-	.header-row {
+	.md {
+		flex: 1;
+		min-height: 0;
 		display: flex;
-		align-items: baseline;
-		gap: 1rem;
-		margin-bottom: 0.75rem;
 	}
-	.header-actions {
-		margin-left: auto;
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-	}
-	.scrape-btn {
-		background: transparent;
-		color: var(--fg);
-		border: 1px solid var(--panel-border);
-		border-radius: 6px;
-		padding: 0.4rem 0.85rem;
-		font-weight: 600;
-		font-size: 0.85rem;
-		cursor: pointer;
-	}
-	.scrape-btn:hover:not(:disabled) {
-		border-color: var(--accent);
-	}
-	.scrape-btn:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-	.score-btn {
-		background: var(--accent);
-		color: #0d1117;
-		border: 0;
-		border-radius: 6px;
-		padding: 0.4rem 0.85rem;
-		font-weight: 600;
-		font-size: 0.85rem;
-		cursor: pointer;
-	}
-	.score-btn:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-	.score-btn:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-	.score-btn.disabled {
-		background: transparent;
-		color: var(--warn);
-		border: 1px solid var(--warn);
-		display: inline-block;
-	}
-	.score-btn.disabled:hover {
-		text-decoration: none;
-		filter: brightness(1.1);
-	}
-	.score-error {
-		color: var(--bad);
-		margin: 0 0 0.75rem;
-		font-size: 0.85rem;
-	}
-	h1 {
-		font-size: 1.4rem;
-		margin: 0;
-	}
-	.count {
-		color: var(--muted);
-		font-size: 0.9rem;
-	}
-	.toolbar {
+	.md-list {
+		width: min(46%, 560px);
+		flex: none;
+		border-right: 1px solid var(--border);
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
-		margin-bottom: 1rem;
-		padding: 0.75rem 0.85rem;
-		background: var(--panel);
-		border: 1px solid var(--panel-border);
-		border-radius: 8px;
+		min-height: 0;
+	}
+	.q-panels {
+		flex: none;
+		padding: 12px 16px 0;
+	}
+	.toolbar {
+		flex: none;
+		padding: 11px 14px;
+		border-bottom: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
 	}
 	.toolbar-row {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 1rem;
 		align-items: center;
-	}
-	.toolbar label {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.85rem;
-		color: var(--muted);
-	}
-	.toolbar select,
-	.toolbar input[type='number'] {
-		background: #20262d;
-		color: var(--fg);
-		border: 1px solid var(--panel-border);
-		border-radius: 4px;
-		padding: 0.25rem 0.4rem;
-		font-size: 0.85rem;
-	}
-	.toolbar input[type='number'] {
-		width: 5rem;
-	}
-	.clear {
-		background: transparent;
-		color: var(--muted);
-		border: 1px solid var(--panel-border);
-		border-radius: 4px;
-		padding: 0.25rem 0.6rem;
-		font-size: 0.8rem;
-		cursor: pointer;
-	}
-	.clear:hover {
-		color: var(--fg);
-		border-color: var(--accent);
-	}
-	.chips-row {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
+		gap: 9px;
 		flex-wrap: wrap;
 	}
-	.chips-label {
-		font-size: 0.75rem;
-		color: var(--muted);
-		text-transform: uppercase;
+	.toolbar-row .lbl {
+		font-size: 11px;
+		font-weight: 640;
 		letter-spacing: 0.05em;
-		min-width: 3.5rem;
+		text-transform: uppercase;
+		color: var(--faint);
+		width: 52px;
+		flex: none;
 	}
-	.chips {
+	.qtabs {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 0.4rem;
+		gap: 4px;
+		padding: 3px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 9px;
 	}
-	.chip {
-		background: #20262d;
+	.qtab {
+		flex: 1;
+		height: 29px;
+		border-radius: 7px;
+		font-size: 12px;
+		font-weight: 560;
 		color: var(--muted);
-		border: 1px solid var(--panel-border);
-		border-radius: 999px;
-		padding: 0.2rem 0.6rem;
-		font-size: 0.78rem;
-		cursor: pointer;
-		display: inline-flex;
+		display: flex;
 		align-items: center;
-		gap: 0.4rem;
+		justify-content: center;
+		gap: 7px;
 	}
-	.chip:hover {
-		border-color: var(--accent);
+	.qtab:hover {
+		color: var(--fg);
 	}
-	.chip.active {
-		background: rgba(88, 166, 255, 0.18);
-		color: var(--accent);
-		border-color: var(--accent);
+	.qtab[aria-pressed='true'] {
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: 0 1px 3px oklch(0% 0 0 / 0.16);
 	}
-	.chip[data-ease='easy'].active {
-		background: rgba(46, 160, 67, 0.2);
-		color: var(--ok);
-		border-color: var(--ok);
+	.list-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
 	}
-	.chip[data-ease='med'].active {
-		background: rgba(210, 153, 34, 0.2);
-		color: var(--warn);
-		border-color: var(--warn);
-	}
-	.chip[data-ease='hard'].active {
-		background: rgba(248, 81, 73, 0.18);
-		color: var(--bad);
-		border-color: var(--bad);
-	}
-	.chip-count {
-		font-variant-numeric: tabular-nums;
-		font-size: 0.7rem;
-		opacity: 0.7;
-	}
-	.empty {
-		color: var(--muted);
-		padding: 2rem;
+	.list-empty {
+		padding: 48px 20px;
 		text-align: center;
-		border: 1px dashed var(--panel-border);
-		border-radius: 8px;
+		color: var(--faint);
+		font-size: 13px;
 	}
-	.select-all {
-		font-size: 0.8rem;
-		color: var(--muted);
-		margin: 0 0 0.5rem 0.4rem;
-	}
-	.select-all label {
-		display: inline-flex;
+	.jrow {
+		display: flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 12px;
+		padding: 12px 14px;
+		border-bottom: 1px solid var(--border);
 		cursor: pointer;
+		position: relative;
 	}
-	.jobs {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
+	.jrow:hover {
+		background: var(--surface-2);
 	}
-	.row {
-		display: flex;
-		align-items: stretch;
-		background: var(--panel);
-		border: 1px solid var(--panel-border);
-		border-radius: 8px;
+	.jrow.sel {
+		background: var(--accent-soft);
 	}
-	.row.selected {
-		border-color: var(--accent);
-		background: rgba(88, 166, 255, 0.06);
+	.jrow.sel::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		top: 0;
+		bottom: 0;
+		width: 3px;
+		background: var(--accent);
 	}
-	.row.used-unemp {
-		border-left: 3px solid var(--ok);
+	.jrow.dup {
+		opacity: 0.6;
 	}
-	.row.duplicate {
-		opacity: 0.55;
-	}
-	.row.duplicate:hover {
+	.jrow.dup:hover {
 		opacity: 1;
 	}
-	.dup-label {
-		font-size: 0.7rem;
-		letter-spacing: 0.02em;
-		padding: 0.1rem 0.45rem;
-		border-radius: 4px;
-		background: rgba(210, 153, 34, 0.18);
-		color: var(--warn);
+	.jrow input[type='checkbox'] {
+		width: 15px;
+		height: 15px;
+		accent-color: var(--accent);
+		flex: none;
 	}
-	.row:hover {
-		border-color: var(--accent);
-	}
-	.check-cell {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0 0.6rem 0 0.85rem;
-		cursor: pointer;
-	}
-	.check-cell input {
-		width: 1rem;
-		height: 1rem;
-		cursor: pointer;
-	}
-	.row-link {
+	.jr-main {
+		min-width: 0;
 		flex: 1;
-		display: flex;
-		gap: 1rem;
-		padding: 0.85rem 1rem 0.85rem 0.4rem;
-		color: var(--fg);
-		min-width: 0;
 	}
-	.row-link:hover {
-		text-decoration: none;
-	}
-	.score-cell {
-		position: relative;
-		flex: 0 0 3rem;
-		align-self: center;
-	}
-	.score-pill {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 3rem;
-		min-height: 2.25rem;
-		font-weight: 700;
-		padding: 0.4rem 0.5rem;
-		border-radius: 6px;
-		background: #20262d;
-		color: var(--muted);
-		font-variant-numeric: tabular-nums;
-		line-height: 1;
-		box-sizing: border-box;
-	}
-	.score-pill-btn {
-		border: 1px solid transparent;
-		cursor: pointer;
-		font: inherit;
-	}
-	.score-pill-btn:hover {
-		border-color: var(--accent);
-	}
-	.rubric-popover {
-		position: absolute;
-		top: calc(100% + 0.4rem);
-		left: 0;
-		z-index: 20;
-		min-width: 16rem;
-		max-width: 22rem;
-		background: var(--panel);
-		border: 1px solid var(--accent);
-		border-radius: 8px;
-		padding: 0.6rem 0.75rem;
-		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-		font-size: 0.8rem;
-		color: var(--fg);
-		text-align: left;
-	}
-	.rubric-list {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.rubric-list li {
-		display: flex;
-		justify-content: space-between;
-		gap: 0.6rem;
-	}
-	.rubric-bucket {
-		color: var(--muted);
-		text-transform: lowercase;
-	}
-	.rubric-value {
-		font-variant-numeric: tabular-nums;
-	}
-	.rubric-reasoning {
-		margin: 0.5rem 0 0;
-		padding-top: 0.5rem;
-		border-top: 1px solid var(--panel-border);
-		color: var(--muted);
-		font-style: italic;
-	}
-	.rubric-empty {
-		margin: 0;
-		color: var(--muted);
-	}
-	.rubric-head {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		margin: 0 0 0.45rem;
-		padding-bottom: 0.4rem;
-		border-bottom: 1px solid var(--panel-border);
-	}
-	.rubric-score {
+	.jr-title {
 		font-weight: 600;
-		color: var(--fg);
-		font-variant-numeric: tabular-nums;
+		font-size: 13px;
+		line-height: 1.35;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
-	.kind {
-		font-size: 0.7rem;
-		letter-spacing: 0.02em;
-		padding: 0.1rem 0.45rem;
-		border-radius: 4px;
-		background: #20262d;
-		color: var(--muted);
-		text-transform: lowercase;
-	}
-	.kind[data-kind='tailored'] {
-		background: rgba(88, 166, 255, 0.18);
-		color: var(--accent);
-	}
-	.kind[data-kind='baseline'] {
-		background: rgba(210, 153, 34, 0.18);
-		color: var(--warn);
-	}
-	.score-pill[data-score='high'] {
-		background: rgba(46, 160, 67, 0.2);
-		color: var(--ok);
-	}
-	.score-pill[data-score='med'] {
-		background: rgba(210, 153, 34, 0.2);
-		color: var(--warn);
-	}
-	.score-pill[data-score='low'] {
-		background: rgba(248, 81, 73, 0.18);
-		color: var(--bad);
-	}
-	.score-pill.stale {
-		flex-direction: column;
-		gap: 0.1rem;
-		background: #20262d;
-		color: var(--muted);
-		opacity: 0.85;
-	}
-	.stale-label {
-		font-size: 0.55rem;
-		font-weight: 500;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		opacity: 0.85;
-	}
-	.main {
+	.jr-meta {
 		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		min-width: 0;
-	}
-	.title {
-		font-weight: 600;
-		font-size: 1rem;
-	}
-	.meta {
-		font-size: 0.85rem;
-		color: var(--muted);
-		display: flex;
-		gap: 0.4rem;
 		align-items: center;
+		gap: 7px;
+		margin-top: 5px;
+		color: var(--faint);
+		font-size: 11.5px;
 		flex-wrap: wrap;
 	}
-	.dot {
-		color: var(--panel-border);
-	}
-	.reason {
-		font-size: 0.8rem;
-		color: var(--warn);
-		font-style: italic;
-	}
-	.status {
-		text-transform: uppercase;
-		font-size: 0.7rem;
-		letter-spacing: 0.05em;
-		padding: 0.1rem 0.4rem;
-		border-radius: 4px;
-		background: #20262d;
-	}
-	.source {
-		font-size: 0.7rem;
-		letter-spacing: 0.02em;
-		padding: 0.1rem 0.45rem;
-		border-radius: 4px;
-		background: #20262d;
+	.jr-meta .co {
 		color: var(--muted);
-		border: 1px solid transparent;
-		font-variant-numeric: tabular-nums;
+		font-weight: 560;
 	}
-	.source[data-ease='easy'] {
-		background: rgba(46, 160, 67, 0.18);
-		color: var(--ok);
+	.list-foot {
+		flex: none;
+		border-top: 1px solid var(--border);
+		padding: 9px 14px;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 12px;
+		color: var(--muted);
+		background: var(--surface);
 	}
-	.source[data-ease='med'] {
-		background: rgba(210, 153, 34, 0.18);
-		color: var(--warn);
+	.list-foot label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		cursor: pointer;
 	}
-	.source[data-ease='hard'] {
-		background: rgba(248, 81, 73, 0.16);
-		color: var(--bad);
+	.list-foot input {
+		width: 15px;
+		height: 15px;
+		accent-color: var(--accent);
 	}
-	.status-applied {
-		background: rgba(46, 160, 67, 0.2);
-		color: var(--ok);
-	}
-	.status-screening {
-		background: rgba(163, 113, 247, 0.22);
-		color: #d2a8ff;
-	}
-	.status-interviewing {
-		background: rgba(57, 208, 216, 0.18);
-		color: #56d4dd;
-	}
-	.followup-chip {
-		font-size: 0.7rem;
-		padding: 0.1rem 0.45rem;
-		border-radius: 4px;
-		background: rgba(210, 153, 34, 0.2);
-		color: var(--warn);
-		letter-spacing: 0.02em;
-	}
-	.unemp-chip {
-		font-size: 0.7rem;
-		padding: 0.1rem 0.45rem;
-		border-radius: 4px;
-		background: rgba(46, 160, 67, 0.2);
-		color: var(--ok);
-		letter-spacing: 0.02em;
-	}
-	.status-rejected {
-		background: rgba(248, 81, 73, 0.18);
-		color: var(--bad);
-	}
-	.status-interested,
-	.status-drafted {
-		background: rgba(88, 166, 255, 0.18);
-		color: var(--accent);
+	.bulkbar {
+		flex: none;
+		padding: 10px 14px;
+		border-top: 1px solid var(--border);
+		background: var(--accent-soft);
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 12.5px;
 	}
 
-	.action-bar {
+	.detail {
+		flex: 1;
+		min-width: 0;
+		overflow-y: auto;
+	}
+	.detail-inner {
+		padding: 22px 26px 44px;
+		max-width: 760px;
+	}
+	.d-top {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+		margin-bottom: 14px;
+	}
+	.d-title {
+		font-size: 22px;
+		letter-spacing: -0.02em;
+		font-weight: 660;
+		line-height: 1.2;
+	}
+	.d-org {
+		display: flex;
+		align-items: center;
+		gap: 9px;
+		color: var(--muted);
+		font-size: 13px;
+		margin-top: 8px;
+		flex-wrap: wrap;
+	}
+	.d-cols {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 14px;
+		margin-top: 18px;
+	}
+	@media (max-width: 900px) {
+		.d-cols {
+			grid-template-columns: 1fr;
+		}
+	}
+	.match-hero {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+	}
+	.match-hero .mh-n {
+		font-family: var(--mono);
+		font-size: 44px;
+		font-weight: 680;
+		letter-spacing: -0.03em;
+		line-height: 1;
+	}
+	.match-hero .mh-d {
+		font-family: var(--mono);
+		color: var(--faint);
+		font-size: 16px;
+	}
+	.rationale {
+		color: var(--muted);
+		font-size: 13px;
+		line-height: 1.6;
+		margin-top: 12px;
+	}
+	details.rubric {
+		margin-top: 14px;
+		border-top: 1px solid var(--border);
+		padding-top: 12px;
+	}
+	details.rubric summary {
+		cursor: pointer;
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--accent);
+		list-style: none;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	details.rubric summary::-webkit-details-marker {
+		display: none;
+	}
+	details.rubric summary :global(svg) {
+		transition: transform 0.15s;
+	}
+	details.rubric[open] summary :global(svg) {
+		transform: rotate(90deg);
+	}
+	.rub-row {
+		display: grid;
+		grid-template-columns: 150px 1fr 34px;
+		gap: 10px;
+		align-items: center;
+		margin-top: 11px;
+	}
+	.rub-row .rr-l {
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.rub-row .rr-track {
+		height: 7px;
+		border-radius: 20px;
+		background: var(--surface-2);
+		overflow: hidden;
+	}
+	.rub-row .rr-fill {
+		height: 100%;
+		border-radius: 20px;
+	}
+	.rub-row .rr-n {
+		font-family: var(--mono);
+		font-size: 12px;
+		text-align: right;
+		color: var(--muted);
+	}
+	.rub-row .rr-v {
+		grid-column: 2 / 4;
+		font-family: var(--mono);
+		font-size: 11.5px;
+		color: var(--muted);
+	}
+	.draft-empty {
+		color: var(--muted);
+		font-size: 12.5px;
+		line-height: 1.6;
+	}
+	.empty-detail {
+		height: 100%;
+		display: grid;
+		place-items: center;
+		color: var(--faint);
+		text-align: center;
+		padding: 40px;
+	}
+
+	/* floating bottom bars (above the 27px status bar) */
+	.floater {
 		position: fixed;
 		left: 50%;
 		transform: translateX(-50%);
-		bottom: 1.25rem;
+		bottom: 2.5rem;
 		display: flex;
 		align-items: center;
-		gap: 0.85rem;
-		padding: 0.6rem 0.9rem;
-		background: var(--panel);
-		border: 1px solid var(--accent);
-		border-radius: 10px;
-		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-		font-size: 0.85rem;
-		z-index: 10;
+		gap: 0.7rem;
+		padding: 0.55rem 0.85rem;
+		background: var(--surface);
+		border: 1px solid var(--border-2);
+		border-radius: 12px;
+		box-shadow: var(--shadow);
+		font-size: 12.5px;
+		z-index: 40;
+		max-width: 92vw;
+	}
+	.action-bar {
+		border-color: var(--accent);
+		flex-wrap: wrap;
+	}
+	.draft-cart {
+		border-color: var(--strong);
+	}
+	.draft-cart.stacked {
+		bottom: 5.5rem;
+	}
+	.cart-count {
+		color: var(--strong);
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.cart-cmd {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0.2rem 0.45rem;
+		color: var(--fg);
+		font-family: var(--mono);
+		font-size: 0.8rem;
+		max-width: 22rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.action-count {
 		color: var(--accent);
@@ -1377,129 +1124,9 @@
 		gap: 0.4rem;
 		color: var(--muted);
 	}
-	.action-status select {
-		background: #20262d;
-		color: var(--fg);
-		border: 1px solid var(--panel-border);
-		border-radius: 4px;
-		padding: 0.25rem 0.4rem;
-		font-size: 0.85rem;
-	}
-	.action-apply {
-		background: var(--accent);
-		color: #0d1117;
-		border: 0;
-		border-radius: 4px;
-		padding: 0.35rem 0.85rem;
-		font-weight: 600;
-		cursor: pointer;
-	}
-	.action-apply:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
 	.action-sep {
 		width: 1px;
 		align-self: stretch;
-		background: var(--panel-border);
-	}
-	.action-unemp {
-		background: rgba(46, 160, 67, 0.18);
-		color: var(--ok);
-		border: 1px solid var(--ok);
-		border-radius: 4px;
-		padding: 0.35rem 0.7rem;
-		font-weight: 600;
-		cursor: pointer;
-	}
-	.action-unemp.off {
-		background: transparent;
-		color: var(--muted);
-		border-color: var(--panel-border);
-		font-weight: 400;
-	}
-	.action-unemp:hover {
-		filter: brightness(1.1);
-	}
-	.action-unemp:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-	.action-copy,
-	.action-clear {
-		background: transparent;
-		color: var(--muted);
-		border: 1px solid var(--panel-border);
-		border-radius: 4px;
-		padding: 0.3rem 0.6rem;
-		cursor: pointer;
-	}
-	.action-copy:hover,
-	.action-clear:hover {
-		color: var(--fg);
-		border-color: var(--accent);
-	}
-
-	.draft-cart-bar {
-		position: fixed;
-		left: 50%;
-		transform: translateX(-50%);
-		bottom: 1.25rem;
-		display: flex;
-		align-items: center;
-		gap: 0.7rem;
-		padding: 0.55rem 0.85rem;
-		background: var(--panel);
-		border: 1px solid var(--ok);
-		border-radius: 10px;
-		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-		font-size: 0.85rem;
-		z-index: 11;
-		max-width: 90vw;
-	}
-	.draft-cart-bar.stacked {
-		bottom: 5rem;
-	}
-	.cart-count {
-		color: var(--ok);
-		font-weight: 600;
-		white-space: nowrap;
-	}
-	.cart-cmd {
-		background: var(--bg);
-		border: 1px solid var(--panel-border);
-		border-radius: 4px;
-		padding: 0.2rem 0.45rem;
-		color: var(--fg);
-		font-family: ui-monospace, monospace;
-		font-size: 0.8rem;
-		max-width: 22rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.cart-copy {
-		background: var(--ok);
-		color: #0d1117;
-		border: 0;
-		border-radius: 4px;
-		padding: 0.35rem 0.8rem;
-		font-weight: 600;
-		cursor: pointer;
-	}
-	.cart-copy:hover {
-		filter: brightness(1.1);
-	}
-	.cart-clear {
-		background: transparent;
-		color: var(--muted);
-		border: 1px solid var(--panel-border);
-		border-radius: 4px;
-		padding: 0.3rem 0.6rem;
-		cursor: pointer;
-	}
-	.cart-clear:hover {
-		color: var(--fg);
-		border-color: var(--accent);
+		background: var(--border);
 	}
 </style>

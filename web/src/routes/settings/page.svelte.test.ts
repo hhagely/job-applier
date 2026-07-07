@@ -11,6 +11,7 @@ function makeData(overrides = {}) {
 	return {
 		apiBase: '',
 		aiProvider: 'claude',
+		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		ai: {
 			providers: [
 				{
