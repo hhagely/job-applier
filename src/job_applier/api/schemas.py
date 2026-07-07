@@ -34,6 +34,8 @@ class ApplicationOut(BaseModel):
     next_followup_at: Optional[datetime] = None
     last_contact_at: Optional[datetime] = None
     outcome: Optional[str] = None
+    used_for_unemployment: bool = False
+    used_for_unemployment_at: Optional[datetime] = None
 
 
 class JobOut(BaseModel):
@@ -76,6 +78,15 @@ class BulkStatusUpdate(BaseModel):
 
 class NotesUpdate(BaseModel):
     notes: str
+
+
+class UnemploymentUpdate(BaseModel):
+    used: bool
+
+
+class BulkUnemploymentUpdate(BaseModel):
+    job_ids: list[int]
+    used: bool
 
 
 class FollowupUpdate(BaseModel):

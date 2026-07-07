@@ -49,6 +49,13 @@ export const actions: Actions = {
 		await api.setNotes(fetch, id, notes);
 		return { ok: true };
 	},
+	setUnemployment: async ({ request, params, fetch }) => {
+		const id = Number(params.id);
+		const form = await request.formData();
+		const used = form.get('used') === 'true';
+		await api.setUnemployment(fetch, id, used);
+		return { ok: true };
+	},
 	renderDraft: async ({ params, fetch }) => {
 		const id = Number(params.id);
 		try {
