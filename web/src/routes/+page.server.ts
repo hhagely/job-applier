@@ -76,5 +76,15 @@ export const actions: Actions = {
 			// The API returns 409 when no provider is selected / no active resume.
 			return fail(409, { error: (e as Error).message });
 		}
+	},
+
+	// Kick off a background scrape of every source (needs no AI provider).
+	runIngest: async ({ fetch }) => {
+		try {
+			const { task_id } = await api.startIngest(fetch, serverApiBase());
+			return { ok: true, task_id, kind: 'ingest' };
+		} catch (e) {
+			return fail(500, { error: (e as Error).message });
+		}
 	}
 };

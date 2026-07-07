@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -307,15 +308,27 @@ def ingest_one(
     stats.inserted += 1
 
 
-def run_ingest(sources: list[SourceAdapter] | None = None) -> IngestStats:
+def run_ingest(
+    sources: list[SourceAdapter] | None = None,
+    progress_cb: Callable[[int, int, str, IngestStats], None] | None = None,
+) -> IngestStats:
+    """Fetch, dedupe, filter, and persist from every source.
+
+    ``progress_cb(done, total, source_name, cumulative_stats)`` is invoked after
+    each source finishes (optional; when omitted, behavior is identical to before).
+    Single session / one commit at the end, so cross-source dedupe is unchanged.
+    """
     if sources is None:
         sources = get_all_sources()
     stats = IngestStats()
+    total = len(sources)
     with Session(engine()) as session:
         filter_config = load_active_config(session)
-        for source in sources:
+        for i, source in enumerate(sources):
             for raw in source.fetch():
                 ingest_one(session, raw, stats, filter_config=filter_config)
+            if progress_cb is not None:
+                progress_cb(i + 1, total, source.name, stats)
         session.commit()
     return stats
 

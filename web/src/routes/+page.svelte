@@ -49,6 +49,37 @@
 		scoreError = null;
 	}
 
+	// --- Ingest / scrape (Phase 6.5) ---
+	let ingestTask = $state<TaskSnapshot | null>(null);
+	let ingestPolling = $state(false);
+	let ingestStarting = $state(false);
+	let ingestError = $state<string | null>(null);
+
+	async function pollIngestTask(taskId: string) {
+		ingestPolling = true;
+		const base = data.apiBase ?? '';
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const snap = await api.getTask(fetch, base, taskId);
+				ingestTask = snap;
+				if (snap.status !== 'running') break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			// New postings landed — refresh the board.
+			await invalidateAll();
+		} catch (e) {
+			ingestError = (e as Error).message;
+		} finally {
+			ingestPolling = false;
+		}
+	}
+
+	function dismissIngestPanel() {
+		ingestTask = null;
+		ingestError = null;
+	}
+
 	type SortKey = 'score-desc' | 'score-asc' | 'posted-desc' | 'ingested-desc' | 'title-asc';
 	type StatusFilter = ApplicationStatus | 'none';
 	type Ease = 'easy' | 'med' | 'hard';
@@ -387,8 +418,39 @@
 		{visible.length === data.jobs.length ? '' : `of ${data.jobs.length}`} jobs
 	</span>
 
-	{#if showScoreButton}
-		<div class="score-pending">
+	<div class="header-actions">
+		<form
+			method="POST"
+			action="?/runIngest"
+			use:enhance={() => {
+				ingestStarting = true;
+				ingestError = null;
+				return async ({ result }) => {
+					ingestStarting = false;
+					if (result.type === 'success' && result.data?.task_id) {
+						ingestTask = null;
+						pollIngestTask(result.data.task_id as string);
+					} else if (result.type === 'failure') {
+						ingestError = (result.data?.error as string) ?? 'could not start scrape';
+					}
+				};
+			}}
+		>
+			<button
+				type="submit"
+				class="scrape-btn"
+				disabled={ingestStarting || ingestPolling}
+				title="Pull new postings from every source"
+			>
+				{#if ingestStarting || ingestPolling}
+					Scraping…
+				{:else}
+					Run scrape
+				{/if}
+			</button>
+		</form>
+
+		{#if showScoreButton}
 			{#if !hasProvider}
 				<a class="score-btn disabled" href="/settings" title="Select an AI CLI in Settings">
 					Score pending — set up AI
@@ -425,9 +487,22 @@
 					</button>
 				</form>
 			{/if}
-		</div>
-	{/if}
+		{/if}
+	</div>
 </section>
+
+{#if ingestError && !ingestTask}
+	<p class="score-error">{ingestError}</p>
+{/if}
+{#if ingestTask}
+	<ScoreProgress
+		task={ingestTask}
+		onDismiss={dismissIngestPanel}
+		runningVerb="Scraping"
+		doneVerb="Scraped"
+		resultsLabel="sources"
+	/>
+{/if}
 
 {#if scoreError && !scoreTask}
 	<p class="score-error">{scoreError}</p>
@@ -802,8 +877,28 @@
 		gap: 1rem;
 		margin-bottom: 0.75rem;
 	}
-	.score-pending {
+	.header-actions {
 		margin-left: auto;
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.scrape-btn {
+		background: transparent;
+		color: var(--fg);
+		border: 1px solid var(--panel-border);
+		border-radius: 6px;
+		padding: 0.4rem 0.85rem;
+		font-weight: 600;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.scrape-btn:hover:not(:disabled) {
+		border-color: var(--accent);
+	}
+	.scrape-btn:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
 	}
 	.score-btn {
 		background: var(--accent);
