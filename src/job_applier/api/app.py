@@ -6,8 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sqlmodel import Session, select
 
+import functools
+
 from job_applier import drafts, pdf, resume_io
+from job_applier.api import ai as ai_endpoints
 from job_applier.api import services
+from job_applier.ai import tasks as ai_tasks
 from job_applier.api.ai import router as ai_router
 from job_applier.pdf import PdfRendererUnavailable
 from job_applier.api.schemas import (
@@ -28,6 +32,7 @@ from job_applier.api.schemas import (
     SearchProfileBody,
     SearchProfileOut,
     SearchProfileRecommendationIn,
+    StartTaskOut,
     StatusUpdate,
     UnemploymentUpdate,
 )
@@ -44,6 +49,7 @@ from job_applier.models.db import (
     SearchProfile,
     create_db_and_tables,
     get_session,
+    get_setting,
 )
 
 app = FastAPI(title="job-applier API")
@@ -559,30 +565,10 @@ def get_current_resume_markdown(session: Session = Depends(get_session)):
     return resume_io.to_markdown(r.extracted_text)
 
 
-def _profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
-    if p is None:
-        return SearchProfileOut(using_defaults=True)
-    using_defaults = not p.required_tech or not p.seniority_terms
-    return SearchProfileOut(
-        id=p.id,
-        role_titles=list(p.role_titles or []),
-        seniority_terms=list(p.seniority_terms or []),
-        required_tech=list(p.required_tech or []),
-        excluded_tech=list(p.excluded_tech or []),
-        extracted_skills=list(p.extracted_skills or []),
-        recommendations_draft=p.recommendations_draft,
-        updated_at=p.updated_at,
-        using_defaults=using_defaults,
-    )
+_profile_out = services.profile_out
 
 
-def _load_or_create_profile(session: Session) -> SearchProfile:
-    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
-    if p is None:
-        p = SearchProfile()
-        session.add(p)
-        session.flush()
-    return p
+_load_or_create_profile = services.load_or_create_profile
 
 
 @app.get("/api/search-profile", response_model=SearchProfileOut)
@@ -617,12 +603,7 @@ def post_recommendations(
     Does NOT mutate the active fields — the user reviews + accepts via PUT to
     apply. Overwrites any prior draft.
     """
-    p = _load_or_create_profile(session)
-    p.recommendations_draft = body.model_dump()
-    p.updated_at = datetime.now(timezone.utc)
-    session.add(p)
-    session.commit()
-    session.refresh(p)
+    p = services.save_recommendations(session, body)
     return _profile_out(p)
 
 
@@ -759,6 +740,28 @@ def download_draft_cover_letter(job_id: int, session: Session = Depends(get_sess
     return FileResponse(
         path, media_type="application/pdf", filename=f"cover-letter-{job_id}.pdf"
     )
+
+
+@app.post("/api/jobs/{job_id}/ai/draft", response_model=StartTaskOut)
+def start_ai_draft(job_id: int, session: Session = Depends(get_session)):
+    """Start a background tailored-draft run (draft -> render PDFs -> re-score).
+    Poll GET /api/ai/tasks/{id} for staged progress."""
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    provider = get_setting(session, "ai_provider")
+    if not provider:
+        raise HTTPException(409, "no AI provider selected — pick one in Settings")
+    if services.active_resume(session) is None:
+        raise HTTPException(409, "no active resume — upload one on the Resume page")
+    model = get_setting(session, "ai_model")
+    fn = functools.partial(
+        ai_endpoints.run_generate_draft_task,
+        provider=provider,
+        model=model,
+        job_id=job_id,
+    )
+    task_id = ai_tasks.start_task("draft", ai_endpoints.DRAFT_TASK_STEPS, fn)
+    return StartTaskOut(task_id=task_id)
 
 
 @app.get("/api/health")

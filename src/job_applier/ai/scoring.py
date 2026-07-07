@@ -145,8 +145,13 @@ def score_one(
     job: JobPosting,
     *,
     model: Optional[str] = None,
+    score_kind: str = "baseline",
 ) -> ScoreResult:
-    """Score a single job and persist it through the shared upsert service."""
+    """Score ``resume_text`` against a job and persist via the shared upsert service.
+
+    ``score_kind="tailored"`` scores a per-job tailored resume markdown (the drafting
+    flow); the same rubric template powers both so baseline/tailored can't drift.
+    """
     payload = _run_and_parse(provider, build_score_prompt(resume_text, job), model)
     final_score = _reconcile_score(payload)
     services.upsert_score(
@@ -157,7 +162,7 @@ def score_one(
             rubric=payload.rubric,
             reasoning=payload.reasoning,
             scored_by=f"{provider}-cli",
-            score_kind="baseline",
+            score_kind=score_kind,
         ),
     )
     return ScoreResult(job.id, final_score, payload.reasoning)

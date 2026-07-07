@@ -1,7 +1,10 @@
 <script lang="ts">
+	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
 	import type { PageData } from './$types';
-	import { api, type ApplicationStatus } from '$lib/api';
+	import { api, type ApplicationStatus, type TaskSnapshot } from '$lib/api';
 	import { draftCart } from '$lib/draftCart.svelte';
+	import ScoreProgress from '$lib/ScoreProgress.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -22,6 +25,38 @@
 	let draft = $derived(data.draft);
 	let scoreHistory = $derived(data.scoreHistory);
 	let canonical = $derived(data.canonical);
+
+	// --- In-app tailored drafting (Phase 5) ---
+	const hasProvider = $derived(Boolean(data.aiProvider));
+	let draftTask = $state<TaskSnapshot | null>(null);
+	let draftPolling = $state(false);
+	let draftStarting = $state(false);
+	let draftError = $state<string | null>(null);
+
+	async function pollDraftTask(taskId: string) {
+		draftPolling = true;
+		const base = data.apiBase ?? '';
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const snap = await api.getTask(fetch, base, taskId);
+				draftTask = snap;
+				if (snap.status !== 'running') break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			// New markdown + PDFs + tailored score landed — refresh the panel.
+			await invalidateAll();
+		} catch (e) {
+			draftError = (e as Error).message;
+		} finally {
+			draftPolling = false;
+		}
+	}
+
+	function dismissDraftPanel() {
+		draftTask = null;
+		draftError = null;
+	}
 
 	function fmtUpdated(iso: string | null | undefined): string {
 		if (!iso) return '';
@@ -220,6 +255,56 @@
 
 <section class="panel draft">
 	<h2>Tailored draft</h2>
+
+	<div class="draft-generate">
+		{#if !hasProvider}
+			<a class="btn" href="/settings" title="Select an AI CLI in Settings">
+				Generate tailored draft — set up AI
+			</a>
+		{:else}
+			<form
+				method="POST"
+				action="?/generateDraft"
+				use:enhance={() => {
+					draftStarting = true;
+					draftError = null;
+					return async ({ result }) => {
+						draftStarting = false;
+						if (result.type === 'success' && result.data?.task_id) {
+							draftTask = null;
+							pollDraftTask(result.data.task_id as string);
+						} else if (result.type === 'failure') {
+							draftError = (result.data?.error as string) ?? 'could not start drafting';
+						}
+					};
+				}}
+			>
+				<button type="submit" class="btn primary" disabled={draftStarting || draftPolling}>
+					{#if draftStarting || draftPolling}
+						Generating…
+					{:else if draft && (draft.has_resume_md || draft.has_cover_letter_md)}
+						Regenerate tailored draft
+					{:else}
+						Generate tailored draft
+					{/if}
+				</button>
+			</form>
+		{/if}
+	</div>
+
+	{#if draftError && !draftTask}
+		<p class="draft-error">{draftError}</p>
+	{/if}
+	{#if draftTask}
+		<ScoreProgress
+			task={draftTask}
+			onDismiss={dismissDraftPanel}
+			runningVerb="Generating"
+			doneVerb="Generated"
+			resultsLabel="stages"
+		/>
+	{/if}
+
 	{#if draft && (draft.has_resume_pdf || draft.has_cover_letter_pdf)}
 		<div class="draft-actions">
 			{#if draft.has_resume_pdf}
@@ -554,6 +639,14 @@
 	}
 	.draft {
 		margin-bottom: 1rem;
+	}
+	.draft-generate {
+		margin-bottom: 0.75rem;
+	}
+	.draft-error {
+		color: var(--bad);
+		font-size: 0.85rem;
+		margin: 0 0 0.6rem;
 	}
 	.draft-actions {
 		display: flex;

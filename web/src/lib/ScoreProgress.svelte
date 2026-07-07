@@ -1,7 +1,19 @@
 <script lang="ts">
 	import type { TaskSnapshot } from '$lib/api';
 
-	let { task, onDismiss }: { task: TaskSnapshot; onDismiss: () => void } = $props();
+	let {
+		task,
+		onDismiss,
+		runningVerb = 'Scoring',
+		doneVerb = 'Scored',
+		resultsLabel = 'per-job results'
+	}: {
+		task: TaskSnapshot;
+		onDismiss: () => void;
+		runningVerb?: string;
+		doneVerb?: string;
+		resultsLabel?: string;
+	} = $props();
 
 	let resultsOpen = $state(false);
 	const pct = $derived(task.total > 0 ? Math.round((task.done / task.total) * 100) : 100);
@@ -11,11 +23,11 @@
 	<div class="score-panel-head">
 		<strong>
 			{#if task.status === 'running'}
-				Scoring {task.done}/{task.total}…
+				{runningVerb} {task.done}/{task.total}…
 			{:else if task.status === 'error'}
-				Scoring failed
+				{runningVerb} failed
 			{:else}
-				Scored {task.done}/{task.total}
+				{doneVerb} {task.done}/{task.total}
 			{/if}
 		</strong>
 		{#if task.errors.length > 0}
@@ -32,7 +44,7 @@
 
 	{#if task.results.length > 0}
 		<button type="button" class="score-toggle" onclick={() => (resultsOpen = !resultsOpen)}>
-			{resultsOpen ? 'Hide' : 'Show'} per-job results
+			{resultsOpen ? 'Hide' : 'Show'} {resultsLabel}
 		</button>
 		{#if resultsOpen}
 			<ul class="score-results">
