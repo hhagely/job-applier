@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sqlmodel import Session, select
 
-from job_applier import drafts, resume_io
+from job_applier import drafts, pdf, resume_io
+from job_applier.pdf import PdfRendererUnavailable
 from job_applier.api.schemas import (
     ApplicationOut,
     BulkStatusUpdate,
@@ -744,27 +745,75 @@ def get_draft(
     return _draft_out(job_id, include_markdown=include_markdown)
 
 
+def _print_url(request: Request, job_id: int, kind: drafts.DraftKind) -> str:
+    """Absolute loopback URL of the print-HTML endpoint the PDF driver loads."""
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/api/jobs/{job_id}/draft/{kind}/print.html"
+
+
+def _render_draft_pdfs(request: Request, job_id: int) -> None:
+    """Print a PDF for every draft kind that has markdown on disk.
+
+    The browser engine (headless Chromium here, Electron in the packaged app)
+    loads the print-HTML endpoint over loopback and prints it; we persist the
+    bytes next to the markdown. Markdown is already saved by the caller, so a
+    renderer failure never loses the draft text.
+    """
+    for kind in drafts.existing_markdown_kinds(job_id):
+        pdf_bytes = pdf.render_to_pdf(_print_url(request, job_id, kind))
+        drafts.render_pdf(job_id, kind, pdf_bytes)
+
+
 @app.post("/api/jobs/{job_id}/draft", response_model=DraftOut)
 def save_draft(
-    job_id: int, body: DraftIn, session: Session = Depends(get_session)
+    job_id: int,
+    body: DraftIn,
+    request: Request,
+    session: Session = Depends(get_session),
 ):
     if session.get(JobPosting, job_id) is None:
         raise HTTPException(404, "job not found")
     if body.resume_md is None and body.cover_letter_md is None:
         raise HTTPException(422, "provide at least one of resume_md, cover_letter_md")
-    drafts.save_and_render(job_id, body.resume_md, body.cover_letter_md)
+    drafts.save_markdown(job_id, body.resume_md, body.cover_letter_md)
+    try:
+        _render_draft_pdfs(request, job_id)
+    except PdfRendererUnavailable as exc:
+        # Markdown is persisted; only the PDF step failed. Report clearly.
+        raise HTTPException(503, str(exc)) from exc
     return _draft_out(job_id)
 
 
 @app.post("/api/jobs/{job_id}/draft/render", response_model=DraftOut)
-def render_draft(job_id: int, session: Session = Depends(get_session)):
+def render_draft(
+    job_id: int, request: Request, session: Session = Depends(get_session)
+):
     if session.get(JobPosting, job_id) is None:
         raise HTTPException(404, "job not found")
     s = drafts.get_status(job_id)
     if not (s.has_resume_md or s.has_cover_letter_md):
         raise HTTPException(404, "no draft markdown to render")
-    drafts.render_existing(job_id)
+    try:
+        _render_draft_pdfs(request, job_id)
+    except PdfRendererUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     return _draft_out(job_id)
+
+
+@app.get("/api/jobs/{job_id}/draft/{kind}/print.html", response_class=HTMLResponse)
+def draft_print_html(
+    job_id: int, kind: str, session: Session = Depends(get_session)
+):
+    """Standalone print-ready HTML for a draft kind. The PDF driver / Electron
+    loads this and prints it to PDF, so the CSS lives in one place."""
+    if kind not in ("resume", "cover_letter"):
+        raise HTTPException(404, "unknown draft kind")
+    if session.get(JobPosting, job_id) is None:
+        raise HTTPException(404, "job not found")
+    md = drafts.read_markdown(job_id, kind)  # type: ignore[arg-type]
+    if md is None:
+        raise HTTPException(404, "draft markdown not found")
+    return HTMLResponse(drafts.render_print_html(md, kind))  # type: ignore[arg-type]
 
 
 @app.get("/api/jobs/{job_id}/draft/resume.pdf")
