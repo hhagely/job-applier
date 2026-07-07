@@ -2,8 +2,27 @@
 // Imported by both +page.server.ts (server-side fetches via form actions)
 // and +page.svelte (browser-side helpers like resumePdfUrl()), so this module
 // must stay browser-safe — no $env/dynamic/private here.
+//
+// The API base is a per-call parameter, not a module constant, because the same
+// module is bundled for both the SvelteKit server and the browser and the base
+// differs (and is dynamic in the packaged app / dev launcher):
+//   - server callers pass the base from `serverApiBase()` (apiBase.server.ts,
+//     reads JOB_APPLIER_API_BASE),
+//   - browser callers pass `getApiBase()` (reads the injected window.__API_BASE__)
+//     or the `apiBase` value threaded through page data.
 
-export const API_BASE = 'http://127.0.0.1:8000';
+/**
+ * Browser-side API base, injected by the root layout as `window.__API_BASE__`.
+ * Falls back to same-origin (empty string -> relative `/api/...`) when unset,
+ * e.g. during SSR where `window` is absent.
+ */
+export function getApiBase(): string {
+	if (typeof window !== 'undefined') {
+		const injected = (window as unknown as { __API_BASE__?: string }).__API_BASE__;
+		if (injected) return injected;
+	}
+	return '';
+}
 
 export type FilterStatus = 'passed' | 'manual';
 export type ApplicationStatus =
@@ -134,8 +153,13 @@ export interface Resume {
 
 type FetchFn = typeof fetch;
 
-async function call<T>(fetchFn: FetchFn, path: string, init?: RequestInit): Promise<T> {
-	const res = await fetchFn(`${API_BASE}${path}`, {
+async function call<T>(
+	fetchFn: FetchFn,
+	base: string,
+	path: string,
+	init?: RequestInit
+): Promise<T> {
+	const res = await fetchFn(`${base}${path}`, {
 		...init,
 		headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) }
 	});
@@ -148,10 +172,11 @@ async function call<T>(fetchFn: FetchFn, path: string, init?: RequestInit): Prom
 
 async function callOptional<T>(
 	fetchFn: FetchFn,
+	base: string,
 	path: string,
 	init?: RequestInit
 ): Promise<T | null> {
-	const res = await fetchFn(`${API_BASE}${path}`, init);
+	const res = await fetchFn(`${base}${path}`, init);
 	if (res.status === 404) return null;
 	if (!res.ok) throw new Error(`API ${path} -> ${res.status}: ${await res.text()}`);
 	return res.json() as Promise<T>;
@@ -160,6 +185,7 @@ async function callOptional<T>(
 export const api = {
 	listJobs: (
 		fetchFn: FetchFn,
+		base: string,
 		params: {
 			filter_status?: FilterStatus;
 			status?: ApplicationStatus;
@@ -173,99 +199,107 @@ export const api = {
 		for (const [k, v] of Object.entries(params)) {
 			if (v !== undefined && v !== null) q.set(k, String(v));
 		}
-		return call<Job[]>(fetchFn, `/api/jobs?${q.toString()}`);
+		return call<Job[]>(fetchFn, base, `/api/jobs?${q.toString()}`);
 	},
 
-	getJob: (fetchFn: FetchFn, id: number) => call<JobDetail>(fetchFn, `/api/jobs/${id}`),
+	getJob: (fetchFn: FetchFn, base: string, id: number) =>
+		call<JobDetail>(fetchFn, base, `/api/jobs/${id}`),
 
-	getScoreHistory: (fetchFn: FetchFn, jobId: number) =>
-		call<Score[]>(fetchFn, `/api/jobs/${jobId}/score-history`),
+	getScoreHistory: (fetchFn: FetchFn, base: string, jobId: number) =>
+		call<Score[]>(fetchFn, base, `/api/jobs/${jobId}/score-history`),
 
 	setStatus: (
 		fetchFn: FetchFn,
+		base: string,
 		id: number,
 		status: ApplicationStatus,
 		extra: StatusPayload = {}
 	) =>
-		call<Application>(fetchFn, `/api/jobs/${id}/status`, {
+		call<Application>(fetchFn, base, `/api/jobs/${id}/status`, {
 			method: 'PATCH',
 			body: JSON.stringify({ status, ...extra })
 		}),
 
 	bulkSetStatus: (
 		fetchFn: FetchFn,
+		base: string,
 		job_ids: number[],
 		status: ApplicationStatus,
 		extra: Omit<StatusPayload, 'notes'> = {}
 	) =>
-		call<Application[]>(fetchFn, `/api/jobs/bulk-status`, {
+		call<Application[]>(fetchFn, base, `/api/jobs/bulk-status`, {
 			method: 'POST',
 			body: JSON.stringify({ job_ids, status, ...extra })
 		}),
 
-	getFollowups: (fetchFn: FetchFn) => call<Job[]>(fetchFn, `/api/followups`),
+	getFollowups: (fetchFn: FetchFn, base: string) => call<Job[]>(fetchFn, base, `/api/followups`),
 
-	setFollowup: (fetchFn: FetchFn, id: number, payload: FollowupPayload) =>
-		call<Application>(fetchFn, `/api/jobs/${id}/followup`, {
+	setFollowup: (fetchFn: FetchFn, base: string, id: number, payload: FollowupPayload) =>
+		call<Application>(fetchFn, base, `/api/jobs/${id}/followup`, {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
 
-	setNotes: (fetchFn: FetchFn, id: number, notes: string) =>
-		call<Application>(fetchFn, `/api/jobs/${id}/notes`, {
+	setNotes: (fetchFn: FetchFn, base: string, id: number, notes: string) =>
+		call<Application>(fetchFn, base, `/api/jobs/${id}/notes`, {
 			method: 'POST',
 			body: JSON.stringify({ notes })
 		}),
 
-	setUnemployment: (fetchFn: FetchFn, id: number, used: boolean) =>
-		call<Application>(fetchFn, `/api/jobs/${id}/unemployment`, {
+	setUnemployment: (fetchFn: FetchFn, base: string, id: number, used: boolean) =>
+		call<Application>(fetchFn, base, `/api/jobs/${id}/unemployment`, {
 			method: 'POST',
 			body: JSON.stringify({ used })
 		}),
 
-	bulkSetUnemployment: (fetchFn: FetchFn, job_ids: number[], used: boolean) =>
-		call<Application[]>(fetchFn, `/api/jobs/bulk-unemployment`, {
+	bulkSetUnemployment: (fetchFn: FetchFn, base: string, job_ids: number[], used: boolean) =>
+		call<Application[]>(fetchFn, base, `/api/jobs/bulk-unemployment`, {
 			method: 'POST',
 			body: JSON.stringify({ job_ids, used })
 		}),
 
-	getCurrentResume: (fetchFn: FetchFn) => callOptional<Resume>(fetchFn, '/api/resume/current'),
+	getCurrentResume: (fetchFn: FetchFn, base: string) =>
+		callOptional<Resume>(fetchFn, base, '/api/resume/current'),
 
-	getStaleScoreCount: (fetchFn: FetchFn) =>
-		call<{ count: number }>(fetchFn, '/api/scores/stale-count'),
+	getStaleScoreCount: (fetchFn: FetchFn, base: string) =>
+		call<{ count: number }>(fetchFn, base, '/api/scores/stale-count'),
 
-	uploadResume: async (fetchFn: FetchFn, file: File): Promise<Resume> => {
+	uploadResume: async (fetchFn: FetchFn, base: string, file: File): Promise<Resume> => {
 		const fd = new FormData();
 		fd.append('file', file, file.name);
-		const res = await fetchFn(`${API_BASE}/api/resume`, { method: 'POST', body: fd });
+		const res = await fetchFn(`${base}/api/resume`, { method: 'POST', body: fd });
 		if (!res.ok) throw new Error(`upload failed: ${res.status} ${await res.text()}`);
 		return res.json() as Promise<Resume>;
 	},
 
-	resumePdfUrl: () => `${API_BASE}/api/resume/current/pdf`,
+	resumePdfUrl: (base: string) => `${base}/api/resume/current/pdf`,
 
-	getDraft: (fetchFn: FetchFn, jobId: number, includeMarkdown = false) =>
+	getDraft: (fetchFn: FetchFn, base: string, jobId: number, includeMarkdown = false) =>
 		callOptional<Draft>(
 			fetchFn,
+			base,
 			`/api/jobs/${jobId}/draft${includeMarkdown ? '?include_markdown=true' : ''}`
 		),
 
-	renderDraft: (fetchFn: FetchFn, jobId: number) =>
-		call<Draft>(fetchFn, `/api/jobs/${jobId}/draft/render`, { method: 'POST' }),
+	renderDraft: (fetchFn: FetchFn, base: string, jobId: number) =>
+		call<Draft>(fetchFn, base, `/api/jobs/${jobId}/draft/render`, { method: 'POST' }),
 
-	draftResumePdfUrl: (jobId: number) => `${API_BASE}/api/jobs/${jobId}/draft/resume.pdf`,
+	draftResumePdfUrl: (base: string, jobId: number) => `${base}/api/jobs/${jobId}/draft/resume.pdf`,
 
-	draftCoverLetterPdfUrl: (jobId: number) =>
-		`${API_BASE}/api/jobs/${jobId}/draft/cover-letter.pdf`,
+	draftCoverLetterPdfUrl: (base: string, jobId: number) =>
+		`${base}/api/jobs/${jobId}/draft/cover-letter.pdf`,
 
-	getSearchProfile: (fetchFn: FetchFn) => call<SearchProfile>(fetchFn, '/api/search-profile'),
+	getSearchProfile: (fetchFn: FetchFn, base: string) =>
+		call<SearchProfile>(fetchFn, base, '/api/search-profile'),
 
-	saveSearchProfile: (fetchFn: FetchFn, body: SearchProfileBody) =>
-		call<SearchProfile>(fetchFn, '/api/search-profile', {
+	saveSearchProfile: (fetchFn: FetchFn, base: string, body: SearchProfileBody) =>
+		call<SearchProfile>(fetchFn, base, '/api/search-profile', {
 			method: 'PUT',
 			body: JSON.stringify(body)
 		}),
 
-	clearRecommendations: (fetchFn: FetchFn) =>
-		call<SearchProfile>(fetchFn, '/api/search-profile/recommendations', { method: 'DELETE' })
+	clearRecommendations: (fetchFn: FetchFn, base: string) =>
+		call<SearchProfile>(fetchFn, base, '/api/search-profile/recommendations', {
+			method: 'DELETE'
+		})
 };

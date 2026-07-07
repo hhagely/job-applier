@@ -48,6 +48,10 @@ app = FastAPI(title="job-applier API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_origin],
+    # The dev launcher / packaged shell picks free loopback ports at boot, so the
+    # SvelteKit server's origin is not known ahead of time. Allow any localhost /
+    # 127.0.0.1 port in addition to the statically configured web_origin.
+    allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
