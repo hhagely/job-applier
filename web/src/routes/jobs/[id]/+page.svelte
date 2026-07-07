@@ -17,6 +17,7 @@
 	];
 
 	let job = $derived(data.job);
+	let usedUnemp = $derived(job.application?.used_for_unemployment ?? false);
 	let draft = $derived(data.draft);
 	let scoreHistory = $derived(data.scoreHistory);
 	let canonical = $derived(data.canonical);
@@ -193,6 +194,19 @@
 				{/if}
 			</p>
 		{/if}
+
+		<h3>Unemployment claim</h3>
+		<form method="POST" action="?/setUnemployment" class="unemp-form">
+			<input type="hidden" name="used" value={usedUnemp ? 'false' : 'true'} />
+			<button type="submit" class="unemp-toggle" class:on={usedUnemp}>
+				{usedUnemp ? '✓ Used for unemployment' : 'Mark used for unemployment'}
+			</button>
+			{#if usedUnemp && job.application?.used_for_unemployment_at}
+				<span class="unemp-meta">
+					marked {new Date(job.application.used_for_unemployment_at).toLocaleDateString()}
+				</span>
+			{/if}
+		</form>
 
 		<h3>Notes</h3>
 		<form method="POST" action="?/setNotes">
@@ -466,6 +480,25 @@
 		margin: 0.5rem 0 0;
 		color: var(--muted);
 		font-size: 0.85rem;
+	}
+	.unemp-form {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+	}
+	.unemp-toggle {
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.unemp-toggle.on {
+		background: rgba(46, 160, 67, 0.18);
+		color: var(--ok);
+		border-color: var(--ok);
+	}
+	.unemp-meta {
+		font-size: 0.8rem;
+		color: var(--muted);
 	}
 	select,
 	textarea,

@@ -130,6 +130,12 @@ class Application(SQLModel, table=True):
     last_contact_at: Optional[datetime] = None
     outcome: Optional[str] = None
 
+    # Tracks applications the user has reported to the unemployment office as
+    # part of a weekly work-search claim. The timestamp records when it was
+    # marked (i.e. roughly which claim week it counted toward).
+    used_for_unemployment: bool = Field(default=False, index=True)
+    used_for_unemployment_at: Optional[datetime] = None
+
     job: Optional[JobPosting] = Relationship(back_populates="application")
 
 
@@ -213,6 +219,7 @@ def create_db_and_tables() -> None:
     _ensure_matchscore_resume_id_column()
     _ensure_score_kind_columns()
     _ensure_application_followup_columns()
+    _ensure_application_unemployment_columns()
     _ensure_jd_dedupe_columns()
 
 
@@ -294,6 +301,29 @@ def _ensure_application_followup_columns() -> None:
             added = True
         if "outcome" not in cols:
             conn.exec_driver_sql("ALTER TABLE application ADD COLUMN outcome VARCHAR")
+            added = True
+        if added:
+            conn.commit()
+
+
+def _ensure_application_unemployment_columns() -> None:
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(application)")}
+        added = False
+        if "used_for_unemployment" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE application ADD COLUMN used_for_unemployment "
+                "BOOLEAN NOT NULL DEFAULT 0"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_application_used_for_unemployment "
+                "ON application (used_for_unemployment)"
+            )
+            added = True
+        if "used_for_unemployment_at" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE application ADD COLUMN used_for_unemployment_at DATETIME"
+            )
             added = True
         if added:
             conn.commit()

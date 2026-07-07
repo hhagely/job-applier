@@ -48,5 +48,18 @@ export const actions: Actions = {
 
 		await api.bulkSetStatus(fetch, ids, status, { next_followup_at });
 		return { ok: true, count: ids.length, status };
+	},
+	bulkUnemployment: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const used = form.get('used') === 'true';
+
+		const ids = form
+			.getAll('ids')
+			.map((v) => Number(v))
+			.filter((n) => Number.isFinite(n));
+		if (ids.length === 0) return fail(400, { error: 'no jobs selected' });
+
+		await api.bulkSetUnemployment(fetch, ids, used);
+		return { ok: true, count: ids.length };
 	}
 };

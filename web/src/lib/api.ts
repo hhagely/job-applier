@@ -44,6 +44,8 @@ export interface Application {
 	next_followup_at?: string | null;
 	last_contact_at?: string | null;
 	outcome?: string | null;
+	used_for_unemployment: boolean;
+	used_for_unemployment_at?: string | null;
 }
 
 export interface FollowupPayload {
@@ -213,6 +215,18 @@ export const api = {
 		call<Application>(fetchFn, `/api/jobs/${id}/notes`, {
 			method: 'POST',
 			body: JSON.stringify({ notes })
+		}),
+
+	setUnemployment: (fetchFn: FetchFn, id: number, used: boolean) =>
+		call<Application>(fetchFn, `/api/jobs/${id}/unemployment`, {
+			method: 'POST',
+			body: JSON.stringify({ used })
+		}),
+
+	bulkSetUnemployment: (fetchFn: FetchFn, job_ids: number[], used: boolean) =>
+		call<Application[]>(fetchFn, `/api/jobs/bulk-unemployment`, {
+			method: 'POST',
+			body: JSON.stringify({ job_ids, used })
 		}),
 
 	getCurrentResume: (fetchFn: FetchFn) => callOptional<Resume>(fetchFn, '/api/resume/current'),

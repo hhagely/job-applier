@@ -10,6 +10,7 @@ from job_applier import drafts, resume_io
 from job_applier.api.schemas import (
     ApplicationOut,
     BulkStatusUpdate,
+    BulkUnemploymentUpdate,
     CompanyOut,
     DraftIn,
     DraftOut,
@@ -25,6 +26,7 @@ from job_applier.api.schemas import (
     SearchProfileOut,
     SearchProfileRecommendationIn,
     StatusUpdate,
+    UnemploymentUpdate,
 )
 from job_applier.config import settings
 from job_applier.models.db import (
@@ -96,6 +98,8 @@ def _application_out(a: Optional[Application]) -> Optional[ApplicationOut]:
         next_followup_at=a.next_followup_at,
         last_contact_at=a.last_contact_at,
         outcome=a.outcome,
+        used_for_unemployment=a.used_for_unemployment,
+        used_for_unemployment_at=a.used_for_unemployment_at,
     )
 
 
@@ -335,6 +339,58 @@ def set_notes(job_id: int, body: NotesUpdate, session: Session = Depends(get_ses
     session.commit()
     session.refresh(app_row)
     return _application_out(app_row)
+
+
+def _mark_unemployment(job: JobPosting, *, used: bool, now: datetime) -> Application:
+    """Set the unemployment flag on a job's application, creating the row if needed.
+
+    Creates an application row if one doesn't exist yet so a job can be flagged
+    before it moves through the pipeline. The timestamp records when it was
+    marked and is cleared when unmarked.
+    """
+    app_row = job.application or Application(
+        job_id=job.id, status=ApplicationStatus.new
+    )
+    app_row.used_for_unemployment = used
+    app_row.used_for_unemployment_at = now if used else None
+    app_row.updated_at = now
+    return app_row
+
+
+@app.post("/api/jobs/{job_id}/unemployment", response_model=ApplicationOut)
+def set_unemployment(
+    job_id: int, body: UnemploymentUpdate, session: Session = Depends(get_session)
+):
+    """Mark (or unmark) an application as reported for an unemployment claim."""
+    job = session.get(JobPosting, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    app_row = _mark_unemployment(
+        job, used=body.used, now=datetime.now(timezone.utc)
+    )
+    session.add(app_row)
+    session.commit()
+    session.refresh(app_row)
+    return _application_out(app_row)
+
+
+@app.post("/api/jobs/bulk-unemployment", response_model=list[ApplicationOut])
+def set_unemployment_bulk(
+    body: BulkUnemploymentUpdate, session: Session = Depends(get_session)
+):
+    if not body.job_ids:
+        raise HTTPException(422, "job_ids must not be empty")
+    now = datetime.now(timezone.utc)
+    results: list[Application] = []
+    for job_id in body.job_ids:
+        job = session.get(JobPosting, job_id)
+        if job is None:
+            raise HTTPException(404, f"job {job_id} not found")
+        app_row = _mark_unemployment(job, used=body.used, now=now)
+        session.add(app_row)
+        results.append(app_row)
+    session.commit()
+    return [_application_out(a) for a in results]
 
 
 @app.get("/api/pending-match", response_model=list[PendingMatchJob])

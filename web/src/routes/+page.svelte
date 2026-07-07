@@ -49,6 +49,13 @@
 	let unscoredOnly = $state(false);
 	let minScoreInput = $state('');
 
+	type UnempFilter = 'used' | 'unused';
+	const UNEMP_FILTERS: { key: UnempFilter; label: string }[] = [
+		{ key: 'used', label: 'used' },
+		{ key: 'unused', label: 'not used' }
+	];
+	let activeUnemp = $state<Set<UnempFilter>>(new Set());
+
 	const FILTERS_STORAGE_KEY = 'job-applier:queue-filters';
 	let filtersLoaded = $state(false);
 
@@ -62,6 +69,7 @@
 				if (Array.isArray(s.eases)) activeEases = new Set(s.eases);
 				if (Array.isArray(s.sources)) activeSources = new Set(s.sources);
 				if (typeof s.unscoredOnly === 'boolean') unscoredOnly = s.unscoredOnly;
+				if (Array.isArray(s.unemployment)) activeUnemp = new Set(s.unemployment);
 				if (typeof s.minScoreInput === 'string') minScoreInput = s.minScoreInput;
 			}
 		} catch {
@@ -78,6 +86,7 @@
 			eases: [...activeEases],
 			sources: [...activeSources],
 			unscoredOnly,
+			unemployment: [...activeUnemp],
 			minScoreInput
 		};
 		try {
@@ -176,11 +185,23 @@
 		activeSources = next;
 	}
 
+	function toggleUnemp(key: UnempFilter) {
+		const next = new Set(activeUnemp);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		activeUnemp = next;
+	}
+
+	function isUsedForUnemployment(job: Job): boolean {
+		return job.application?.used_for_unemployment ?? false;
+	}
+
 	function clearFilters() {
 		activeStatuses = new Set();
 		activeEases = new Set();
 		activeSources = new Set();
 		unscoredOnly = false;
+		activeUnemp = new Set();
 		minScoreInput = '';
 	}
 
@@ -202,6 +223,11 @@
 		}
 		if (unscoredOnly) {
 			list = list.filter((j) => j.score == null);
+		}
+		if (activeUnemp.size > 0) {
+			list = list.filter((j) =>
+				activeUnemp.has(isUsedForUnemployment(j) ? 'used' : 'unused')
+			);
 		}
 		if (minScore !== null) {
 			list = list.filter((j) => (j.score?.score ?? -1) >= minScore);
@@ -259,6 +285,12 @@
 
 	function sourceCount(key: string): number {
 		return data.jobs.filter((j) => j.source === key).length;
+	}
+
+	function unempCount(key: UnempFilter): number {
+		return data.jobs.filter(
+			(j) => isUsedForUnemployment(j) === (key === 'used')
+		).length;
 	}
 
 	const SOURCE_FILTERS = Object.keys(SOURCE_META);
@@ -355,7 +387,7 @@
 			Show duplicates
 		</label>
 
-		{#if activeStatuses.size > 0 || activeEases.size > 0 || activeSources.size > 0 || unscoredOnly || minScoreInput !== ''}
+		{#if activeStatuses.size > 0 || activeEases.size > 0 || activeSources.size > 0 || activeUnemp.size > 0 || unscoredOnly || minScoreInput !== ''}
 			<button type="button" class="clear" onclick={clearFilters}>Clear filters</button>
 		{/if}
 	</div>
@@ -422,7 +454,24 @@
 			{/each}
 		</div>
 	</div>
-</section>
+
+		<div class="chips-row">
+			<span class="chips-label">Unemp.</span>
+			<div class="chips">
+				{#each UNEMP_FILTERS as f (f.key)}
+					<button
+						type="button"
+						class="chip"
+						class:active={activeUnemp.has(f.key)}
+						onclick={() => toggleUnemp(f.key)}
+					>
+						{f.label}
+						<span class="chip-count">{unempCount(f.key)}</span>
+					</button>
+				{/each}
+			</div>
+		</div>
+	</section>
 
 {#if data.jobs.length === 0}
 	<p class="empty">
@@ -450,6 +499,7 @@
 				class="row"
 				class:selected={selected.has(job.id)}
 				class:duplicate={job.duplicate_of != null}
+				class:used-unemp={isUsedForUnemployment(job)}
 			>
 				<label class="check-cell" aria-label="select job">
 					<input
@@ -538,6 +588,11 @@
 							{#if isFollowupDue(job)}
 								<span class="followup-chip" title="Follow-up due">⏰ follow-up due</span>
 							{/if}
+							{#if isUsedForUnemployment(job)}
+								<span class="unemp-chip" title="Used for an unemployment claim">
+									✓ unemployment
+								</span>
+							{/if}
 							<span
 								class="source"
 								data-ease={si.ease}
@@ -621,6 +676,29 @@
 		{/if}
 		<button type="submit" class="action-apply" disabled={submitting}>
 			{submitting ? 'Applying…' : 'Apply'}
+		</button>
+		<span class="action-sep" aria-hidden="true"></span>
+		<button
+			type="submit"
+			formaction="?/bulkUnemployment"
+			name="used"
+			value="true"
+			class="action-unemp"
+			disabled={submitting}
+			title="Mark selected as used for an unemployment claim"
+		>
+			✓ Used for unemployment
+		</button>
+		<button
+			type="submit"
+			formaction="?/bulkUnemployment"
+			name="used"
+			value="false"
+			class="action-unemp off"
+			disabled={submitting}
+			title="Clear the unemployment flag on selected"
+		>
+			Unmark
 		</button>
 		<button type="button" class="action-copy" onclick={copySelectedIds}>
 			{copied ? 'Copied!' : 'Copy IDs'}
@@ -786,6 +864,9 @@
 	.row.selected {
 		border-color: var(--accent);
 		background: rgba(88, 166, 255, 0.06);
+	}
+	.row.used-unemp {
+		border-left: 3px solid var(--ok);
 	}
 	.row.duplicate {
 		opacity: 0.55;
@@ -1034,6 +1115,14 @@
 		color: var(--warn);
 		letter-spacing: 0.02em;
 	}
+	.unemp-chip {
+		font-size: 0.7rem;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: rgba(46, 160, 67, 0.2);
+		color: var(--ok);
+		letter-spacing: 0.02em;
+	}
 	.status-rejected {
 		background: rgba(248, 81, 73, 0.18);
 		color: var(--bad);
@@ -1088,6 +1177,33 @@
 		cursor: pointer;
 	}
 	.action-apply:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.action-sep {
+		width: 1px;
+		align-self: stretch;
+		background: var(--panel-border);
+	}
+	.action-unemp {
+		background: rgba(46, 160, 67, 0.18);
+		color: var(--ok);
+		border: 1px solid var(--ok);
+		border-radius: 4px;
+		padding: 0.35rem 0.7rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.action-unemp.off {
+		background: transparent;
+		color: var(--muted);
+		border-color: var(--panel-border);
+		font-weight: 400;
+	}
+	.action-unemp:hover {
+		filter: brightness(1.1);
+	}
+	.action-unemp:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
 	}
