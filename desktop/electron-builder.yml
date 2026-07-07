@@ -1,0 +1,40 @@
+# electron-builder config for the job-applier desktop shell (Phase 6).
+# Unsigned by design (locked decision) — Windows shows a one-time SmartScreen
+# "unknown publisher" the README documents. Signing/Releases is Phase 7.
+appId: dev.hhagely.job-applier
+productName: job-applier
+directories:
+  output: dist
+  buildResources: build
+
+# Only the shell code goes into the app bundle; the backend sidecar and the
+# built SvelteKit server ride along as unpacked resources.
+files:
+  - main.js
+  - preload.js
+  - package.json
+
+extraResources:
+  # PyInstaller onedir backend -> resources/backend/
+  - from: ../dist/job-applier-backend
+    to: backend
+  # Built SvelteKit adapter-node server -> resources/web/ (handler.js + chunks)
+  - from: ../web/build
+    to: web
+
+win:
+  target:
+    - nsis
+  # icon: build/icon.ico
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
+  # icon: build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

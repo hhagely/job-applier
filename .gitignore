@@ -45,3 +45,7 @@ web/.env
 .claude/scheduled_tasks.lock
 
 plans/
+
+# Electron desktop shell — build outputs only; desktop/ source is tracked
+desktop/node_modules/
+desktop/dist/

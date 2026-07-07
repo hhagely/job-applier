@@ -1,4 +1,4 @@
-.PHONY: setup api web dev build-web app-dev ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
+.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron dist ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies (+ Chromium for PDF rendering)
 	uv sync
@@ -17,6 +17,18 @@ dev: ## Run backend + frontend together (requires GNU parallel or two terminals)
 
 build-web: ## Build the SvelteKit frontend (adapter-node -> web/build/index.js)
 	cd web && npm run build
+
+desktop-setup: ## Install the Electron shell's dependencies
+	cd desktop && npm install
+
+electron: build-web ## Run the Electron desktop shell from source (dev version-testing loop)
+	cd desktop && npm start
+
+sidecar: ## Freeze the Python backend into a standalone binary (dist/job-applier-backend/)
+	uv run pyinstaller --noconfirm --clean desktop/sidecar/job-applier-backend.spec
+
+dist: build-web sidecar ## Build the unsigned installable desktop app (desktop/dist/)
+	cd desktop && npm run dist
 
 app-dev: build-web ## Boot API + built web server on free ports and open the browser (no make api/web dance)
 	uv run job-applier app-dev
