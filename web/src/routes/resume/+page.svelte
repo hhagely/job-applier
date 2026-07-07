@@ -5,6 +5,7 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
+	let apiBase = $derived(data.apiBase ?? '');
 	let resume = $derived(form?.resume ?? data.resume);
 	let uploading = $state(false);
 	let staleCount = $derived(form?.ok ? (form.staleCount ?? 0) : 0);
@@ -66,7 +67,7 @@
 			<dt>Uploaded</dt>
 			<dd>{new Date(resume.uploaded_at).toLocaleString()}</dd>
 			<dt>Original PDF</dt>
-			<dd><a href={api.resumePdfUrl()} target="_blank" rel="noopener">Download</a></dd>
+			<dd><a href={api.resumePdfUrl(apiBase)} target="_blank" rel="noopener">Download</a></dd>
 		</dl>
 
 		<h3>Extracted text</h3>

@@ -16,6 +16,7 @@
 		'archived'
 	];
 
+	let apiBase = $derived(data.apiBase ?? '');
 	let job = $derived(data.job);
 	let usedUnemp = $derived(job.application?.used_for_unemployment ?? false);
 	let draft = $derived(data.draft);
@@ -222,14 +223,14 @@
 	{#if draft && (draft.has_resume_pdf || draft.has_cover_letter_pdf)}
 		<div class="draft-actions">
 			{#if draft.has_resume_pdf}
-				<a class="btn primary" href={api.draftResumePdfUrl(job.id)} download>
+				<a class="btn primary" href={api.draftResumePdfUrl(apiBase, job.id)} download>
 					Download resume PDF
 				</a>
 			{:else}
 				<span class="muted">No tailored resume yet</span>
 			{/if}
 			{#if draft.has_cover_letter_pdf}
-				<a class="btn primary" href={api.draftCoverLetterPdfUrl(job.id)} download>
+				<a class="btn primary" href={api.draftCoverLetterPdfUrl(apiBase, job.id)} download>
 					Download cover letter PDF
 				</a>
 			{:else}

@@ -1,4 +1,5 @@
 import { api, type ApplicationStatus, type FilterStatus } from '$lib/api';
+import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -22,7 +23,7 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 		: 'passed') as FilterStatus;
 	const include_duplicates = url.searchParams.get('duplicates') === '1';
 
-	const all = await api.listJobs(fetch, {
+	const all = await api.listJobs(fetch, serverApiBase(), {
 		filter_status,
 		include_duplicates,
 		limit: 200
@@ -46,7 +47,7 @@ export const actions: Actions = {
 		const followupRaw = (form.get('next_followup_at') as string | null) || '';
 		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
 
-		await api.bulkSetStatus(fetch, ids, status, { next_followup_at });
+		await api.bulkSetStatus(fetch, serverApiBase(), ids, status, { next_followup_at });
 		return { ok: true, count: ids.length, status };
 	},
 	bulkUnemployment: async ({ request, fetch }) => {
@@ -59,7 +60,7 @@ export const actions: Actions = {
 			.filter((n) => Number.isFinite(n));
 		if (ids.length === 0) return fail(400, { error: 'no jobs selected' });
 
-		await api.bulkSetUnemployment(fetch, ids, used);
+		await api.bulkSetUnemployment(fetch, serverApiBase(), ids, used);
 		return { ok: true, count: ids.length };
 	}
 };

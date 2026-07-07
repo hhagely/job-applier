@@ -1,4 +1,4 @@
-.PHONY: setup api web dev ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
+.PHONY: setup api web dev build-web app-dev ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies
 	uv sync
@@ -13,6 +13,12 @@ web: ## Run SvelteKit dev server on :5174
 dev: ## Run backend + frontend together (requires GNU parallel or two terminals)
 	@echo "Run 'make api' in one terminal and 'make web' in another."
 	@echo "Or: (make api &) && make web"
+
+build-web: ## Build the SvelteKit frontend (adapter-node -> web/build/index.js)
+	cd web && npm run build
+
+app-dev: build-web ## Boot API + built web server on free ports and open the browser (no make api/web dance)
+	uv run job-applier app-dev
 
 ingest: ## Pull jobs from configured sources
 	uv run job-applier ingest

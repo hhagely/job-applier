@@ -1,10 +1,11 @@
 import { api, type SearchProfileBody } from '$lib/api';
+import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const profile = await api.getSearchProfile(fetch);
-	const resume = await api.getCurrentResume(fetch);
+	const profile = await api.getSearchProfile(fetch, serverApiBase());
+	const resume = await api.getCurrentResume(fetch, serverApiBase());
 	return { profile, hasResume: resume !== null };
 };
 
@@ -30,7 +31,7 @@ export const actions: Actions = {
 	save: async ({ request, fetch }) => {
 		const form = await request.formData();
 		try {
-			const profile = await api.saveSearchProfile(fetch, readProfile(form));
+			const profile = await api.saveSearchProfile(fetch, serverApiBase(), readProfile(form));
 			return { ok: true, profile, message: 'Saved.' };
 		} catch (e) {
 			return fail(422, { error: (e as Error).message });
@@ -40,7 +41,7 @@ export const actions: Actions = {
 	acceptDraft: async ({ request, fetch }) => {
 		// Merge the LLM draft into the active fields. The draft is then cleared
 		// so the UI doesn't keep nagging.
-		const current = await api.getSearchProfile(fetch);
+		const current = await api.getSearchProfile(fetch, serverApiBase());
 		const draft = current.recommendations_draft;
 		if (!draft) {
 			return fail(409, { error: 'no draft to accept' });
@@ -63,13 +64,13 @@ export const actions: Actions = {
 						excluded_tech: draft.excluded_tech,
 						extracted_skills: draft.extracted_skills
 					};
-		await api.saveSearchProfile(fetch, merged);
-		const profile = await api.clearRecommendations(fetch);
+		await api.saveSearchProfile(fetch, serverApiBase(), merged);
+		const profile = await api.clearRecommendations(fetch, serverApiBase());
 		return { ok: true, profile, message: 'Recommendations applied.' };
 	},
 
 	rejectDraft: async ({ fetch }) => {
-		const profile = await api.clearRecommendations(fetch);
+		const profile = await api.clearRecommendations(fetch, serverApiBase());
 		return { ok: true, profile, message: 'Recommendations dismissed.' };
 	}
 };
