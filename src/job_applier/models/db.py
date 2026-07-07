@@ -202,7 +202,32 @@ class SearchProfile(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class AppSetting(SQLModel, table=True):
+    """Tiny key/value store for app-level settings (e.g. selected AI provider).
+
+    A dedicated table rather than overloading SearchProfile. Brand-new table, so
+    ``create_all`` handles it with no ALTER — additive and safe for `main`.
+    """
+
+    key: str = Field(primary_key=True)
+    value: str
+
+
 _engine = None
+
+
+def get_setting(session: "Session", key: str, default: Optional[str] = None) -> Optional[str]:
+    row = session.get(AppSetting, key)
+    return row.value if row is not None else default
+
+
+def set_setting(session: "Session", key: str, value: str) -> None:
+    row = session.get(AppSetting, key)
+    if row is None:
+        session.add(AppSetting(key=key, value=value))
+    else:
+        row.value = value
+    session.commit()
 
 
 def engine():

@@ -171,3 +171,32 @@ class DraftOut(BaseModel):
     updated_at: Optional[datetime]
     resume_md: Optional[str] = None
     cover_letter_md: Optional[str] = None
+
+
+class ProviderOut(BaseModel):
+    name: str
+    display_name: str
+    tier: Literal["recommended", "best-effort"]
+    available: bool
+    version: Optional[str] = None
+
+
+class ProvidersOut(BaseModel):
+    providers: list[ProviderOut]
+    selected: Optional[str] = None
+    model: Optional[str] = None
+
+
+class SelectProviderIn(BaseModel):
+    name: str
+    model: Optional[str] = None
+
+
+class AiTestIn(BaseModel):
+    prompt: Optional[str] = None
+
+
+class AiTestOut(BaseModel):
+    ok: bool
+    output: Optional[str] = None
+    error: Optional[str] = None

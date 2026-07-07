@@ -22,7 +22,11 @@
 			<a href="/followups">Follow-ups</a>
 			<a href="/resume">Resume</a>
 			<a href="/search">Search profile</a>
+			<a href="/settings">Settings</a>
 		</nav>
+		<a class="ai-indicator" href="/settings" title="AI provider">
+			AI: {data.aiProvider ?? 'none'}
+		</a>
 	</header>
 
 	<main>
@@ -84,6 +88,19 @@
 		display: flex;
 		gap: 1.25rem;
 		font-size: 0.95rem;
+	}
+
+	.ai-indicator {
+		margin-left: auto;
+		font-size: 0.85rem;
+		color: var(--muted);
+		border: 1px solid var(--panel-border);
+		border-radius: 12px;
+		padding: 0.15rem 0.6rem;
+	}
+	.ai-indicator:hover {
+		text-decoration: none;
+		border-color: var(--accent);
 	}
 
 	main {
