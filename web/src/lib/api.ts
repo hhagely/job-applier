@@ -173,6 +173,16 @@ export interface AiTestResult {
 	error?: string | null;
 }
 
+export interface TaskSnapshot {
+	id: string;
+	kind: string;
+	total: number;
+	done: number;
+	status: 'running' | 'done' | 'error';
+	errors: string[];
+	results: string[];
+}
+
 type FetchFn = typeof fetch;
 
 async function call<T>(
@@ -341,5 +351,18 @@ export const api = {
 		call<AiTestResult>(fetchFn, base, '/api/ai/test', {
 			method: 'POST',
 			body: JSON.stringify({ prompt })
-		})
+		}),
+
+	startScorePending: (
+		fetchFn: FetchFn,
+		base: string,
+		body: { job_ids?: number[]; include_stale?: boolean } = {}
+	) =>
+		call<{ task_id: string }>(fetchFn, base, '/api/ai/score-pending', {
+			method: 'POST',
+			body: JSON.stringify(body)
+		}),
+
+	getTask: (fetchFn: FetchFn, base: string, taskId: string) =>
+		call<TaskSnapshot>(fetchFn, base, `/api/ai/tasks/${taskId}`)
 };

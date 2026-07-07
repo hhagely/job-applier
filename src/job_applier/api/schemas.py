@@ -200,3 +200,22 @@ class AiTestOut(BaseModel):
     ok: bool
     output: Optional[str] = None
     error: Optional[str] = None
+
+
+class ScorePendingIn(BaseModel):
+    job_ids: Optional[list[int]] = None
+    include_stale: bool = True
+
+
+class StartTaskOut(BaseModel):
+    task_id: str
+
+
+class TaskOut(BaseModel):
+    id: str
+    kind: str
+    total: int
+    done: int
+    status: str
+    errors: list[str] = []
+    results: list[str] = []

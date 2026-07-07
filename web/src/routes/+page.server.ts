@@ -62,5 +62,19 @@ export const actions: Actions = {
 
 		await api.bulkSetUnemployment(fetch, serverApiBase(), ids, used);
 		return { ok: true, count: ids.length };
+	},
+
+	// Kick off a background scoring run. The mutation stays server-side per
+	// convention; the client then polls GET /api/ai/tasks/{id} for progress.
+	scorePending: async ({ fetch }) => {
+		try {
+			const { task_id } = await api.startScorePending(fetch, serverApiBase(), {
+				include_stale: true
+			});
+			return { ok: true, task_id };
+		} catch (e) {
+			// The API returns 409 when no provider is selected / no active resume.
+			return fail(409, { error: (e as Error).message });
+		}
 	}
 };
