@@ -47,4 +47,6 @@ addopts = "-ra"
 markers = [
     # gate the browser-backed PDF test so CI without Chromium skips cleanly
     "browser: end-to-end test that needs Playwright + a Chromium binary",
+    # gate tests that shell out to a real installed AI CLI
+    "ai_cli: end-to-end test that needs a real AI CLI (e.g. claude) on PATH",
 ]

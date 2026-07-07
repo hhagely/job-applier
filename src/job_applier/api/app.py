@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sqlmodel import Session, select
 
 from job_applier import drafts, pdf, resume_io
+from job_applier.api.ai import router as ai_router
 from job_applier.pdf import PdfRendererUnavailable
 from job_applier.api.schemas import (
     ApplicationOut,
@@ -57,6 +58,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(ai_router)
 
 
 @app.on_event("startup")
