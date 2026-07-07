@@ -73,3 +73,10 @@ describe('board Score-pending button', () => {
 		expect(screen.getByRole('button', { name: /Score pending \(0\)/ })).toBeDisabled();
 	});
 });
+
+describe('board Run-scrape button', () => {
+	it('always shows an enabled Run scrape button (no provider needed)', () => {
+		render(Board, { props: { data: data({ aiProvider: null }) } });
+		expect(screen.getByRole('button', { name: /Run scrape/ })).toBeEnabled();
+	});
+});

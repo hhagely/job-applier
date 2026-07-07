@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 
 import functools
 
-from job_applier import drafts, pdf, resume_io
+from job_applier import drafts, ingest, pdf, resume_io
 from job_applier.api import ai as ai_endpoints
 from job_applier.api import services
 from job_applier.ai import tasks as ai_tasks
@@ -761,6 +761,33 @@ def start_ai_draft(job_id: int, session: Session = Depends(get_session)):
         job_id=job_id,
     )
     task_id = ai_tasks.start_task("draft", ai_endpoints.DRAFT_TASK_STEPS, fn)
+    return StartTaskOut(task_id=task_id)
+
+
+def _run_ingest_task(state: "ai_tasks.TaskState") -> None:
+    """Worker body: pull jobs from every source, reporting per-source progress."""
+
+    def _cb(done: int, total: int, name: str, stats: ingest.IngestStats) -> None:
+        state.total = total
+        state.done = done
+        state.results.append(
+            f"{name}: {stats.inserted} new / {stats.passed_filter} passed (running total)"
+        )
+
+    stats = ingest.run_ingest(progress_cb=_cb)
+    state.results.append(
+        f"done: {stats.inserted} new, {stats.passed_filter} passed, {stats.fetched} fetched"
+    )
+
+
+@app.post("/api/ingest", response_model=StartTaskOut)
+def start_ingest(session: Session = Depends(get_session)):
+    """Kick off a background scrape of every source. Poll GET /api/ai/tasks/{id}
+    for per-source progress. Needs no AI provider — just network access."""
+    from job_applier.sources import get_all_sources
+
+    total = len(get_all_sources())
+    task_id = ai_tasks.start_task("ingest", total, _run_ingest_task)
     return StartTaskOut(task_id=task_id)
 
 

@@ -366,6 +366,9 @@ export const api = {
 	getTask: (fetchFn: FetchFn, base: string, taskId: string) =>
 		call<TaskSnapshot>(fetchFn, base, `/api/ai/tasks/${taskId}`),
 
+	startIngest: (fetchFn: FetchFn, base: string) =>
+		call<{ task_id: string }>(fetchFn, base, '/api/ingest', { method: 'POST' }),
+
 	startDraft: (fetchFn: FetchFn, base: string, jobId: number) =>
 		call<{ task_id: string }>(fetchFn, base, `/api/jobs/${jobId}/ai/draft`, {
 			method: 'POST'
