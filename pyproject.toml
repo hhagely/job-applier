@@ -38,6 +38,9 @@ dev = [
     # Dev PDF renderer so `make test` can exercise the print path end-to-end.
     # After `uv sync`, run `uv run playwright install chromium` once.
     "playwright>=1.40",
+    # Freezes the backend into the standalone sidecar bundled by the Electron app
+    # (Phase 6). Not shipped in the sidecar itself — a build-time tool.
+    "pyinstaller>=6.10",
 ]
 
 [tool.pytest.ini_options]
