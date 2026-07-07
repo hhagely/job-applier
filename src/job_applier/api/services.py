@@ -15,7 +15,11 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from job_applier.api.schemas import ScoreIn
+from job_applier.api.schemas import (
+    ScoreIn,
+    SearchProfileOut,
+    SearchProfileRecommendationIn,
+)
 from job_applier.config import settings
 from job_applier.models.db import (
     Application,
@@ -25,6 +29,7 @@ from job_applier.models.db import (
     MatchScore,
     MatchScoreHistory,
     Resume,
+    SearchProfile,
 )
 
 
@@ -181,3 +186,46 @@ def bulk_set_status(
         results.append(app_row)
     session.commit()
     return results
+
+
+# ---- search profile -------------------------------------------------------
+
+
+def load_or_create_profile(session: Session) -> SearchProfile:
+    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+    if p is None:
+        p = SearchProfile()
+        session.add(p)
+        session.flush()
+    return p
+
+
+def profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
+    if p is None:
+        return SearchProfileOut(using_defaults=True)
+    using_defaults = not p.required_tech or not p.seniority_terms
+    return SearchProfileOut(
+        id=p.id,
+        role_titles=list(p.role_titles or []),
+        seniority_terms=list(p.seniority_terms or []),
+        required_tech=list(p.required_tech or []),
+        excluded_tech=list(p.excluded_tech or []),
+        extracted_skills=list(p.extracted_skills or []),
+        recommendations_draft=p.recommendations_draft,
+        updated_at=p.updated_at,
+        using_defaults=using_defaults,
+    )
+
+
+def save_recommendations(
+    session: Session, body: SearchProfileRecommendationIn
+) -> SearchProfile:
+    """Persist an LLM proposal as a draft on the profile. Never mutates the active
+    fields — the user reviews + accepts via PUT to apply."""
+    p = load_or_create_profile(session)
+    p.recommendations_draft = body.model_dump()
+    p.updated_at = datetime.now(timezone.utc)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return p

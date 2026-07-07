@@ -33,6 +33,9 @@
 	}
 
 	let draft = $derived(profile.recommendations_draft);
+
+	const hasProvider = $derived(Boolean(data.aiProvider));
+	let suggesting = $state(false);
 </script>
 
 <h1>Search profile</h1>
@@ -53,6 +56,33 @@
 		{/if}
 	</p>
 {/if}
+
+<div class="suggest-row">
+	{#if !hasProvider}
+		<a class="suggest-link" href="/settings" title="Select an AI CLI in Settings">
+			Suggest roles — set up AI
+		</a>
+	{:else}
+		<form
+			method="POST"
+			action="?/suggest"
+			use:enhance={() => {
+				suggesting = true;
+				return async ({ update }) => {
+					await update();
+					suggesting = false;
+				};
+			}}
+		>
+			<button type="submit" class="suggest-btn" disabled={suggesting || !data.hasResume}>
+				{suggesting ? 'Analyzing resume…' : 'Suggest roles from resume'}
+			</button>
+		</form>
+		{#if !data.hasResume}
+			<span class="muted">Upload a resume first.</span>
+		{/if}
+	{/if}
+</div>
 
 {#if form?.message}
 	<p class="ok-banner">{form.message}</p>
@@ -163,6 +193,36 @@
 	.muted {
 		color: var(--muted);
 		margin: 0 0 1rem;
+	}
+	.suggest-row {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-bottom: 1rem;
+	}
+	.suggest-btn {
+		background: var(--accent);
+		color: #0d1117;
+		border: 0;
+		border-radius: 6px;
+		padding: 0.4rem 0.9rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.suggest-btn:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.suggest-link {
+		color: var(--warn);
+		border: 1px solid var(--warn);
+		border-radius: 6px;
+		padding: 0.4rem 0.9rem;
+		font-weight: 600;
+	}
+	.suggest-link:hover {
+		text-decoration: none;
+		filter: brightness(1.1);
 	}
 	.panel {
 		background: var(--panel);

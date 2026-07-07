@@ -38,6 +38,17 @@ export const actions: Actions = {
 		}
 	},
 
+	// Analyze the resume and populate recommendations_draft (never the live fields).
+	suggest: async ({ fetch }) => {
+		try {
+			const profile = await api.suggestRoles(fetch, serverApiBase());
+			return { ok: true, profile, message: 'Recommendations ready — review below.' };
+		} catch (e) {
+			// 409 when no provider / no resume; 502 on a provider failure.
+			return fail(422, { error: (e as Error).message });
+		}
+	},
+
 	acceptDraft: async ({ request, fetch }) => {
 		// Merge the LLM draft into the active fields. The draft is then cleared
 		// so the UI doesn't keep nagging.
