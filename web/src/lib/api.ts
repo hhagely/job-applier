@@ -151,6 +151,28 @@ export interface Resume {
 	extracted_text: string;
 }
 
+export type ProviderTier = 'recommended' | 'best-effort';
+
+export interface Provider {
+	name: string;
+	display_name: string;
+	tier: ProviderTier;
+	available: boolean;
+	version?: string | null;
+}
+
+export interface ProvidersResponse {
+	providers: Provider[];
+	selected?: string | null;
+	model?: string | null;
+}
+
+export interface AiTestResult {
+	ok: boolean;
+	output?: string | null;
+	error?: string | null;
+}
+
 type FetchFn = typeof fetch;
 
 async function call<T>(
@@ -301,5 +323,23 @@ export const api = {
 	clearRecommendations: (fetchFn: FetchFn, base: string) =>
 		call<SearchProfile>(fetchFn, base, '/api/search-profile/recommendations', {
 			method: 'DELETE'
+		}),
+
+	getProviders: (fetchFn: FetchFn, base: string) =>
+		call<ProvidersResponse>(fetchFn, base, '/api/ai/providers'),
+
+	getSelectedProvider: (fetchFn: FetchFn, base: string) =>
+		call<{ selected: string | null }>(fetchFn, base, '/api/ai/selected'),
+
+	selectProvider: (fetchFn: FetchFn, base: string, name: string, model?: string) =>
+		call<ProvidersResponse>(fetchFn, base, '/api/ai/provider', {
+			method: 'PUT',
+			body: JSON.stringify({ name, model })
+		}),
+
+	testProvider: (fetchFn: FetchFn, base: string, prompt?: string) =>
+		call<AiTestResult>(fetchFn, base, '/api/ai/test', {
+			method: 'POST',
+			body: JSON.stringify({ prompt })
 		})
 };
