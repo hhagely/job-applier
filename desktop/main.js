@@ -36,6 +36,20 @@ function freePort() {
 	});
 }
 
+// The renderer's localStorage (theme override, queue filters, draft cart) is
+// keyed to the window's origin. A random web port every launch means a new
+// origin and therefore empty localStorage each run, so prefer a fixed port and
+// only fall back to a free one if it's actually taken.
+const PREFERRED_WEB_PORT = 43117;
+
+function pickWebPort(preferred) {
+	return new Promise((resolve) => {
+		const probe = net.createServer();
+		probe.once('error', () => resolve(freePort()));
+		probe.listen(preferred, '127.0.0.1', () => probe.close(() => resolve(preferred)));
+	});
+}
+
 // GUI apps don't inherit the login-shell PATH, so `shutil.which("claude")` in the
 // backend would fail. Merge the login shell's PATH (+ common bins) into our env
 // before spawning the sidecar. No-op on Windows (GUI inherits PATH there).
@@ -109,7 +123,14 @@ function startBackend(apiPort, pdfBase) {
 		...process.env,
 		PATH: resolveShellPath(),
 		JOB_APPLIER_API_PORT: String(apiPort),
-		JOB_APPLIER_DATA_DIR: app.getPath('userData'),
+		// Data location precedence:
+		//   1. an explicit JOB_APPLIER_DATA_DIR (e.g. a throwaway copy for testing),
+		//   2. in dev, the repo's data/ — so the Electron shell, `make api/web`, and
+		//      the CLI all share one database (no "why is Electron empty?" surprises),
+		//   3. when packaged, the per-user app-data dir (there is no repo to point at).
+		JOB_APPLIER_DATA_DIR:
+			process.env.JOB_APPLIER_DATA_DIR ||
+			(isDev ? path.join(repoRoot, 'data') : app.getPath('userData')),
 		JOB_APPLIER_PDF_SERVICE: pdfBase
 	};
 	const { cmd, args, opts } = backendCommand(apiPort, env);
@@ -189,7 +210,8 @@ async function startPdfService() {
 // --- lifecycle -------------------------------------------------------------
 
 async function boot() {
-	const [apiPort, webPort] = await Promise.all([freePort(), freePort()]);
+	const apiPort = await freePort();
+	const webPort = await pickWebPort(PREFERRED_WEB_PORT);
 	const apiBase = `http://127.0.0.1:${apiPort}`;
 
 	const pdfBase = await startPdfService();

@@ -4,7 +4,14 @@
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { api, type ApplicationStatus, type Job, type TaskSnapshot } from '$lib/api';
+	import {
+		api,
+		type ApplicationStatus,
+		type Draft,
+		type Job,
+		type JobDetail,
+		type TaskSnapshot
+	} from '$lib/api';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import ScoreBadge from '$lib/ScoreBadge.svelte';
@@ -282,6 +289,134 @@
 
 	function selectJob(id: number) {
 		selectedId = id;
+	}
+
+	// --- Inline detail pane: load the full posting (description) + draft for the
+	// selected row so triage happens without leaving the list. Score/status come
+	// from the list payload (instant); description + draft are fetched per select. ---
+	const base = $derived(data.apiBase ?? '');
+	const STATUS_OPTS: ApplicationStatus[] = [
+		'new',
+		'interested',
+		'drafted',
+		'applied',
+		'screening',
+		'interviewing',
+		'rejected',
+		'archived'
+	];
+
+	let detailJob = $state<JobDetail | null>(null);
+	let detailDraft = $state<Draft | null>(null);
+	let detailLoading = $state(false);
+	let detailErr = $state<string | null>(null);
+
+	// Draft-generation (per selected job), mirrors the /jobs/[id] flow.
+	let draftTask = $state<TaskSnapshot | null>(null);
+	let draftPolling = $state(false);
+	let draftStarting = $state(false);
+	let draftError = $state<string | null>(null);
+
+	// Status/notes/unemployment editing state, seeded when the selection changes.
+	let pendingStatus = $state<ApplicationStatus>('new');
+	let followupInput = $state<string>('');
+	let seededFor = -1;
+	const usedUnempInline = $derived(selectedJob?.application?.used_for_unemployment ?? false);
+
+	$effect(() => {
+		const j = selectedJob;
+		if (j && j.id !== seededFor) {
+			seededFor = j.id;
+			pendingStatus = j.application?.status ?? 'new';
+			const existing = j.application?.next_followup_at;
+			followupInput = existing
+				? new Date(existing).toISOString().slice(0, 10)
+				: defaultFollowupDate();
+		}
+	});
+
+	$effect(() => {
+		const id = selectedJob?.id ?? null;
+		// reset the draft panel when moving to a different job
+		draftTask = null;
+		draftError = null;
+		if (id == null) {
+			detailJob = null;
+			detailDraft = null;
+			detailErr = null;
+			return;
+		}
+		let cancelled = false;
+		detailLoading = true;
+		detailErr = null;
+		detailJob = null;
+		detailDraft = null;
+		(async () => {
+			try {
+				const [jd, dr] = await Promise.all([
+					api.getJob(fetch, base, id),
+					api.getDraft(fetch, base, id)
+				]);
+				if (!cancelled) {
+					detailJob = jd;
+					detailDraft = dr;
+				}
+			} catch (e) {
+				if (!cancelled) detailErr = (e as Error).message;
+			} finally {
+				if (!cancelled) detailLoading = false;
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	async function reloadDraft(id: number) {
+		try {
+			detailDraft = await api.getDraft(fetch, base, id);
+		} catch {
+			/* keep the stale draft rather than blanking the panel */
+		}
+	}
+
+	async function pollDraftTask(taskId: string, jobId: number) {
+		draftPolling = true;
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const snap = await api.getTask(fetch, base, taskId);
+				draftTask = snap;
+				if (snap.status !== 'running') break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			await invalidateAll(); // tailored score may have changed → refresh the row
+			await reloadDraft(jobId);
+		} catch (e) {
+			draftError = (e as Error).message;
+		} finally {
+			draftPolling = false;
+		}
+	}
+
+	function dismissDraftPanel() {
+		draftTask = null;
+		draftError = null;
+	}
+
+	// Generic enhance for the inline status/notes/unemployment forms: refresh the
+	// list on success (so the row's status tag updates) without resetting inputs.
+	function detailEnhance() {
+		return async ({
+			result,
+			update
+		}: {
+			result: { type: string };
+			update: (opts?: { reset?: boolean }) => Promise<void>;
+		}) => {
+			if (result.type === 'success') await invalidateAll();
+			await update({ reset: false });
+		};
 	}
 
 	const allVisibleSelected = $derived(
@@ -624,7 +759,7 @@
 	<!-- detail pane -->
 	<div class="detail">
 		{#if !selectedJob}
-			<div class="empty-detail">Select a job to see its match breakdown.</div>
+			<div class="empty-detail">Select a job to see its full posting and take action.</div>
 		{:else}
 			{@const j = selectedJob}
 			{@const si = sourceInfo(j.source)}
@@ -640,14 +775,15 @@
 					<b style="color:var(--fg)">{j.company?.name ?? 'Unknown'}</b>
 					{#if j.location}· {j.location}{/if}
 					{#if j.posted_at}· posted {relTime(j.posted_at)}{/if}
+					· ingested {relTime(j.ingested_at)}
+					{#if j.employment_type}· {j.employment_type}{/if}
 				</div>
-				<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-					<a class="btn sm primary" href={`/jobs/${j.id}`}>Open full page →</a>
-					<button type="button" class="btn sm" onclick={() => draftCart.toggle(j.id)}>
+				<div class="d-actions">
+					<button type="button" class="btn sm" class:primary={draftCart.has(j.id)} onclick={() => draftCart.toggle(j.id)}>
 						{draftCart.has(j.id) ? '✓ In draft list' : '+ Add to draft list'}
 					</button>
 					<a class="d-link" href={j.url} target="_blank" rel="noopener">
-						View original <Icon name="external" size={12} stroke={2} />
+						View original posting <Icon name="external" size={12} stroke={2} />
 					</a>
 				</div>
 
@@ -691,17 +827,119 @@
 					</div>
 
 					<div class="card">
-						<div class="card-h"><h3>Details</h3></div>
+						<div class="card-h"><h3>Status &amp; tracking</h3></div>
 						<div class="card-b">
-							<div class="meta-table">
-								<div class="d-meta-row"><span class="dm-k">Source</span><span class="dm-v">{si.label}</span></div>
-								<div class="d-meta-row"><span class="dm-k">Remote</span><span class="dm-v">{j.remote ? 'yes' : 'no'}</span></div>
-								{#if j.employment_type}<div class="d-meta-row"><span class="dm-k">Type</span><span class="dm-v">{j.employment_type}</span></div>{/if}
-								<div class="d-meta-row"><span class="dm-k">Posted</span><span class="dm-v">{j.posted_at ? relTime(j.posted_at) : '—'}</span></div>
-								<div class="d-meta-row"><span class="dm-k">Ingested</span><span class="dm-v">{relTime(j.ingested_at)}</span></div>
-							</div>
-							{#if j.filter_reason}<p class="banner warn" style="margin-top:12px">{j.filter_reason}</p>{/if}
+							<form method="POST" action="?/setStatus" use:enhance={detailEnhance}>
+								<input type="hidden" name="job_id" value={j.id} />
+								<div class="row-form">
+									<select class="input" name="status" bind:value={pendingStatus} style="flex:1">
+										{#each STATUS_OPTS as s (s)}<option value={s}>{s}</option>{/each}
+									</select>
+									{#if pendingStatus === 'applied'}
+										<input class="input" type="date" name="next_followup_at" bind:value={followupInput} style="width:auto" />
+									{/if}
+									<button type="submit" class="btn">Update</button>
+								</div>
+							</form>
+							{#if j.application?.next_followup_at}
+								<p class="muted small">
+									Next follow-up: {new Date(j.application.next_followup_at).toLocaleDateString()}
+									{#if j.application.outcome}· outcome: <strong>{j.application.outcome}</strong>{/if}
+								</p>
+							{/if}
+
+							<div class="field-label">Unemployment claim</div>
+							<form method="POST" action="?/setUnemployment" class="row-form" use:enhance={detailEnhance}>
+								<input type="hidden" name="job_id" value={j.id} />
+								<input type="hidden" name="used" value={usedUnempInline ? 'false' : 'true'} />
+								<button type="submit" class="btn" class:primary={usedUnempInline}>
+									{usedUnempInline ? '✓ Used for unemployment' : 'Mark used for unemployment'}
+								</button>
+							</form>
+
+							<div class="field-label">Notes</div>
+							{#key j.id}
+								<form method="POST" action="?/setNotes" use:enhance={detailEnhance}>
+									<input type="hidden" name="job_id" value={j.id} />
+									<textarea class="input" name="notes" rows="3" placeholder="Personal notes about this role…">{j.application?.notes ?? ''}</textarea>
+									<button type="submit" class="btn sm" style="margin-top:8px">Save notes</button>
+								</form>
+							{/key}
 						</div>
+					</div>
+				</div>
+
+				<div class="card" style="margin-top:14px">
+					<div class="card-h"><h3>Tailored draft</h3></div>
+					<div class="card-b">
+						<div style="margin-bottom:12px">
+							{#if !hasProvider}
+								<a class="btn" href="/settings" title="Select an AI CLI in Settings">Generate tailored draft — set up AI</a>
+							{:else}
+								<form
+									method="POST"
+									action="?/generateDraft"
+									use:enhance={() => {
+										draftStarting = true;
+										draftError = null;
+										const jobId = j.id;
+										return async ({ result }) => {
+											draftStarting = false;
+											if (result.type === 'success' && result.data?.task_id) {
+												draftTask = null;
+												pollDraftTask(result.data.task_id as string, jobId);
+											} else if (result.type === 'failure') {
+												draftError = (result.data?.error as string) ?? 'could not start drafting';
+											}
+										};
+									}}
+								>
+									<input type="hidden" name="job_id" value={j.id} />
+									<button type="submit" class="btn primary" disabled={draftStarting || draftPolling}>
+										{#if draftStarting || draftPolling}
+											Generating…
+										{:else if detailDraft && (detailDraft.has_resume_md || detailDraft.has_cover_letter_md)}
+											Regenerate tailored draft
+										{:else}
+											Generate tailored draft
+										{/if}
+									</button>
+								</form>
+							{/if}
+						</div>
+						{#if draftError && !draftTask}<p class="err-text" style="margin-bottom:12px">{draftError}</p>{/if}
+						{#if draftTask}
+							<ScoreProgress task={draftTask} onDismiss={dismissDraftPanel} runningVerb="Generating" doneVerb="Generated" resultsLabel="stages" />
+						{/if}
+						{#if detailDraft && (detailDraft.has_resume_pdf || detailDraft.has_cover_letter_pdf)}
+							<div class="draft-actions">
+								{#if detailDraft.has_resume_pdf}<a class="btn primary" href={api.draftResumePdfUrl(base, j.id)} download>Download resume PDF</a>{/if}
+								{#if detailDraft.has_cover_letter_pdf}<a class="btn primary" href={api.draftCoverLetterPdfUrl(base, j.id)} download>Download cover letter PDF</a>{/if}
+							</div>
+							<form method="POST" action="?/renderDraft" use:enhance={detailEnhance} style="margin-top:8px">
+								<input type="hidden" name="job_id" value={j.id} />
+								<button type="submit" class="btn sm">Re-render PDFs from markdown</button>
+							</form>
+						{:else if hasProvider}
+							<p class="muted small">No draft yet. Generate above, or run <code>/draft {j.id}</code> in Claude Code.</p>
+						{/if}
+					</div>
+				</div>
+
+				<div class="card" style="margin-top:14px">
+					<div class="card-h"><h3>Description</h3></div>
+					<div class="card-b">
+						{#if detailErr}
+							<p class="err-text">Couldn't load the description: {detailErr}</p>
+						{:else if detailJob}
+							<div class="description">
+								<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+								{@html detailJob.description}
+							</div>
+						{:else}
+							<p class="muted small">Loading description…</p>
+						{/if}
+						{#if j.filter_reason}<p class="banner warn" style="margin-top:12px">{j.filter_reason}</p>{/if}
 					</div>
 				</div>
 			</div>
@@ -1066,6 +1304,77 @@
 		color: var(--faint);
 		text-align: center;
 		padding: 40px;
+	}
+	.d-actions {
+		margin-top: 12px;
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.row-form {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+		align-items: center;
+	}
+	.field-label {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--fg);
+		margin: 16px 0 8px;
+	}
+	.small {
+		font-size: 11.5px;
+		margin-top: 8px;
+	}
+	.draft-actions {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	/* imported job description HTML — normalize into the theme */
+	.description :global(*) {
+		color: var(--fg) !important;
+		background-color: transparent !important;
+		max-width: 100%;
+	}
+	.description :global(a) {
+		color: var(--accent) !important;
+	}
+	.description :global(p) {
+		line-height: 1.65;
+		margin: 0 0 0.75em;
+		font-size: 13px;
+	}
+	.description :global(ul),
+	.description :global(ol) {
+		padding-left: 1.4rem;
+		margin: 0 0 0.75em;
+		font-size: 13px;
+	}
+	.description :global(li) {
+		margin: 0.2em 0;
+	}
+	.description :global(h1),
+	.description :global(h2),
+	.description :global(h3) {
+		font-size: 14px;
+		margin: 1em 0 0.4em;
+	}
+	.description :global(img) {
+		max-width: 100%;
+		height: auto;
+	}
+	.description :global(pre),
+	.description :global(code) {
+		background: var(--surface-2) !important;
+		font-family: var(--mono);
+	}
+	.description :global(pre) {
+		padding: 0.6rem;
+		border-radius: 8px;
+		overflow-x: auto;
 	}
 
 	/* floating bottom bars (above the 27px status bar) */

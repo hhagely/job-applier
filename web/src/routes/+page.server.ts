@@ -86,5 +86,59 @@ export const actions: Actions = {
 		} catch (e) {
 			return fail(500, { error: (e as Error).message });
 		}
+	},
+
+	// --- Inline detail-pane mutations (mirror the /jobs/[id] actions so the queue
+	// master-detail pane is fully actionable without navigating away). Each reads
+	// the target from a hidden `job_id` field rather than a route param. ---
+	setStatus: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const id = Number(form.get('job_id'));
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
+		const status = String(form.get('status') ?? '') as ApplicationStatus;
+		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
+		const followupRaw = (form.get('next_followup_at') as string | null) || '';
+		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
+		await api.setStatus(fetch, serverApiBase(), id, status, { next_followup_at });
+		return { ok: true };
+	},
+	setNotes: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const id = Number(form.get('job_id'));
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
+		const notes = String(form.get('notes') ?? '');
+		await api.setNotes(fetch, serverApiBase(), id, notes);
+		return { ok: true };
+	},
+	setUnemployment: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const id = Number(form.get('job_id'));
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
+		const used = form.get('used') === 'true';
+		await api.setUnemployment(fetch, serverApiBase(), id, used);
+		return { ok: true };
+	},
+	renderDraft: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const id = Number(form.get('job_id'));
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
+		try {
+			await api.renderDraft(fetch, serverApiBase(), id);
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
+	},
+	generateDraft: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const id = Number(form.get('job_id'));
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
+		try {
+			const { task_id } = await api.startDraft(fetch, serverApiBase(), id);
+			return { ok: true, task_id, kind: 'draft' };
+		} catch (e) {
+			// 409 when no provider selected / no active resume.
+			return fail(409, { error: (e as Error).message });
+		}
 	}
 };
