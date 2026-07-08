@@ -832,7 +832,7 @@
 							<form method="POST" action="?/setStatus" use:enhance={detailEnhance}>
 								<input type="hidden" name="job_id" value={j.id} />
 								<div class="row-form">
-									<select class="input" name="status" bind:value={pendingStatus} style="flex:1">
+									<select class="input" name="status" bind:value={pendingStatus} style="flex:1;min-width:9rem">
 										{#each STATUS_OPTS as s (s)}<option value={s}>{s}</option>{/each}
 									</select>
 									{#if pendingStatus === 'applied'}

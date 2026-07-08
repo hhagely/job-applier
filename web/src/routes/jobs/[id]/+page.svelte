@@ -169,7 +169,7 @@
 				<div class="card-h"><h2>Status &amp; tracking</h2></div>
 				<div class="card-b">
 					<form method="POST" action="?/setStatus" class="row-form">
-						<select class="input" name="status" bind:value={pendingStatus} style="flex:1">
+						<select class="input" name="status" bind:value={pendingStatus} style="flex:1;min-width:9rem">
 							{#each statuses as s (s)}<option value={s}>{s}</option>{/each}
 						</select>
 						{#if pendingStatus === 'applied'}
