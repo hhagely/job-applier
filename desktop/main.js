@@ -6,7 +6,7 @@
 // the window. PDFs render via Electron's printToPDF (an offscreen window), so the
 // packaged app ships no Playwright.
 
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const { spawn, execSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
@@ -207,15 +207,59 @@ async function startPdfService() {
 	return `http://127.0.0.1:${port}`;
 }
 
+// --- external links --------------------------------------------------------
+
+// The app itself is served from 127.0.0.1 (web port) with PDFs on 127.0.0.1
+// (api port); everything else is a third-party URL.
+function isInternalUrl(target) {
+	try {
+		const host = new URL(target).hostname;
+		return host === '127.0.0.1' || host === 'localhost';
+	} catch {
+		return false;
+	}
+}
+
+// Route external http(s) links — "View original posting", links inside a job
+// description, doc links in Settings — to the OS default browser instead of a
+// bare Electron window. Internal localhost URLs (in-app navigation, PDF
+// previews/downloads) keep their normal behavior.
+function registerExternalLinks(contents) {
+	contents.setWindowOpenHandler(({ url }) => {
+		if (/^https?:\/\//i.test(url) && !isInternalUrl(url)) {
+			shell.openExternal(url);
+			return { action: 'deny' };
+		}
+		return { action: 'allow' };
+	});
+	contents.on('will-navigate', (event, url) => {
+		if (/^https?:\/\//i.test(url) && !isInternalUrl(url)) {
+			event.preventDefault();
+			shell.openExternal(url);
+		}
+	});
+}
+
 // --- lifecycle -------------------------------------------------------------
 
 async function boot() {
-	const apiPort = await freePort();
-	const webPort = await pickWebPort(PREFERRED_WEB_PORT);
-	const apiBase = `http://127.0.0.1:${apiPort}`;
+	// Hot-reload dev mode (`make electron-dev`): an external orchestrator already
+	// runs the backend (uvicorn --reload) and the Vite dev server, passing their
+	// locations in via env. Electron then points the window at Vite for renderer
+	// HMR and reuses the given API base — it does not spawn or own the backend, so
+	// there's no second, unused backend fighting over the same SQLite file.
+	const devUrl = process.env.JOB_APPLIER_DEV_URL;
+	const externalApiBase = devUrl ? process.env.JOB_APPLIER_API_BASE : null;
 
-	const pdfBase = await startPdfService();
-	startBackend(apiPort, pdfBase);
+	let apiBase;
+	if (externalApiBase) {
+		apiBase = externalApiBase;
+	} else {
+		const apiPort = await freePort();
+		apiBase = `http://127.0.0.1:${apiPort}`;
+		const pdfBase = await startPdfService();
+		startBackend(apiPort, pdfBase);
+	}
 
 	const healthy = await waitForHealth(apiBase);
 	if (!healthy) {
@@ -224,12 +268,11 @@ async function boot() {
 		return;
 	}
 
-	// A power-user dev override: point at the Vite dev server for UI hot-reload.
-	const devUrl = process.env.JOB_APPLIER_DEV_URL;
 	let loadUrl;
 	if (devUrl) {
 		loadUrl = devUrl;
 	} else {
+		const webPort = await pickWebPort(PREFERRED_WEB_PORT);
 		await startWebServer(webPort, apiBase);
 		loadUrl = `http://127.0.0.1:${webPort}`;
 	}
@@ -246,6 +289,7 @@ async function boot() {
 		backgroundColor: '#16181d',
 		webPreferences: { preload: path.join(__dirname, 'preload.js') }
 	});
+	registerExternalLinks(mainWindow.webContents);
 	await mainWindow.loadURL(loadUrl);
 }
 

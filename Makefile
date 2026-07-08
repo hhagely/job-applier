@@ -1,4 +1,4 @@
-.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron dist ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
+.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron electron-dev dist ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies (+ Chromium for PDF rendering)
 	uv sync
@@ -23,6 +23,9 @@ desktop-setup: ## Install the Electron shell's dependencies
 
 electron: build-web ## Run the Electron desktop shell from source (dev version-testing loop)
 	cd desktop && npm start
+
+electron-dev: ## Hot-reload dev shell: backend (--reload) + Vite HMR renderer + auto-restart Electron on main-process edits
+	cd desktop && npm run dev
 
 sidecar: ## Freeze the Python backend into a standalone binary (dist/job-applier-backend/)
 	uv run pyinstaller --noconfirm --clean desktop/sidecar/job-applier-backend.spec
