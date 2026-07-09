@@ -5,10 +5,11 @@ table. This module fills that table — either from a small built-in seed
 (used on fresh ``job-applier init``) or from the SimplifyJobs community
 feed (the ``refresh-slugs`` CLI command).
 
-Discovery is Greenhouse + Lever only (SimplifyJobs only carries those slugs).
-Re-verification covers all four per-company sources (Greenhouse, Lever,
-Ashby, Workday) so dead boards get auto-disabled regardless of how they got
-into the table.
+Discovery pulls slugs the SimplifyJobs feed carries: Greenhouse, Lever,
+Workable, and SmartRecruiters. Re-verification is broader — it covers those
+four plus Ashby and Workday so dead boards get auto-disabled regardless of how
+they got into the table. Jibe and Oracle are seed-only (neither discovered nor
+re-verified).
 """
 
 from __future__ import annotations

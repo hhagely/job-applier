@@ -34,28 +34,43 @@ export const load: PageServerLoad = async ({ params, fetch }) => {
 export const actions: Actions = {
 	setStatus: async ({ request, params, fetch }) => {
 		const id = Number(params.id);
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
 		const form = await request.formData();
 		const status = String(form.get('status') ?? '') as ApplicationStatus;
 		const notes = (form.get('notes') as string | null) || undefined;
 		const followupRaw = (form.get('next_followup_at') as string | null) || '';
 		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
 		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
-		await api.setStatus(fetch, serverApiBase(), id, status, { notes, next_followup_at });
-		return { ok: true };
+		try {
+			await api.setStatus(fetch, serverApiBase(), id, status, { notes, next_followup_at });
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	},
 	setNotes: async ({ request, params, fetch }) => {
 		const id = Number(params.id);
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
 		const form = await request.formData();
 		const notes = String(form.get('notes') ?? '');
-		await api.setNotes(fetch, serverApiBase(), id, notes);
-		return { ok: true };
+		try {
+			await api.setNotes(fetch, serverApiBase(), id, notes);
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	},
 	setUnemployment: async ({ request, params, fetch }) => {
 		const id = Number(params.id);
+		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
 		const form = await request.formData();
 		const used = form.get('used') === 'true';
-		await api.setUnemployment(fetch, serverApiBase(), id, used);
-		return { ok: true };
+		try {
+			await api.setUnemployment(fetch, serverApiBase(), id, used);
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	},
 	renderDraft: async ({ params, fetch }) => {
 		const id = Number(params.id);

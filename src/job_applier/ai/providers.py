@@ -65,7 +65,9 @@ class ClaudeProvider(Provider):
     bin = "claude"
     tier = "recommended"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
         # Sandbox: empty tool allowlist + `dontAsk` permission mode => the CLI
         # auto-denies every tool call, so it cannot edit files or run commands even
         # if the (untrusted) prompt asks it to. NOT `plan` mode: plan tells the model
@@ -107,7 +109,9 @@ class GeminiProvider(Provider):
     bin = "gemini"
     tier = "recommended"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
         # Non-interactive prompt mode; no tool grants are given.
         argv = [self.bin, "-p", prompt]
         if model:
@@ -121,7 +125,9 @@ class CodexProvider(Provider):
     bin = "codex"
     tier = "best-effort"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
         # Non-interactive exec with a read-only sandbox and no approval prompts.
         return [
             self.bin,
@@ -140,7 +146,9 @@ class OllamaProvider(Provider):
     bin = "ollama"
     tier = "best-effort"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
         # Fully local; ollama has no tool/file access to sandbox. Needs a model.
         return [self.bin, "run", model or DEFAULT_OLLAMA_MODEL, prompt]
 

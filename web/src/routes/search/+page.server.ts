@@ -75,14 +75,22 @@ export const actions: Actions = {
 						excluded_tech: draft.excluded_tech,
 						extracted_skills: draft.extracted_skills
 					};
-		await api.saveSearchProfile(fetch, serverApiBase(), merged);
-		const profile = await api.clearRecommendations(fetch, serverApiBase());
-		return { ok: true, profile, message: 'Recommendations applied.' };
+		try {
+			await api.saveSearchProfile(fetch, serverApiBase(), merged);
+			const profile = await api.clearRecommendations(fetch, serverApiBase());
+			return { ok: true, profile, message: 'Recommendations applied.' };
+		} catch (e) {
+			return fail(422, { error: (e as Error).message });
+		}
 	},
 
 	rejectDraft: async ({ fetch }) => {
-		const profile = await api.clearRecommendations(fetch, serverApiBase());
-		return { ok: true, profile, message: 'Recommendations dismissed.' };
+		try {
+			const profile = await api.clearRecommendations(fetch, serverApiBase());
+			return { ok: true, profile, message: 'Recommendations dismissed.' };
+		} catch (e) {
+			return fail(422, { error: (e as Error).message });
+		}
 	}
 };
 

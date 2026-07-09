@@ -1,9 +1,10 @@
-"""AI provider endpoints: detect installed CLIs, persist the selection, and
-round-trip a trivial prompt through the sandboxed runner.
+"""AI router: provider substrate (detect installed CLIs, persist the selection,
+round-trip a trivial prompt) plus the background AI task endpoints — score-pending,
+generate-draft, draft-batch, and suggest-roles — that run the flows in
+``job_applier.ai`` and are polled via ``GET /api/ai/tasks/{id}``.
 
-No scoring/drafting here — this router just proves the provider substrate. The
-non-AI app works fully with zero providers detected (Finding 7): every endpoint
-degrades gracefully instead of erroring.
+The non-AI app works fully with zero providers detected: the provider-gated
+endpoints return 409 rather than erroring, and everything else degrades gracefully.
 """
 
 from __future__ import annotations
