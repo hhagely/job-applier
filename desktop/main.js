@@ -242,6 +242,26 @@ function registerExternalLinks(contents) {
 
 // --- lifecycle -------------------------------------------------------------
 
+// Electron's loadURL() rejects whenever a navigation is aborted or the target
+// isn't reachable yet (ERR_ABORTED, ERR_CONNECTION_REFUSED). Against the Vite
+// dev server that's routine: when electronmon relaunches us after a main.js
+// edit, Vite may be mid-HMR/restart for a beat. Letting that rejection escape
+// boot() turns it (under Node's default --unhandled-rejections=throw) into an
+// uncaught exception, which the electronmon hook latches as "errored" and then
+// refuses to auto-relaunch until the next file change — i.e. the app closes on
+// hot-reload and stays closed. So retry transient load failures instead.
+async function loadWithRetry(win, url, { attempts = 40, delayMs = 250 } = {}) {
+	for (let i = 1; ; i++) {
+		try {
+			await win.loadURL(url);
+			return;
+		} catch (err) {
+			if (win.isDestroyed() || i >= attempts) throw err;
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+}
+
 async function boot() {
 	// Hot-reload dev mode (`make electron-dev`): an external orchestrator already
 	// runs the backend (uvicorn --reload) and the Vite dev server, passing their
@@ -290,7 +310,7 @@ async function boot() {
 		webPreferences: { preload: path.join(__dirname, 'preload.js') }
 	});
 	registerExternalLinks(mainWindow.webContents);
-	await mainWindow.loadURL(loadUrl);
+	await loadWithRetry(mainWindow, loadUrl);
 }
 
 // Window controls invoked from the custom titlebar. Toggle maximize so the
@@ -327,7 +347,16 @@ function shutdown() {
 }
 
 registerWindowIpc();
-app.whenReady().then(boot);
+// Guard the whole boot chain: a rejection here (failed dev-server load, web
+// handler import, etc.) must not surface as an uncaught exception, or the
+// electronmon dev hook latches "errored" and stops auto-relaunching after a
+// hot reload. Fail loudly and quit instead of dying silently mid-restart.
+app.whenReady()
+	.then(boot)
+	.catch((err) => {
+		dialog.showErrorBox('job-applier', `Startup failed:\n${err?.stack || err}`);
+		app.quit();
+	});
 app.on('before-quit', shutdown);
 app.on('window-all-closed', () => {
 	shutdown();
