@@ -95,12 +95,26 @@ def test_run_scrubs_sensitive_env(monkeypatch):
 
 
 def test_sandbox_flags_present():
-    # The security contract: tools disabled + plan permission mode. Fails loudly
-    # if someone removes them.
+    # The security contract: tools disabled + a non-interactive auto-deny mode.
+    # Fails loudly if someone removes them. `dontAsk` (not `plan`) is deliberate:
+    # plan mode makes the model propose a plan instead of producing the draft. The
+    # MCP contract is the perf fix: without an empty strict --mcp-config every cold
+    # call connects to all configured MCP servers and blows the timeout.
     argv = providers.PROVIDERS["claude"].build_argv("payload")
     assert "-p" in argv
+    assert "--strict-mcp-config" in argv
+    assert argv[argv.index("--mcp-config") + 1] == '{"mcpServers":{}}'
     assert argv[argv.index("--allowed-tools") + 1] == ""
-    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert "--permission-mode" in argv and "plan" not in argv
+
+
+def test_claude_honors_selected_model():
+    # The Settings-chosen model must reach the CLI (a faster tier for drafting);
+    # omitted when unset so the account default applies.
+    argv = providers.PROVIDERS["claude"].build_argv("payload", model="claude-sonnet-5")
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+    assert "--model" not in providers.PROVIDERS["claude"].build_argv("payload")
 
 
 def test_run_unknown_provider_raises():
