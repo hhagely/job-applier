@@ -22,3 +22,15 @@ export function isUnreviewed(j: Job): boolean {
 export function activeJobs(jobs: Job[]): Job[] {
 	return jobs.filter((j) => !isArchived(j));
 }
+
+/** Whether the job was marked as reported to the unemployment office. */
+export function isUsedForUnemployment(j: Job): boolean {
+	return j.application?.used_for_unemployment ?? false;
+}
+
+/** A follow-up that is due (past its date and not already resolved by an outcome). */
+export function isFollowupDue(j: Job, now = Date.now()): boolean {
+	const due = j.application?.next_followup_at;
+	if (!due || j.application?.outcome) return false;
+	return new Date(due).getTime() <= now;
+}
