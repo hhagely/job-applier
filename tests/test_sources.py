@@ -1,9 +1,9 @@
-"""Adapter-level unit tests for the new sources.
+"""Adapter-level unit tests for the sources.
 
-Each adapter is tested with a hand-built sample payload so the test stays
-hermetic — no network, no fixture files. Adapter fetchers themselves are
-exercised with monkeypatched httpx clients in a few cases where parsing the
-list/detail dance matters (Workday).
+Each adapter's parser is tested with a hand-built sample payload so the test
+stays hermetic — no network, no fixture files. Workday exercises its slug
+parsing and title gate (``parse_slug`` / ``TITLE_GATE``) rather than the
+list/detail fetch dance.
 """
 
 from __future__ import annotations
@@ -11,7 +11,10 @@ from __future__ import annotations
 from xml.etree import ElementTree as ET
 
 from job_applier.sources.ashby import _normalize as ashby_normalize
+from job_applier.sources.base import parse_date_multi, parse_iso_date
+from job_applier.sources.greenhouse import _normalize as greenhouse_normalize
 from job_applier.sources.hackernews import _html_to_text, _parse_header
+from job_applier.sources.lever import _normalize as lever_normalize
 from job_applier.sources.jibe import _normalize as jibe_normalize
 from job_applier.sources.oracle import (
     _derive_company as oracle_derive_company,
@@ -32,6 +35,34 @@ from job_applier.sources.ycombinator import (
     _extract_jobposting_ld,
     _split_hn_title,
 )
+
+
+class TestSharedDateParsing:
+    def test_parse_iso_date_handles_z_and_offset(self):
+        assert parse_iso_date("2026-04-02T21:00:55Z") is not None
+        assert parse_iso_date("2026-04-02T21:00:55+00:00") is not None
+
+    def test_parse_iso_date_rejects_empty_and_non_string(self):
+        assert parse_iso_date(None) is None
+        assert parse_iso_date("") is None
+        assert parse_iso_date(12345) is None  # non-string
+        assert parse_iso_date("not a date") is None
+
+    def test_parse_date_multi_parses_date_only(self):
+        # fromisoformat handles "YYYY-MM-DD" on 3.11+ (returns naive), so the
+        # strptime fallback is a belt-and-suspenders for odder feeds.
+        d = parse_date_multi("2026-04-02")
+        assert d is not None
+        assert (d.year, d.month, d.day) == (2026, 4, 2)
+
+    def test_parse_date_multi_parses_naive_datetime(self):
+        d = parse_date_multi("2026-04-02T21:00:55")
+        assert d is not None
+        assert (d.hour, d.minute, d.second) == (21, 0, 55)
+
+    def test_parse_date_multi_gives_up_on_garbage(self):
+        assert parse_date_multi("Posted 5 Days Ago") is None
+        assert parse_date_multi(None) is None
 
 
 class TestRemoteOK:
@@ -172,6 +203,95 @@ class TestWWRURLExtraction:
 
     def test_empty_input(self):
         assert wwr_extract_url("") is None
+
+
+class TestGreenhouse:
+    def test_basic_normalization(self):
+        item = {
+            "id": 42,
+            "title": "Senior Software Engineer",
+            "location": {"name": "San Francisco, CA"},
+            "offices": [{"name": "HQ"}],
+            "departments": [{"name": "Engineering"}],
+            "metadata": [{"name": "Level", "value": "L5"}],
+            "content": "<p>We use TypeScript &amp; Go.</p>",
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/42",
+            "updated_at": "2026-04-02T21:00:55+00:00",
+        }
+        raws = list(greenhouse_normalize("acme-inc", item))
+        assert len(raws) == 1
+        r = raws[0]
+        assert r.source == "greenhouse"
+        assert r.source_id == "acme-inc:42"
+        # No company_name in payload -> slug is title-cased as the fallback.
+        assert r.company_name == "Acme Inc"
+        assert r.remote is False
+        assert "Engineering" in r.tags
+        # Content is HTML-entity-decoded.
+        assert "TypeScript & Go" in r.description
+        assert r.posted_at is not None
+
+    def test_remote_inferred_from_location(self):
+        item = {"id": 1, "title": "Staff Engineer", "location": {"name": "Remote - US"}, "content": "<p>x</p>"}
+        r = next(greenhouse_normalize("co", item))
+        assert r.remote is True
+
+    def test_explicit_company_name_wins_over_slug(self):
+        item = {"id": 7, "title": "Engineer", "company_name": "Acme Corp", "content": ""}
+        r = next(greenhouse_normalize("acme-inc", item))
+        assert r.company_name == "Acme Corp"
+
+    def test_blank_title_skipped(self):
+        assert list(greenhouse_normalize("co", {"id": 1, "title": ""})) == []
+
+
+class TestLever:
+    def test_basic_normalization(self):
+        item = {
+            "id": "abc-123",
+            "text": "Senior Backend Engineer",
+            "categories": {
+                "location": "New York",
+                "team": "Platform",
+                "commitment": "Full-time",
+                "allLocations": ["New York"],
+            },
+            "workplaceType": "onsite",
+            "description": "<p>We use Go.</p>",
+            "hostedUrl": "https://jobs.lever.co/acme/abc-123",
+            "createdAt": 1700000000000,
+        }
+        r = next(lever_normalize("acme", item))
+        assert r.source == "lever"
+        assert r.source_id == "acme:abc-123"
+        assert r.company_name == "Acme"
+        assert r.location == "New York"
+        assert r.remote is False
+        assert r.employment_type == "Full-time"
+        assert "Platform" in r.tags
+        assert r.posted_at is not None  # ms epoch parsed
+
+    def test_workplace_type_remote_implies_remote(self):
+        item = {"id": "1", "text": "Staff Engineer", "workplaceType": "remote", "categories": {}}
+        r = next(lever_normalize("co", item))
+        assert r.remote is True
+
+    def test_ms_timestamp_and_plain_description_fallback(self):
+        item = {
+            "id": "2",
+            "text": "Engineer",
+            "categories": {},
+            "descriptionPlain": "Plain text JD",
+            "createdAt": 1700000000000,
+        }
+        r = next(lever_normalize("co", item))
+        # No html/additional/lists -> falls back to descriptionPlain.
+        assert r.description == "Plain text JD"
+        # 1700000000000 ms == 2023-11-14 UTC.
+        assert r.posted_at is not None and r.posted_at.year == 2023
+
+    def test_blank_title_skipped(self):
+        assert list(lever_normalize("co", {"id": "x", "text": ""})) == []
 
 
 class TestAshby:

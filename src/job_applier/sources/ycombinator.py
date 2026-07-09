@@ -25,11 +25,10 @@ import json
 import logging
 import re
 from collections.abc import Iterable
-from datetime import datetime
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +143,7 @@ class YCombinatorSource:
             employment_type=(ld.get("employmentType") or None) if isinstance(
                 ld.get("employmentType"), str
             ) else None,
-            posted_at=_parse_date(ld.get("datePosted")),
+            posted_at=parse_iso_date(ld.get("datePosted")),
             tags=["yc", slug],
             raw={"hn": item, "ld": ld},
         )
@@ -234,12 +233,3 @@ def _extract_location(ld: dict) -> tuple[str | None, bool]:
         location_str = None
 
     return (location_str or ("Remote" if remote_flag else None)), remote_flag
-
-
-def _parse_date(value) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None

@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -58,11 +58,11 @@ class HackerNewsHiringSource:
                         resp = client.get(ITEM_URL.format(id=thread_id))
                         resp.raise_for_status()
                         thread = resp.json()
-                    except httpx.HTTPError as e:
+                    except (httpx.HTTPError, ValueError) as e:
                         log.warning("hackernews thread %s fetch failed: %s", thread_id, e)
                         continue
                     yield from _normalize_thread(thread, thread_created)
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, ValueError) as e:
             log.warning("hackernews search failed: %s", e)
             return
 
@@ -88,7 +88,7 @@ def _find_hiring_threads(
             tid = int(h["objectID"])
         except (KeyError, ValueError, TypeError):
             continue
-        created = _parse_iso(h.get("created_at"))
+        created = parse_iso_date(h.get("created_at"))
         threads.append((tid, created))
         if len(threads) >= limit:
             break
@@ -225,15 +225,6 @@ def _html_to_text(s: str) -> str:
 
 def _looks_remote(html_text: str) -> bool:
     return bool(REMOTE_HINT.search(html_text)) and not ONSITE_HINT.search(html_text)
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _parse_unix(value: int | None) -> datetime | None:

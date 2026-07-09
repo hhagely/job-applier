@@ -207,6 +207,10 @@ class ScorePendingIn(BaseModel):
     include_stale: bool = True
 
 
+class DraftBatchIn(BaseModel):
+    job_ids: list[int]
+
+
 class StartTaskOut(BaseModel):
     task_id: str
 

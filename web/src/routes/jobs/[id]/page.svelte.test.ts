@@ -43,6 +43,7 @@ function data(overrides = {}) {
 		canonical: null,
 		apiBase: '',
 		aiProvider: 'claude' as string | null,
+		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		...overrides
 	};
 }

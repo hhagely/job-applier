@@ -24,6 +24,9 @@ export function getApiBase(): string {
 	return '';
 }
 
+// `dropped` is intentionally omitted from the client type: dropped jobs are
+// never persisted, so the API never emits them. Keep in sync with FilterStatus
+// in models/db.py, which does include `dropped`.
 export type FilterStatus = 'passed' | 'manual';
 export type ApplicationStatus =
 	| 'new'
@@ -34,6 +37,22 @@ export type ApplicationStatus =
 	| 'interviewing'
 	| 'rejected'
 	| 'archived';
+
+/**
+ * All application statuses, in pipeline order — the single client-side source for
+ * validation guards and status dropdowns. Keep in sync with the ApplicationStatus
+ * enum in models/db.py (no shared codegen across the Python/TS boundary).
+ */
+export const APPLICATION_STATUSES: ApplicationStatus[] = [
+	'new',
+	'interested',
+	'drafted',
+	'applied',
+	'screening',
+	'interviewing',
+	'rejected',
+	'archived'
+];
 
 export interface Company {
 	id: number;
@@ -185,13 +204,44 @@ export interface TaskSnapshot {
 
 type FetchFn = typeof fetch;
 
+// A backend that's momentarily unreachable — e.g. uvicorn --reload restarting
+// after a Python edit in dev — makes fetch() REJECT: no HTTP response is ever
+// produced. Retry those network-level rejections so page loaders and client
+// polling ride through the ~1-3s reload window instead of surfacing a hard
+// error page. Two guards keep replaying safe:
+//   - only idempotent requests (GET/HEAD) are retried; a mutation could have
+//     been received and applied just before the socket dropped, so replaying it
+//     might double-apply.
+//   - a received response is never retried, even a 5xx — the server produced
+//     it, so the request was processed.
+const RETRY_DELAYS_MS = [250, 500, 1000, 2000];
+
+function isRetryable(init?: RequestInit): boolean {
+	const method = (init?.method ?? 'GET').toUpperCase();
+	return method === 'GET' || method === 'HEAD';
+}
+
+async function fetchWithRetry(fetchFn: FetchFn, url: string, init?: RequestInit): Promise<Response> {
+	let lastErr: unknown;
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await fetchFn(url, init);
+		} catch (err) {
+			lastErr = err;
+			if (!isRetryable(init) || attempt >= RETRY_DELAYS_MS.length) break;
+			await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+		}
+	}
+	throw lastErr;
+}
+
 async function call<T>(
 	fetchFn: FetchFn,
 	base: string,
 	path: string,
 	init?: RequestInit
 ): Promise<T> {
-	const res = await fetchFn(`${base}${path}`, {
+	const res = await fetchWithRetry(fetchFn, `${base}${path}`, {
 		...init,
 		headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) }
 	});
@@ -208,7 +258,7 @@ async function callOptional<T>(
 	path: string,
 	init?: RequestInit
 ): Promise<T | null> {
-	const res = await fetchFn(`${base}${path}`, init);
+	const res = await fetchWithRetry(fetchFn, `${base}${path}`, init);
 	if (res.status === 404) return null;
 	if (!res.ok) throw new Error(`API ${path} -> ${res.status}: ${await res.text()}`);
 	return res.json() as Promise<T>;
@@ -372,6 +422,12 @@ export const api = {
 	startDraft: (fetchFn: FetchFn, base: string, jobId: number) =>
 		call<{ task_id: string }>(fetchFn, base, `/api/jobs/${jobId}/ai/draft`, {
 			method: 'POST'
+		}),
+
+	startDraftBatch: (fetchFn: FetchFn, base: string, job_ids: number[]) =>
+		call<{ task_id: string }>(fetchFn, base, '/api/ai/draft-batch', {
+			method: 'POST',
+			body: JSON.stringify({ job_ids })
 		}),
 
 	suggestRoles: (fetchFn: FetchFn, base: string) =>

@@ -34,7 +34,7 @@ class LeverSource:
                     resp = client.get(API.format(slug=slug), params={"mode": "json"})
                     resp.raise_for_status()
                     payload = resp.json()
-                except httpx.HTTPError as e:
+                except (httpx.HTTPError, ValueError) as e:
                     log.warning("lever[%s] fetch failed: %s", slug, e)
                     continue
 

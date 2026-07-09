@@ -1,9 +1,10 @@
-"""AI provider endpoints: detect installed CLIs, persist the selection, and
-round-trip a trivial prompt through the sandboxed runner.
+"""AI router: provider substrate (detect installed CLIs, persist the selection,
+round-trip a trivial prompt) plus the background AI task endpoints — score-pending,
+generate-draft, draft-batch, and suggest-roles — that run the flows in
+``job_applier.ai`` and are polled via ``GET /api/ai/tasks/{id}``.
 
-No scoring/drafting here — this router just proves the provider substrate. The
-non-AI app works fully with zero providers detected (Finding 7): every endpoint
-degrades gracefully instead of erroring.
+The non-AI app works fully with zero providers detected: the provider-gated
+endpoints return 409 rather than erroring, and everything else degrades gracefully.
 """
 
 from __future__ import annotations
@@ -15,9 +16,11 @@ from sqlmodel import Session
 
 from job_applier.ai import drafting, providers, scoring, suggest, tasks
 from job_applier.api import services
+from job_applier.api.deps import require_ai_ready
 from job_applier.api.schemas import (
     AiTestIn,
     AiTestOut,
+    DraftBatchIn,
     ProviderOut,
     ProvidersOut,
     ScorePendingIn,
@@ -124,14 +127,10 @@ def _run_score_pending(
 
 @router.post("/score-pending", response_model=StartTaskOut)
 def start_score_pending(
-    body: ScorePendingIn, session: Session = Depends(get_session)
+    body: ScorePendingIn,
+    session: Session = Depends(get_session),
+    provider: str = Depends(require_ai_ready),
 ) -> StartTaskOut:
-    provider = get_setting(session, AI_PROVIDER_KEY)
-    if not provider:
-        raise HTTPException(409, "no AI provider selected — pick one in Settings")
-    if services.active_resume(session) is None:
-        raise HTTPException(409, "no active resume — upload one on the Resume page")
-
     pending = services.select_pending_jobs(
         session, limit=200, include_stale=body.include_stale
     )
@@ -185,15 +184,56 @@ def run_generate_draft_task(
         drafting.generate_draft(session, provider, job, model=model, progress_cb=_cb)
 
 
+def _run_draft_batch(
+    state: TaskState, *, provider: str, model: str | None, job_ids: list[int]
+) -> None:
+    """Worker body: draft each job in turn on the task's own DB session, advancing
+    progress one step per job. One job's failure is recorded and the batch keeps
+    going, matching how score-pending tolerates a bad job."""
+    with scoring.open_session() as session:
+        for job_id in job_ids:
+            job = session.get(JobPosting, job_id)
+            title = job.title if job is not None else f"job {job_id}"
+            try:
+                if job is None:
+                    raise ValueError("job not found")
+                drafting.generate_draft(session, provider, job, model=model)
+                state.results.append(f"{job_id}  drafted  {title}")
+            except Exception as exc:  # noqa: BLE001 - one bad job shouldn't kill the batch
+                state.errors.append(f"{job_id}: {exc}")
+                state.results.append(f"{job_id}  ERROR  {title}")
+            finally:
+                state.done += 1
+
+
+@router.post("/draft-batch", response_model=StartTaskOut)
+def start_draft_batch(
+    body: DraftBatchIn,
+    session: Session = Depends(get_session),
+    provider: str = Depends(require_ai_ready),
+) -> StartTaskOut:
+    # Dedupe (preserving order) and keep only ids that resolve to a real job.
+    ids = [
+        jid
+        for jid in dict.fromkeys(body.job_ids)
+        if session.get(JobPosting, jid) is not None
+    ]
+    if not ids:
+        raise HTTPException(400, "no valid jobs to draft")
+
+    model = get_setting(session, AI_MODEL_KEY)
+    fn = functools.partial(
+        _run_draft_batch, provider=provider, model=model, job_ids=ids
+    )
+    task_id = tasks.start_task("draft_batch", len(ids), fn)
+    return StartTaskOut(task_id=task_id)
+
+
 @router.post("/suggest-roles", response_model=SearchProfileOut)
 def suggest_roles_endpoint(
     session: Session = Depends(get_session),
+    provider: str = Depends(require_ai_ready),
 ) -> SearchProfileOut:
-    provider = get_setting(session, AI_PROVIDER_KEY)
-    if not provider:
-        raise HTTPException(409, "no AI provider selected — pick one in Settings")
-    if services.active_resume(session) is None:
-        raise HTTPException(409, "no active resume — upload one on the Resume page")
     model = get_setting(session, AI_MODEL_KEY)
     try:
         profile = suggest.suggest_roles(session, provider, model=model)

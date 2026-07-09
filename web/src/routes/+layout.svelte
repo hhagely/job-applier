@@ -1,11 +1,67 @@
 <script lang="ts">
+	import '../app.css';
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import Titlebar from '$lib/shell/Titlebar.svelte';
+	import Sidebar from '$lib/shell/Sidebar.svelte';
+	import StatusBar from '$lib/shell/StatusBar.svelte';
+	import CommandPalette from '$lib/shell/CommandPalette.svelte';
+	import HelpSheet from '$lib/shell/HelpSheet.svelte';
+	import { initTheme, theme } from '$lib/theme.svelte';
+	import { NAV } from '$lib/shell/nav';
 	import type { LayoutData } from './$types';
 
 	let { children, data }: { children: import('svelte').Snippet; data: LayoutData } = $props();
 
-	// Serialize the API base for browser-only helpers (getApiBase()). JSON.stringify
-	// yields a safe double-quoted string literal for the inline script.
 	let apiBaseScript = $derived(`window.__API_BASE__=${JSON.stringify(data.apiBase)};`);
+
+	let paletteOpen = $state(false);
+	let helpOpen = $state(false);
+	let mod = $state('Ctrl');
+
+	onMount(() => {
+		mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
+		return initTheme();
+	});
+
+	function onKeydown(e: KeyboardEvent) {
+		const target = e.target as HTMLElement | null;
+		const typing = !!target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+		const metaOrCtrl = e.metaKey || e.ctrlKey;
+
+		if (metaOrCtrl && e.key.toLowerCase() === 'k') {
+			e.preventDefault();
+			paletteOpen = true;
+			return;
+		}
+		if (metaOrCtrl && e.key >= '1' && e.key <= '6') {
+			e.preventDefault();
+			const item = NAV[Number(e.key) - 1];
+			if (item) goto(item.href);
+			return;
+		}
+		if (metaOrCtrl && e.key.toLowerCase() === 'j') {
+			e.preventDefault();
+			theme.toggle();
+			return;
+		}
+		if (e.key === 'Escape') {
+			paletteOpen = false;
+			helpOpen = false;
+			return;
+		}
+		if (typing) return;
+		if (e.key === '?') {
+			e.preventDefault();
+			helpOpen = true;
+			return;
+		}
+		if (e.key === '/') {
+			e.preventDefault();
+			paletteOpen = true;
+			return;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -13,97 +69,33 @@
 	{@html `<script>${apiBaseScript}</script>`}
 </svelte:head>
 
-<div class="app">
-	<header>
-		<a href="/" class="brand">job-applier</a>
-		<nav>
-			<a href="/?filter=passed">Queue</a>
-			<a href="/?filter=manual">Manual review</a>
-			<a href="/followups">Follow-ups</a>
-			<a href="/resume">Resume</a>
-			<a href="/search">Search profile</a>
-			<a href="/settings">Settings</a>
-		</nav>
-		<a class="ai-indicator" href="/settings" title="AI provider">
-			AI: {data.aiProvider ?? 'none'}
-		</a>
-	</header>
+<svelte:window onkeydown={onKeydown} />
 
-	<main>
+<Titlebar onOpenPalette={() => (paletteOpen = true)} onOpenHelp={() => (helpOpen = true)} />
+
+<div class="shell">
+	<Sidebar counts={data.counts ?? {}} />
+	<main class="main">
 		{@render children()}
 	</main>
 </div>
 
-<style>
-	:global(:root) {
-		--bg: #0e1116;
-		--panel: #161b22;
-		--panel-border: #30363d;
-		--fg: #e6edf3;
-		--muted: #8b949e;
-		--accent: #58a6ff;
-		--ok: #2ea043;
-		--warn: #d29922;
-		--bad: #f85149;
-		font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-	}
+<StatusBar
+	jobs={data.counts?.jobs ?? null}
+	unreviewed={data.counts?.queue ?? null}
+	followupsDue={data.counts?.followups ?? null}
+	aiProvider={data.aiProvider}
+	onOpenPalette={() => (paletteOpen = true)}
+	onOpenHelp={() => (helpOpen = true)}
+/>
 
-	:global(html, body) {
-		margin: 0;
-		padding: 0;
-		background: var(--bg);
-		color: var(--fg);
-	}
+<CommandPalette
+	open={paletteOpen}
+	onClose={() => (paletteOpen = false)}
+	onShowHelp={() => {
+		paletteOpen = false;
+		helpOpen = true;
+	}}
+/>
 
-	:global(a) {
-		color: var(--accent);
-		text-decoration: none;
-	}
-	:global(a:hover) {
-		text-decoration: underline;
-	}
-
-	.app {
-		max-width: 1100px;
-		margin: 0 auto;
-		padding: 1rem 1.5rem 4rem;
-	}
-
-	header {
-		display: flex;
-		align-items: center;
-		gap: 2rem;
-		padding: 0.75rem 0 1.5rem;
-		border-bottom: 1px solid var(--panel-border);
-		margin-bottom: 1.5rem;
-	}
-
-	.brand {
-		font-weight: 700;
-		font-size: 1.1rem;
-		color: var(--fg);
-	}
-
-	nav {
-		display: flex;
-		gap: 1.25rem;
-		font-size: 0.95rem;
-	}
-
-	.ai-indicator {
-		margin-left: auto;
-		font-size: 0.85rem;
-		color: var(--muted);
-		border: 1px solid var(--panel-border);
-		border-radius: 12px;
-		padding: 0.15rem 0.6rem;
-	}
-	.ai-indicator:hover {
-		text-decoration: none;
-		border-color: var(--accent);
-	}
-
-	main {
-		min-height: 60vh;
-	}
-</style>
+<HelpSheet open={helpOpen} onClose={() => (helpOpen = false)} {mod} />

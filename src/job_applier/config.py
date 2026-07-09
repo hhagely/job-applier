@@ -27,6 +27,12 @@ class Settings(BaseSettings):
 
     followup_default_days: int = 7
 
+    # Per-call ceiling for the AI CLI when generating a tailored draft. Drafting a
+    # full resume + cover letter is a large generation and routinely runs past the
+    # 120s provider default, so it gets its own, roomier budget. Tune via
+    # JOB_APPLIER_AI_DRAFT_TIMEOUT (seconds) if your provider/model is slower.
+    ai_draft_timeout: float = 300
+
     @model_validator(mode="after")
     def _derive_data_paths(self) -> "Settings":
         # Derive per-artifact paths from data_dir unless the caller pinned them

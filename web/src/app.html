@@ -4,6 +4,23 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<script>
+			// Resolve the effective theme before first paint to avoid a flash.
+			// Mirrors src/lib/theme.svelte.ts: pref = System/Light/Dark, System
+			// follows prefers-color-scheme. Default is dark (the app's heritage).
+			(function () {
+				try {
+					var pref = localStorage.getItem('ja-theme') || 'system';
+					var light =
+						pref === 'light' ||
+						(pref === 'system' &&
+							window.matchMedia('(prefers-color-scheme: light)').matches);
+					document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+				} catch (e) {
+					document.documentElement.setAttribute('data-theme', 'dark');
+				}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

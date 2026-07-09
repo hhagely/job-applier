@@ -65,21 +65,42 @@ class ClaudeProvider(Provider):
     bin = "claude"
     tier = "recommended"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
-        # Sandbox: empty tool allowlist + plan permission mode => the CLI cannot
-        # edit files or run commands even if the (untrusted) prompt asks it to.
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
+        # Sandbox: empty tool allowlist + `dontAsk` permission mode => the CLI
+        # auto-denies every tool call, so it cannot edit files or run commands even
+        # if the (untrusted) prompt asks it to. NOT `plan` mode: plan tells the model
+        # to *propose a plan* instead of answering, so Opus burns minutes "planning"
+        # and emits a plan stub ("plan recorded...") rather than the draft JSON —
+        # which then fails to parse and retries, blowing the timeout.
+        #
+        # `--strict-mcp-config` + an empty `--mcp-config` load zero MCP servers.
+        # Without it every cold subprocess connects to *all* configured MCP servers
+        # (the empty --allowed-tools blocks tool use, not server startup), so an
+        # auth-required remote connector stalls the call for minutes. (`--bare` also
+        # skips MCP but strips the OAuth login too — "Not logged in" — so we don't.)
+        #
         # `--output-format text` returns the model's raw text (not a JSON envelope).
-        return [
+        argv = [
             self.bin,
             "-p",
             prompt,
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
             "--allowed-tools",
             "",
             "--permission-mode",
-            "plan",
+            "dontAsk",
             "--output-format",
             "text",
         ]
+        # Honor the Settings-selected model (e.g. a faster tier for drafting); the
+        # CLI's account default is used when unset.
+        if model:
+            argv += ["--model", model]
+        return argv
 
 
 class GeminiProvider(Provider):
@@ -88,7 +109,9 @@ class GeminiProvider(Provider):
     bin = "gemini"
     tier = "recommended"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
         # Non-interactive prompt mode; no tool grants are given.
         argv = [self.bin, "-p", prompt]
         if model:
@@ -102,7 +125,9 @@ class CodexProvider(Provider):
     bin = "codex"
     tier = "best-effort"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
         # Non-interactive exec with a read-only sandbox and no approval prompts.
         return [
             self.bin,
@@ -121,7 +146,9 @@ class OllamaProvider(Provider):
     bin = "ollama"
     tier = "best-effort"
 
-    def build_argv(self, prompt, *, expect_json=False, model=None):
+    def build_argv(
+        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
+    ) -> list[str]:
         # Fully local; ollama has no tool/file access to sandbox. Needs a model.
         return [self.bin, "run", model or DEFAULT_OLLAMA_MODEL, prompt]
 
@@ -255,6 +282,11 @@ def run(
             argv,
             capture_output=True,
             text=True,
+            # The prompt goes in via argv, so the CLI needs no stdin. Without this
+            # the child inherits the backend's (non-TTY) stdin and blocks a few
+            # seconds waiting for piped input before proceeding ("no stdin data
+            # received in 3s"). DEVNULL gives an immediate EOF.
+            stdin=subprocess.DEVNULL,
             timeout=timeout,
             env=env,
             cwd=cwd,

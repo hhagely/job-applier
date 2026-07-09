@@ -6,7 +6,7 @@
 // the window. PDFs render via Electron's printToPDF (an offscreen window), so the
 // packaged app ships no Playwright.
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const { spawn, execSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
@@ -33,6 +33,20 @@ function freePort() {
 			const { port } = srv.address();
 			srv.close(() => resolve(port));
 		});
+	});
+}
+
+// The renderer's localStorage (theme override, queue filters, draft cart) is
+// keyed to the window's origin. A random web port every launch means a new
+// origin and therefore empty localStorage each run, so prefer a fixed port and
+// only fall back to a free one if it's actually taken.
+const PREFERRED_WEB_PORT = 43117;
+
+function pickWebPort(preferred) {
+	return new Promise((resolve) => {
+		const probe = net.createServer();
+		probe.once('error', () => resolve(freePort()));
+		probe.listen(preferred, '127.0.0.1', () => probe.close(() => resolve(preferred)));
 	});
 }
 
@@ -109,7 +123,14 @@ function startBackend(apiPort, pdfBase) {
 		...process.env,
 		PATH: resolveShellPath(),
 		JOB_APPLIER_API_PORT: String(apiPort),
-		JOB_APPLIER_DATA_DIR: app.getPath('userData'),
+		// Data location precedence:
+		//   1. an explicit JOB_APPLIER_DATA_DIR (e.g. a throwaway copy for testing),
+		//   2. in dev, the repo's data/ — so the Electron shell, `make api/web`, and
+		//      the CLI all share one database (no "why is Electron empty?" surprises),
+		//   3. when packaged, the per-user app-data dir (there is no repo to point at).
+		JOB_APPLIER_DATA_DIR:
+			process.env.JOB_APPLIER_DATA_DIR ||
+			(isDev ? path.join(repoRoot, 'data') : app.getPath('userData')),
 		JOB_APPLIER_PDF_SERVICE: pdfBase
 	};
 	const { cmd, args, opts } = backendCommand(apiPort, env);
@@ -186,14 +207,79 @@ async function startPdfService() {
 	return `http://127.0.0.1:${port}`;
 }
 
+// --- external links --------------------------------------------------------
+
+// The app itself is served from 127.0.0.1 (web port) with PDFs on 127.0.0.1
+// (api port); everything else is a third-party URL.
+function isInternalUrl(target) {
+	try {
+		const host = new URL(target).hostname;
+		return host === '127.0.0.1' || host === 'localhost';
+	} catch {
+		return false;
+	}
+}
+
+// Route external http(s) links — "View original posting", links inside a job
+// description, doc links in Settings — to the OS default browser instead of a
+// bare Electron window. Internal localhost URLs (in-app navigation, PDF
+// previews/downloads) keep their normal behavior.
+function registerExternalLinks(contents) {
+	contents.setWindowOpenHandler(({ url }) => {
+		if (/^https?:\/\//i.test(url) && !isInternalUrl(url)) {
+			shell.openExternal(url);
+			return { action: 'deny' };
+		}
+		return { action: 'allow' };
+	});
+	contents.on('will-navigate', (event, url) => {
+		if (/^https?:\/\//i.test(url) && !isInternalUrl(url)) {
+			event.preventDefault();
+			shell.openExternal(url);
+		}
+	});
+}
+
 // --- lifecycle -------------------------------------------------------------
 
-async function boot() {
-	const [apiPort, webPort] = await Promise.all([freePort(), freePort()]);
-	const apiBase = `http://127.0.0.1:${apiPort}`;
+// Electron's loadURL() rejects whenever a navigation is aborted or the target
+// isn't reachable yet (ERR_ABORTED, ERR_CONNECTION_REFUSED). Against the Vite
+// dev server that's routine: when electronmon relaunches us after a main.js
+// edit, Vite may be mid-HMR/restart for a beat. Letting that rejection escape
+// boot() turns it (under Node's default --unhandled-rejections=throw) into an
+// uncaught exception, which the electronmon hook latches as "errored" and then
+// refuses to auto-relaunch until the next file change — i.e. the app closes on
+// hot-reload and stays closed. So retry transient load failures instead.
+async function loadWithRetry(win, url, { attempts = 40, delayMs = 250 } = {}) {
+	for (let i = 1; ; i++) {
+		try {
+			await win.loadURL(url);
+			return;
+		} catch (err) {
+			if (win.isDestroyed() || i >= attempts) throw err;
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+}
 
-	const pdfBase = await startPdfService();
-	startBackend(apiPort, pdfBase);
+async function boot() {
+	// Hot-reload dev mode (`make electron-dev`): an external orchestrator already
+	// runs the backend (uvicorn --reload) and the Vite dev server, passing their
+	// locations in via env. Electron then points the window at Vite for renderer
+	// HMR and reuses the given API base — it does not spawn or own the backend, so
+	// there's no second, unused backend fighting over the same SQLite file.
+	const devUrl = process.env.JOB_APPLIER_DEV_URL;
+	const externalApiBase = devUrl ? process.env.JOB_APPLIER_API_BASE : null;
+
+	let apiBase;
+	if (externalApiBase) {
+		apiBase = externalApiBase;
+	} else {
+		const apiPort = await freePort();
+		apiBase = `http://127.0.0.1:${apiPort}`;
+		const pdfBase = await startPdfService();
+		startBackend(apiPort, pdfBase);
+	}
 
 	const healthy = await waitForHealth(apiBase);
 	if (!healthy) {
@@ -202,12 +288,11 @@ async function boot() {
 		return;
 	}
 
-	// A power-user dev override: point at the Vite dev server for UI hot-reload.
-	const devUrl = process.env.JOB_APPLIER_DEV_URL;
 	let loadUrl;
 	if (devUrl) {
 		loadUrl = devUrl;
 	} else {
+		const webPort = await pickWebPort(PREFERRED_WEB_PORT);
 		await startWebServer(webPort, apiBase);
 		loadUrl = `http://127.0.0.1:${webPort}`;
 	}
@@ -215,10 +300,30 @@ async function boot() {
 	mainWindow = new BrowserWindow({
 		width: 1280,
 		height: 860,
-		backgroundColor: '#0e1116',
+		minWidth: 940,
+		minHeight: 600,
+		// Frameless: the redesigned SvelteKit titlebar draws the brand, command
+		// search, theme toggle, and window controls (Phase 8). The renderer routes
+		// min/max/close back over IPC (see registerWindowIpc + preload.js).
+		frame: false,
+		backgroundColor: '#16181d',
 		webPreferences: { preload: path.join(__dirname, 'preload.js') }
 	});
-	await mainWindow.loadURL(loadUrl);
+	registerExternalLinks(mainWindow.webContents);
+	await loadWithRetry(mainWindow, loadUrl);
+}
+
+// Window controls invoked from the custom titlebar. Toggle maximize so the
+// titlebar's maximize button also restores.
+function registerWindowIpc() {
+	ipcMain.on('window:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());
+	ipcMain.on('window:maximize', (e) => {
+		const win = BrowserWindow.fromWebContents(e.sender);
+		if (!win) return;
+		if (win.isMaximized()) win.unmaximize();
+		else win.maximize();
+	});
+	ipcMain.on('window:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 }
 
 function shutdown() {
@@ -241,7 +346,17 @@ function shutdown() {
 	}
 }
 
-app.whenReady().then(boot);
+registerWindowIpc();
+// Guard the whole boot chain: a rejection here (failed dev-server load, web
+// handler import, etc.) must not surface as an uncaught exception, or the
+// electronmon dev hook latches "errored" and stops auto-relaunching after a
+// hot reload. Fail loudly and quit instead of dying silently mid-restart.
+app.whenReady()
+	.then(boot)
+	.catch((err) => {
+		dialog.showErrorBox('job-applier', `Startup failed:\n${err?.stack || err}`);
+		app.quit();
+	});
 app.on('before-quit', shutdown);
 app.on('window-all-closed', () => {
 	shutdown();

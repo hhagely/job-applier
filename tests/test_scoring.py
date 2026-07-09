@@ -175,6 +175,38 @@ def test_score_pending_auto_archives_below_60(monkeypatch):
         assert good.application is None or good.application.status != ApplicationStatus.archived
 
 
+@pytest.mark.parametrize(
+    "status,expected_archived",
+    [
+        (None, True),  # no application row -> untriaged -> archived
+        (ApplicationStatus.new, True),  # default status -> untriaged -> archived
+        (ApplicationStatus.interested, False),
+        (ApplicationStatus.applied, False),
+        (ApplicationStatus.interviewing, False),
+    ],
+)
+def test_score_pending_only_archives_untriaged_low_scorers(
+    monkeypatch, status, expected_archived
+):
+    """A low re-score must not clobber a status the user set manually — only
+    untriaged jobs (no row, or still ``new``) are auto-archived."""
+    monkeypatch.setattr(scoring.providers, "run", lambda *a, **k: LOW)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        job = _seed_job(s, title="LowFit Engineer")
+        if status is not None:
+            services.bulk_set_status(s, [job.id], status)
+        outcomes = scoring.score_pending(s, provider="claude")
+        assert outcomes[0].score == 40  # below ARCHIVE_BELOW
+        s.refresh(job)
+        assert job.application is not None
+        if expected_archived:
+            assert job.application.status == ApplicationStatus.archived
+        else:
+            assert job.application.status == status  # preserved untouched
+
+
 def test_score_pending_requires_active_resume(monkeypatch):
     monkeypatch.setattr(scoring.providers, "run", lambda *a, **k: CANNED)
     e = _engine()

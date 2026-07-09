@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +17,8 @@ from job_applier.filters import FilterConfig, evaluate, load_active_config
 from job_applier.models import Application, ApplicationStatus, Company, JobPosting, engine
 from job_applier.models.db import FilterStatus
 from job_applier.sources import RawJob, SourceAdapter, get_all_sources
+
+log = logging.getLogger(__name__)
 
 # Postings older than this are skipped — stale listings are rarely still open,
 # and a re-post will come through on the next ingest if the role is real.
@@ -316,7 +320,13 @@ def run_ingest(
 
     ``progress_cb(done, total, source_name, cumulative_stats)`` is invoked after
     each source finishes (optional; when omitted, behavior is identical to before).
-    Single session / one commit at the end, so cross-source dedupe is unchanged.
+
+    One shared session, committed per source: a single source raising (a bad
+    payload, a network blip) is logged and skipped so it can't discard every other
+    source's rows. Cross-source dedupe is unaffected — the shared session's
+    autoflush makes already-ingested rows visible to later sources regardless of
+    commit timing. On failure the partial source's uncommitted rows are rolled back
+    and its stats are restored so the summary stays truthful.
     """
     if sources is None:
         sources = get_all_sources()
@@ -325,11 +335,17 @@ def run_ingest(
     with Session(engine()) as session:
         filter_config = load_active_config(session)
         for i, source in enumerate(sources):
-            for raw in source.fetch():
-                ingest_one(session, raw, stats, filter_config=filter_config)
+            snapshot = copy.copy(stats)
+            try:
+                for raw in source.fetch():
+                    ingest_one(session, raw, stats, filter_config=filter_config)
+                session.commit()
+            except Exception as exc:  # noqa: BLE001 - one source can't abort the run
+                session.rollback()
+                stats.__dict__.update(snapshot.__dict__)
+                log.warning("source %s failed during ingest, skipping: %s", source.name, exc)
             if progress_cb is not None:
                 progress_cb(i + 1, total, source.name, stats)
-        session.commit()
     return stats
 
 

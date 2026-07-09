@@ -5,6 +5,7 @@ tailored re-score. Mirrors the `/draft` -> `/score-draft` slash-command flow.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -16,7 +17,20 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 from job_applier.ai import bans, providers, scoring
 from job_applier.api import services
+from job_applier.config import settings
 from job_applier.models.db import ApplicationStatus, JobPosting, Session
+
+log = logging.getLogger(__name__)
+
+# Statuses the user has advanced past drafting — auto-drafting must not regress them.
+_ADVANCED_STATUSES = frozenset(
+    {
+        ApplicationStatus.applied,
+        ApplicationStatus.screening,
+        ApplicationStatus.interviewing,
+        ApplicationStatus.rejected,
+    }
+)
 
 
 class DraftingError(Exception):
@@ -73,7 +87,9 @@ def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> DraftEnv
         text = prompt
         if attempt == 1:
             text += "\n\nIMPORTANT: return ONLY the JSON object with resume_md and cover_letter_md."
-        raw = providers.run(provider, text, expect_json=True, model=model)
+        raw = providers.run(
+            provider, text, expect_json=True, model=model, timeout=settings.ai_draft_timeout
+        )
         try:
             data = providers.extract_json(raw)
             return DraftEnvelope.model_validate(data)
@@ -143,8 +159,11 @@ def generate_draft(
         html = drafts.render_print_html(md, kind)  # type: ignore[arg-type]
         drafts.render_pdf(job.id, kind, _render_html_to_pdf(html))  # type: ignore[arg-type]
 
-    # Drafting a job marks it "drafted" so the queue's status filters stay honest.
-    services.bulk_set_status(session, [job.id], ApplicationStatus.drafted)
+    # Drafting a job marks it "drafted" so the queue's status filters stay honest,
+    # but never regress a job the user has already advanced past drafting.
+    current_status = job.application.status if job.application else None
+    if current_status not in _ADVANCED_STATUSES:
+        services.bulk_set_status(session, [job.id], ApplicationStatus.drafted)
 
     _stage("scoring")
     tailored_score: Optional[int] = None
@@ -153,7 +172,8 @@ def generate_draft(
             session, provider, resume_md, job, model=model, score_kind="tailored"
         )
         tailored_score = result.score
-    except Exception:  # noqa: BLE001 - a scoring hiccup must not lose the saved draft
+    except Exception as exc:  # noqa: BLE001 - a scoring hiccup must not lose the saved draft
+        log.warning("tailored re-score failed for job %s: %s", job.id, exc)
         tailored_score = None
 
     _stage("done")

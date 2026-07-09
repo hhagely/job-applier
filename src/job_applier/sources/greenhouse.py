@@ -12,11 +12,10 @@ from __future__ import annotations
 import html
 import logging
 from collections.abc import Iterable
-from datetime import datetime
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -35,11 +34,16 @@ class GreenhouseSource:
                 try:
                     resp = client.get(API.format(slug=slug), params={"content": "true"})
                     resp.raise_for_status()
-                except httpx.HTTPError as e:
+                    payload = resp.json()
+                except (httpx.HTTPError, ValueError) as e:
                     log.warning("greenhouse[%s] fetch failed: %s", slug, e)
                     continue
 
-                for item in resp.json().get("jobs", []):
+                if not isinstance(payload, dict):
+                    log.warning("greenhouse[%s] returned non-object payload, skipping", slug)
+                    continue
+
+                for item in payload.get("jobs", []):
                     yield from _normalize(slug, item)
 
 
@@ -74,7 +78,7 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
         location=location_name or office_names or None,
         remote=remote,
         employment_type=None,
-        posted_at=_parse_date(item.get("updated_at") or item.get("first_published")),
+        posted_at=parse_iso_date(item.get("updated_at") or item.get("first_published")),
         tags=_tags(departments, metadata_kv),
         raw=item,
     )
@@ -93,12 +97,3 @@ def _tags(*chunks: str) -> list[str]:
             if piece:
                 out.append(piece)
     return out
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
