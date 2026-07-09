@@ -7,8 +7,8 @@
 	import { fmtDateTime as fmtUpdated, defaultFollowupDate } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
+	import ScoreBreakdown from '$lib/ScoreBreakdown.svelte';
 	import Icon from '$lib/Icon.svelte';
-	import { scoreBandVar } from '$lib/score';
 	import { sourceInfo } from '$lib/sources';
 
 	let { data }: { data: PageData } = $props();
@@ -106,21 +106,7 @@
 				</div>
 				<div class="card-b">
 					{#if job.score}
-						{#if job.score.is_stale}
-							<p class="banner warn" style="margin-bottom:12px">Scored against an older resume — re-score to refresh.</p>
-						{/if}
-						<div class="match-hero">
-							<span class="mh-n" style="color:{scoreBandVar(job.score.score)}">{job.score.score}</span>
-							<span class="mh-d">/100</span>
-						</div>
-						<p class="score-meta">
-							<span>{fmtUpdated(job.score.scored_at)}</span>
-							{#if job.score.resume_filename}· <span class="mono">{job.score.resume_filename}</span>{/if}
-						</p>
-						{#if job.score.reasoning}<div class="rationale">{job.score.reasoning}</div>{/if}
-						{#if job.score.rubric && Object.keys(job.score.rubric).length > 0}
-							<details class="det"><summary>Rubric breakdown</summary><pre>{JSON.stringify(job.score.rubric, null, 2)}</pre></details>
-						{/if}
+						<ScoreBreakdown score={job.score} />
 						{#if scoreHistory.length > 0}
 							<details class="det"><summary>Previous scores ({scoreHistory.length})</summary>
 								<ul class="history-list">
@@ -272,31 +258,6 @@
 		display: flex;
 		align-items: center;
 		gap: 9px;
-		flex-wrap: wrap;
-	}
-	.match-hero {
-		display: flex;
-		align-items: baseline;
-		gap: 6px;
-	}
-	.match-hero .mh-n {
-		font-family: var(--mono);
-		font-size: 44px;
-		font-weight: 680;
-		letter-spacing: -0.03em;
-		line-height: 1;
-	}
-	.match-hero .mh-d {
-		font-family: var(--mono);
-		color: var(--faint);
-		font-size: 16px;
-	}
-	.score-meta {
-		color: var(--faint);
-		font-size: 12px;
-		margin: 8px 0 0;
-		display: flex;
-		gap: 6px;
 		flex-wrap: wrap;
 	}
 	.rationale {
