@@ -21,17 +21,27 @@ class FakeSource:
         return iter(self._jobs)
 
 
-def _raw(sid, title="Senior Software Engineer"):
+def _raw(sid, title="Senior Software Engineer", company="Acme"):
     return RawJob(
         source="fake",
         source_id=sid,
         url=f"https://example.com/{sid}",
         title=title,
-        company_name="Acme",
+        company_name=company,
         description="We use TypeScript and React on Node.js.",
         location="Remote — US",
         remote=True,
     )
+
+
+class _BoomSource:
+    """A source that yields one row and then raises mid-fetch."""
+
+    name = "boom"
+
+    def fetch(self):
+        yield _raw("boom-1", company="Boom Co")
+        raise ValueError("simulated bad payload from a flaky source")
 
 
 def _engine():
@@ -63,6 +73,31 @@ def test_run_ingest_reports_per_source_progress(monkeypatch):
     assert stats.fetched == 3
     assert stats.inserted >= 1
     assert calls[1][3] >= calls[0][3]
+
+
+def test_run_ingest_isolates_a_failing_source(monkeypatch):
+    """One source raising mid-fetch is logged and skipped — the sources before and
+    after it still persist, and the failed source's partial rows/stats are dropped."""
+    e = _engine()
+    monkeypatch.setattr(ingest, "engine", lambda: e)
+    seen = []
+    sources = [
+        FakeSource("alpha", [_raw("a1", company="Alpha Co")]),
+        _BoomSource(),
+        FakeSource("gamma", [_raw("g1", company="Gamma Co")]),
+    ]
+    stats = ingest.run_ingest(
+        sources=sources,
+        progress_cb=lambda done, total, name, s: seen.append((done, total, name)),
+    )
+    # Progress still fires for every source, including the one that failed.
+    assert seen == [(1, 3, "alpha"), (2, 3, "boom"), (3, 3, "gamma")]
+    # The good sources persisted; the failing source's partial row was rolled back.
+    with Session(e) as s:
+        companies = {j.company.name for j in s.exec(select(JobPosting)).all()}
+    assert companies == {"Alpha Co", "Gamma Co"}
+    # Stats reflect only the two good rows (the failed source's counts were restored).
+    assert stats.inserted == 2
 
 
 def test_run_ingest_without_cb_is_unchanged(monkeypatch):

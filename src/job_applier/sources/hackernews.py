@@ -58,11 +58,11 @@ class HackerNewsHiringSource:
                         resp = client.get(ITEM_URL.format(id=thread_id))
                         resp.raise_for_status()
                         thread = resp.json()
-                    except httpx.HTTPError as e:
+                    except (httpx.HTTPError, ValueError) as e:
                         log.warning("hackernews thread %s fetch failed: %s", thread_id, e)
                         continue
                     yield from _normalize_thread(thread, thread_created)
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, ValueError) as e:
             log.warning("hackernews search failed: %s", e)
             return
 

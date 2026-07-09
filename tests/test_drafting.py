@@ -137,6 +137,35 @@ def test_generate_draft_saves_md_renders_pdf_and_scores(tmp_path, monkeypatch):
         assert job.application.status == ApplicationStatus.drafted
 
 
+@pytest.mark.parametrize(
+    "start_status,expected",
+    [
+        (None, ApplicationStatus.drafted),  # fresh job -> drafted
+        (ApplicationStatus.interested, ApplicationStatus.drafted),  # forward move
+        (ApplicationStatus.applied, ApplicationStatus.applied),  # not regressed
+        (ApplicationStatus.interviewing, ApplicationStatus.interviewing),  # not regressed
+    ],
+)
+def test_generate_draft_does_not_regress_advanced_status(
+    tmp_path, monkeypatch, start_status, expected
+):
+    """Re-drafting a job the user has advanced past drafting must keep its status."""
+    monkeypatch.setattr(settings, "applications_dir", tmp_path)
+    monkeypatch.setattr(providers, "run", _route_provider(DRAFT_ENVELOPE))
+    monkeypatch.setattr(drafting, "_render_html_to_pdf", lambda html: b"%PDF fake")
+
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        job = _seed_job(s)
+        if start_status is not None:
+            services.bulk_set_status(s, [job.id], start_status)
+        drafting.generate_draft(s, "claude", job)
+        s.refresh(job)
+        assert job.application is not None
+        assert job.application.status == expected
+
+
 def test_generate_draft_uses_configured_timeout(tmp_path, monkeypatch):
     """Drafting runs the provider with the roomier ai_draft_timeout, not the 120s
     default — a full resume + cover letter routinely runs past two minutes."""

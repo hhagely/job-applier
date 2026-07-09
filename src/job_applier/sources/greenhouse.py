@@ -35,11 +35,16 @@ class GreenhouseSource:
                 try:
                     resp = client.get(API.format(slug=slug), params={"content": "true"})
                     resp.raise_for_status()
-                except httpx.HTTPError as e:
+                    payload = resp.json()
+                except (httpx.HTTPError, ValueError) as e:
                     log.warning("greenhouse[%s] fetch failed: %s", slug, e)
                     continue
 
-                for item in resp.json().get("jobs", []):
+                if not isinstance(payload, dict):
+                    log.warning("greenhouse[%s] returned non-object payload, skipping", slug)
+                    continue
+
+                for item in payload.get("jobs", []):
                     yield from _normalize(slug, item)
 
 

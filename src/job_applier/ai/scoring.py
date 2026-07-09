@@ -122,6 +122,16 @@ class JobScoreOutcome:
     error: Optional[str]
 
 
+def _is_untriaged(job: JobPosting) -> bool:
+    """True when the user hasn't explicitly triaged this job, so auto-archiving a
+    low score won't clobber a manually-set status (``applied``, ``interviewing``,
+    ...). A missing application row or the default ``new`` status both count as
+    untriaged; anything else means the user has acted on the job and we leave it be.
+    """
+    app = job.application
+    return app is None or app.status == ApplicationStatus.new
+
+
 def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> ScoredPayload:
     """Run the provider and parse strict JSON, retrying once with a nudge."""
     last_err: Optional[Exception] = None
@@ -178,7 +188,11 @@ def score_pending(
     limit: int = 200,
     progress_cb: Optional[Callable[[JobScoreOutcome], None]] = None,
 ) -> list[JobScoreOutcome]:
-    """Score a batch of jobs, then auto-archive any that scored `< 60`.
+    """Score a batch of jobs, then auto-archive any *untriaged* job that scored `< 60`.
+
+    Only jobs the user hasn't acted on (no application row, or still ``new``) are
+    auto-archived — a job manually marked ``applied``/``interviewing``/etc. keeps its
+    status even if a re-score drops it below the threshold (see ``_is_untriaged``).
 
     A single job's failure is recorded as a per-job error and does not abort the
     batch. When ``job_ids`` is given those exact jobs are scored; otherwise the
@@ -201,7 +215,7 @@ def score_pending(
         try:
             result = score_one(session, provider, resume.extracted_text, job, model=model)
             outcome = JobScoreOutcome(job.id, job.title, result.score, None)
-            if result.score < ARCHIVE_BELOW:
+            if result.score < ARCHIVE_BELOW and _is_untriaged(job):
                 low_scorers.append(job.id)
         except Exception as exc:  # noqa: BLE001 - one job's failure can't kill the batch
             outcome = JobScoreOutcome(job.id, job.title, None, str(exc))
