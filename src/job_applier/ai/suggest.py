@@ -10,7 +10,7 @@ import json
 from importlib import resources
 from typing import Optional
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from sqlmodel import select
 
@@ -77,18 +77,16 @@ def build_suggest_prompt(resume_text: str, profile: Optional[SearchProfile]) -> 
 def _run_and_parse(
     provider: str, prompt: str, model: Optional[str]
 ) -> SuggestedProfile:
-    last_err: Optional[Exception] = None
-    for attempt in range(2):
-        text = prompt
-        if attempt == 1:
-            text += "\n\nIMPORTANT: return ONLY the JSON object described above."
-        raw = providers.run(provider, text, expect_json=True, model=model)
-        try:
-            data = providers.extract_json(raw)
-            return SuggestedProfile.model_validate(data)
-        except (ValueError, ValidationError) as exc:
-            last_err = exc
-    raise SuggestError(f"invalid suggestion JSON after retry: {last_err}")
+    try:
+        return providers.run_json(
+            provider,
+            prompt,
+            SuggestedProfile,
+            model=model,
+            nudge="IMPORTANT: return ONLY the JSON object described above.",
+        )
+    except providers.ProviderJSONError as exc:
+        raise SuggestError(f"invalid suggestion JSON after retry: {exc}") from exc
 
 
 def suggest_roles(

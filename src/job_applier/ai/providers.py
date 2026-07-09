@@ -18,7 +18,9 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 # ---- errors ---------------------------------------------------------------
 
@@ -33,6 +35,13 @@ class ProviderNotFound(ProviderError):
 
 class ProviderTimeout(ProviderError):
     """The CLI didn't finish within the timeout."""
+
+
+class ProviderJSONError(ProviderError):
+    """Provider output couldn't be parsed/validated into the expected JSON model."""
+
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 # ---- provider registry ----------------------------------------------------
@@ -367,3 +376,37 @@ def _first_balanced_object(text: str) -> Optional[str]:
             if depth == 0:
                 return text[start : i + 1]
     return None
+
+
+# ---- run + validate JSON --------------------------------------------------
+
+
+def run_json(
+    name: str,
+    prompt: str,
+    schema: type[_ModelT],
+    *,
+    model: Optional[str] = None,
+    timeout: float = 120,
+    nudge: str = "IMPORTANT: return ONLY the JSON object, no prose or fences.",
+    attempts: int = 2,
+) -> _ModelT:
+    """Run provider ``name`` and validate its output into ``schema``.
+
+    Retries once (up to ``attempts``) with ``nudge`` appended when the first
+    response doesn't parse. This "run -> extract_json -> model_validate, retry
+    with a nudge" loop was copy-pasted into the scoring, drafting, and suggest
+    flows; it lives here once. Provider invocation errors (timeout, not found,
+    non-zero exit) propagate as ``ProviderError`` subclasses; a parse/validation
+    failure after the last attempt is raised as ``ProviderJSONError`` for the
+    caller to map to its flow-specific error.
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(attempts):
+        text = prompt if attempt == 0 else f"{prompt}\n\n{nudge}"
+        raw = run(name, text, model=model, timeout=timeout)
+        try:
+            return schema.model_validate(extract_json(raw))
+        except (ValueError, ValidationError) as exc:
+            last_err = exc
+    raise ProviderJSONError(str(last_err))

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Callable, Optional
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from job_applier import services
 from job_applier.ai import providers
@@ -132,19 +132,11 @@ def _is_untriaged(job: JobPosting) -> bool:
 
 
 def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> ScoredPayload:
-    """Run the provider and parse strict JSON, retrying once with a nudge."""
-    last_err: Optional[Exception] = None
-    for attempt in range(2):
-        text = prompt
-        if attempt == 1:
-            text += "\n\nIMPORTANT: return ONLY the JSON object, no prose or fences."
-        raw = providers.run(provider, text, expect_json=True, model=model)
-        try:
-            data = providers.extract_json(raw)
-            return ScoredPayload.model_validate(data)
-        except (ValueError, ValidationError) as exc:
-            last_err = exc
-    raise ScoringError(f"invalid JSON after retry: {last_err}")
+    """Run the provider and parse strict JSON into a ScoredPayload."""
+    try:
+        return providers.run_json(provider, prompt, ScoredPayload, model=model)
+    except providers.ProviderJSONError as exc:
+        raise ScoringError(f"invalid JSON after retry: {exc}") from exc
 
 
 def score_one(

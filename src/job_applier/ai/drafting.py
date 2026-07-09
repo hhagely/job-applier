@@ -13,7 +13,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Callable, Optional
 
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, model_validator
 
 from job_applier import services
 from job_applier.ai import bans, providers, scoring
@@ -82,20 +82,17 @@ def build_draft_prompt(resume_text: str, job: JobPosting) -> str:
 
 
 def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> DraftEnvelope:
-    last_err: Optional[Exception] = None
-    for attempt in range(2):
-        text = prompt
-        if attempt == 1:
-            text += "\n\nIMPORTANT: return ONLY the JSON object with resume_md and cover_letter_md."
-        raw = providers.run(
-            provider, text, expect_json=True, model=model, timeout=settings.ai_draft_timeout
+    try:
+        return providers.run_json(
+            provider,
+            prompt,
+            DraftEnvelope,
+            model=model,
+            timeout=settings.ai_draft_timeout,
+            nudge="IMPORTANT: return ONLY the JSON object with resume_md and cover_letter_md.",
         )
-        try:
-            data = providers.extract_json(raw)
-            return DraftEnvelope.model_validate(data)
-        except (ValueError, ValidationError) as exc:
-            last_err = exc
-    raise DraftingError(f"invalid draft JSON after retry: {last_err}")
+    except providers.ProviderJSONError as exc:
+        raise DraftingError(f"invalid draft JSON after retry: {exc}") from exc
 
 
 def _render_html_to_pdf(html: str) -> bytes:
