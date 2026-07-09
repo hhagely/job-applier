@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import Icon from '$lib/Icon.svelte';
 	import { NAV, activeNavId, type CountKey } from './nav';
 
 	let { counts = {} }: { counts?: Partial<Record<CountKey, number | null>> } = $props();
 
-	let activeId = $derived(activeNavId($page.url.pathname));
+	let activeId = $derived(activeNavId(page.url.pathname));
 </script>
 
 <aside class="sidebar">

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { invalidateAll } from '$app/navigation';
 
 	let retrying = $state(false);
@@ -17,14 +17,14 @@
 		}
 	}
 
-	const backendLikely = $derived($page.status >= 500 || $page.status === 0);
+	const backendLikely = $derived(page.status >= 500 || page.status === 0);
 </script>
 
 <div class="error-wrap">
 	<div class="card error-card">
-		<div class="error-status">{$page.status}</div>
+		<div class="error-status">{page.status}</div>
 		<h1>Something went wrong</h1>
-		<p class="error-msg">{$page.error?.message ?? 'Unexpected error.'}</p>
+		<p class="error-msg">{page.error?.message ?? 'Unexpected error.'}</p>
 		{#if backendLikely}
 			<p class="hint">
 				The backend may be restarting (a Python edit in dev). Give it a second, then retry.

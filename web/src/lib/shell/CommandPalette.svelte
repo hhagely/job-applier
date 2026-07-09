@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import Icon from '$lib/Icon.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import { NAV } from './nav';
@@ -21,7 +21,7 @@
 	}
 
 	async function runDashboardCommand(name: ShellCommand) {
-		if ($page.url.pathname !== '/dashboard') await goto('/dashboard');
+		if (page.url.pathname !== '/dashboard') await goto('/dashboard');
 		emitCommand(name);
 	}
 

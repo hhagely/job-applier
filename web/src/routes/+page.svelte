@@ -3,7 +3,7 @@
 	import { browser } from '$app/environment';
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import {
 		api,
 		APPLICATION_STATUSES,
@@ -414,14 +414,14 @@
 	let followupDate = $state<string>(defaultFollowupDate());
 
 	function toggleDuplicates() {
-		const url = new URL($page.url);
+		const url = new URL(page.url);
 		if (data.include_duplicates) url.searchParams.delete('duplicates');
 		else url.searchParams.set('duplicates', '1');
 		goto(url, { invalidateAll: true });
 	}
 
 	function switchQueue(manual: boolean) {
-		const url = new URL($page.url);
+		const url = new URL(page.url);
 		if (manual) url.searchParams.set('filter', 'manual');
 		else url.searchParams.delete('filter');
 		selectedId = null;
