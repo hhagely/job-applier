@@ -1,6 +1,7 @@
 import { api, APPLICATION_STATUSES, type ApplicationStatus, type FilterStatus } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { activeJobs } from '$lib/jobFilters';
+import { jobActions } from '$lib/jobActions.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -80,69 +81,8 @@ export const actions: Actions = {
 		}
 	},
 
-	// --- Inline detail-pane mutations (mirror the /jobs/[id] actions so the queue
-	// master-detail pane is fully actionable without navigating away). Each reads
-	// the target from a hidden `job_id` field rather than a route param. ---
-	setStatus: async ({ request, fetch }) => {
-		const form = await request.formData();
-		const id = Number(form.get('job_id'));
-		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
-		const status = String(form.get('status') ?? '') as ApplicationStatus;
-		if (!APPLICATION_STATUSES.includes(status)) return fail(400, { error: 'invalid status' });
-		const followupRaw = (form.get('next_followup_at') as string | null) || '';
-		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
-		try {
-			await api.setStatus(fetch, serverApiBase(), id, status, { next_followup_at });
-			return { ok: true };
-		} catch (e) {
-			return fail(400, { error: (e as Error).message });
-		}
-	},
-	setNotes: async ({ request, fetch }) => {
-		const form = await request.formData();
-		const id = Number(form.get('job_id'));
-		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
-		const notes = String(form.get('notes') ?? '');
-		try {
-			await api.setNotes(fetch, serverApiBase(), id, notes);
-			return { ok: true };
-		} catch (e) {
-			return fail(400, { error: (e as Error).message });
-		}
-	},
-	setUnemployment: async ({ request, fetch }) => {
-		const form = await request.formData();
-		const id = Number(form.get('job_id'));
-		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
-		const used = form.get('used') === 'true';
-		try {
-			await api.setUnemployment(fetch, serverApiBase(), id, used);
-			return { ok: true };
-		} catch (e) {
-			return fail(400, { error: (e as Error).message });
-		}
-	},
-	renderDraft: async ({ request, fetch }) => {
-		const form = await request.formData();
-		const id = Number(form.get('job_id'));
-		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
-		try {
-			await api.renderDraft(fetch, serverApiBase(), id);
-			return { ok: true };
-		} catch (e) {
-			return fail(400, { error: (e as Error).message });
-		}
-	},
-	generateDraft: async ({ request, fetch }) => {
-		const form = await request.formData();
-		const id = Number(form.get('job_id'));
-		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
-		try {
-			const { task_id } = await api.startDraft(fetch, serverApiBase(), id);
-			return { ok: true, task_id, kind: 'draft' };
-		} catch (e) {
-			// 409 when no provider selected / no active resume.
-			return fail(409, { error: (e as Error).message });
-		}
-	}
+	// The detail-pane status / notes / unemployment / draft mutations mirror the
+	// /jobs/[id] actions so the master-detail pane is fully actionable without
+	// navigating away. They read the target from a hidden `job_id` field.
+	...jobActions('field')
 };
