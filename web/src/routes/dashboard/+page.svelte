@@ -8,9 +8,9 @@
 	import { scoreBandVar } from '$lib/score';
 	import { sourceInfo } from '$lib/sources';
 	import { onCommand } from '$lib/shell/commandBus';
-	import { type Job, type TaskSnapshot } from '$lib/api';
-	import { pollTask } from '$lib/pollTask';
-	import { daysOverdue as overdueDays, fmtDate } from '$lib/date';
+	import { type Job } from '$lib/api';
+	import { createTaskRunner } from '$lib/taskRunner.svelte';
+	import { daysOverdue as overdueDays, fmtDate, formatOverdue } from '$lib/date';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -24,50 +24,18 @@
 	const hasProvider = $derived(Boolean(data.aiProvider));
 	const pendingCount = $derived(data.pending);
 
-	let ingestTask = $state<TaskSnapshot | null>(null);
-	let ingestPolling = $state(false);
-	let ingestStarting = $state(false);
-	let ingestError = $state<string | null>(null);
+	const ingest = createTaskRunner({
+		apiBase: () => data.apiBase ?? '',
+		onSettled: () => invalidateAll(),
+		failMessage: 'could not start scrape'
+	});
+	const score = createTaskRunner({
+		apiBase: () => data.apiBase ?? '',
+		onSettled: () => invalidateAll(),
+		failMessage: 'could not start scoring'
+	});
 	let scrapeForm = $state<HTMLFormElement | null>(null);
-
-	let scoreTask = $state<TaskSnapshot | null>(null);
-	let scorePolling = $state(false);
-	let scoreStarting = $state(false);
-	let scoreError = $state<string | null>(null);
 	let scoreForm = $state<HTMLFormElement | null>(null);
-
-	async function pollIngestTask(taskId: string) {
-		ingestPolling = true;
-		try {
-			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (ingestTask = snap));
-			await invalidateAll();
-		} catch (e) {
-			ingestError = (e as Error).message;
-		} finally {
-			ingestPolling = false;
-		}
-	}
-
-	async function pollScoreTask(taskId: string) {
-		scorePolling = true;
-		try {
-			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (scoreTask = snap));
-			await invalidateAll();
-		} catch (e) {
-			scoreError = (e as Error).message;
-		} finally {
-			scorePolling = false;
-		}
-	}
-
-	function dismissIngestPanel() {
-		ingestTask = null;
-		ingestError = null;
-	}
-	function dismissScorePanel() {
-		scoreTask = null;
-		scoreError = null;
-	}
 
 	// The command palette (Cmd/Ctrl-K) navigates here, then fires the matching action.
 	onMount(() =>
@@ -94,34 +62,17 @@
 		<a class="btn" href="/search">Edit search profile</a>
 
 		{#if hasProvider}
-			<form
-				bind:this={scoreForm}
-				method="POST"
-				action="?/scorePending"
-				use:enhance={() => {
-					scoreStarting = true;
-					scoreError = null;
-					return async ({ result }) => {
-						scoreStarting = false;
-						if (result.type === 'success' && result.data?.task_id) {
-							scoreTask = null;
-							pollScoreTask(result.data.task_id as string);
-						} else if (result.type === 'failure') {
-							scoreError = (result.data?.error as string) ?? 'could not start scoring';
-						}
-					};
-				}}
-			>
+			<form bind:this={scoreForm} method="POST" action="?/scorePending" use:enhance={score.enhance}>
 				<button
 					type="submit"
 					class="btn"
-					disabled={pendingCount === 0 || scoreStarting || scorePolling}
+					disabled={pendingCount === 0 || score.busy}
 					title={pendingCount === 0
 						? 'Nothing to score'
 						: `Score ${pendingCount} pending via ${data.aiProvider}`}
 				>
 					<Icon name="star" size={15} stroke={2} />
-					{scoreStarting || scorePolling ? 'Scoring…' : `Score pending (${pendingCount})`}
+					{score.busy ? 'Scoring…' : `Score pending (${pendingCount})`}
 				</button>
 			</form>
 		{:else}
@@ -130,73 +81,54 @@
 			</a>
 		{/if}
 
-		<form
-			bind:this={scrapeForm}
-			method="POST"
-			action="?/runIngest"
-			use:enhance={() => {
-				ingestStarting = true;
-				ingestError = null;
-				return async ({ result }) => {
-					ingestStarting = false;
-					if (result.type === 'success' && result.data?.task_id) {
-						ingestTask = null;
-						pollIngestTask(result.data.task_id as string);
-					} else if (result.type === 'failure') {
-						ingestError = (result.data?.error as string) ?? 'could not start scrape';
-					}
-				};
-			}}
-		>
+		<form bind:this={scrapeForm} method="POST" action="?/runIngest" use:enhance={ingest.enhance}>
 			<button
 				type="submit"
 				class="btn primary"
-				disabled={ingestStarting || ingestPolling}
+				disabled={ingest.busy}
 				title="Pull new postings from every source"
 			>
 				<Icon name="refresh" size={15} stroke={2} />
-				{ingestStarting || ingestPolling ? 'Scraping…' : 'Run scrape'}
+				{ingest.busy ? 'Scraping…' : 'Run scrape'}
 			</button>
 		</form>
 	</div>
 </div>
 
 <div class="view-body">
-	{#if ingestError && !ingestTask}<p class="panel-err">{ingestError}</p>{/if}
-	{#if ingestTask}
-		<ScoreProgress
-			task={ingestTask}
-			onDismiss={dismissIngestPanel}
-			runningVerb="Scraping"
-			doneVerb="Scraped"
-			resultsLabel="sources"
-		/>
-	{/if}
-	{#if scoreError && !scoreTask}<p class="panel-err">{scoreError}</p>{/if}
-	{#if scoreTask}<ScoreProgress task={scoreTask} onDismiss={dismissScorePanel} />{/if}
+	{#if ingest.error && !ingest.snap}<p class="err-text" style="margin-bottom:1rem">{ingest.error}</p>{/if}
+	<ScoreProgress
+		task={ingest.snap}
+		onDismiss={ingest.dismiss}
+		runningVerb="Scraping"
+		doneVerb="Scraped"
+		resultsLabel="sources"
+	/>
+	{#if score.error && !score.snap}<p class="err-text" style="margin-bottom:1rem">{score.error}</p>{/if}
+	<ScoreProgress task={score.snap} onDismiss={score.dismiss} />
 
 	<div class="kpi-grid">
-		<div class="kpi">
+		<div class="card kpi">
 			<div class="k-label"><Icon name="queue" size={15} />In queue</div>
 			<div class="k-val">{k.jobs}</div>
 			<div class="k-delta">{k.unreviewed} unreviewed</div>
 		</div>
-		<div class="kpi">
+		<div class="card kpi">
 			<div class="k-label"><Icon name="star" size={15} />Strong matches</div>
 			<div class="k-val" style="color:var(--strong)">{k.strong}</div>
 			<div class="k-delta">scored <b>80+</b> against your resume</div>
 		</div>
-		<div class="kpi">
+		<div class="card kpi">
 			<div class="k-label"><Icon name="check" size={15} />Applied</div>
 			<div class="k-val">{k.applied}</div>
 			<div class="k-delta">{k.rejected} rejected · {k.unreviewed} unset</div>
 		</div>
-		<div class="kpi">
+		<div class="card kpi">
 			<div class="k-label"><Icon name="clock" size={15} />Follow-ups due</div>
 			<div class="k-val" style={k.followupsDue > 0 ? 'color:var(--weak)' : ''}>{k.followupsDue}</div>
 			<div class="k-delta">applied roles awaiting a nudge</div>
 		</div>
-		<div class="kpi">
+		<div class="card kpi">
 			<div class="k-label"><Icon name="chart" size={15} />Avg match</div>
 			<div class="k-val">{k.avg ?? '—'}<small>/100</small></div>
 			<div class="k-delta">across {k.scored} scored roles</div>
@@ -238,11 +170,8 @@
 						{#each data.dist as d (d.label)}
 							<div class="dist-row">
 								<div class="d-band">{d.label}</div>
-								<div class="d-track">
-									<div
-										class="d-fill"
-										style="width:{(d.n / distMax) * 100}%;background:var(--{d.band})"
-									></div>
+								<div class="meter d-track">
+									<i style="width:{(d.n / distMax) * 100}%;background:var(--{d.band})"></i>
 								</div>
 								<div class="d-n">{d.n}</div>
 							</div>
@@ -257,7 +186,7 @@
 						{#each data.bySource as s (s.source)}
 							<div class="sl-row">
 								<span class="pill src-{s.source}"><span class="dot-badge"></span>{sourceInfo(s.source).label}</span>
-								<div class="sl-bar"><div class="sl-fill" style="width:{(s.n / sourceMax) * 100}%"></div></div>
+								<div class="meter sl-bar"><i style="width:{(s.n / sourceMax) * 100}%;background:var(--accent)"></i></div>
 								<span class="sl-n">{s.n}</span>
 							</div>
 						{:else}
@@ -285,7 +214,7 @@
 								{job.company?.name ?? 'Unknown'} · applied {fmtDate(job.application?.applied_at)}
 							</div>
 						</div>
-						<span class="mi-right">{over === 0 ? 'due today' : `${over}d overdue`}</span>
+						<span class="mi-right">{formatOverdue(over)}</span>
 					</a>
 				{:else}
 					<p class="empty-line">Nothing overdue. Nice.</p>
@@ -296,20 +225,12 @@
 </div>
 
 <style>
-	.panel-err {
-		color: var(--bad);
-		font-size: 0.85rem;
-		margin: 0 0 1rem;
-	}
 	.kpi-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
 		gap: 12px;
 	}
 	.kpi {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
 		padding: 15px 16px;
 	}
 	.kpi .k-label {
@@ -430,14 +351,7 @@
 	}
 	.dist-row .d-track {
 		flex: 1;
-		height: 9px;
-		border-radius: 20px;
-		background: var(--surface-2);
-		overflow: hidden;
-	}
-	.dist-row .d-fill {
-		height: 100%;
-		border-radius: 20px;
+		--meter-h: 9px;
 	}
 	.dist-row .d-n {
 		width: 26px;
@@ -459,14 +373,6 @@
 	}
 	.src-legend .sl-bar {
 		flex: 1;
-		height: 7px;
-		border-radius: 20px;
-		background: var(--surface-2);
-		overflow: hidden;
-	}
-	.src-legend .sl-fill {
-		height: 100%;
-		background: var(--accent);
 	}
 	.src-legend .sl-n {
 		font-family: var(--mono);
