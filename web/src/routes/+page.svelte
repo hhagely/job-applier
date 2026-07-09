@@ -19,6 +19,7 @@
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import ScoreBadge from '$lib/ScoreBadge.svelte';
 	import ScoreBreakdown from '$lib/ScoreBreakdown.svelte';
+	import TailoredDraftCard from '$lib/TailoredDraftCard.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { sourceInfo, type Ease } from '$lib/sources';
 	import type { PageData } from './$types';
@@ -245,12 +246,6 @@
 	let detailLoading = $state(false);
 	let detailErr = $state<string | null>(null);
 
-	// Draft-generation (per selected job), mirrors the /jobs/[id] flow.
-	let draftTask = $state<TaskSnapshot | null>(null);
-	let draftPolling = $state(false);
-	let draftStarting = $state(false);
-	let draftError = $state<string | null>(null);
-
 	// Status/notes/unemployment editing state, seeded when the selection changes.
 	let pendingStatus = $state<ApplicationStatus>('new');
 	let followupInput = $state<string>('');
@@ -271,9 +266,6 @@
 
 	$effect(() => {
 		const id = selectedJob?.id ?? null;
-		// reset the draft panel when moving to a different job
-		draftTask = null;
-		draftError = null;
 		if (id == null) {
 			detailJob = null;
 			detailDraft = null;
@@ -312,24 +304,6 @@
 		} catch {
 			/* keep the stale draft rather than blanking the panel */
 		}
-	}
-
-	async function pollDraftTask(taskId: string, jobId: number) {
-		draftPolling = true;
-		try {
-			await pollTask(fetch, base, taskId, (snap) => (draftTask = snap));
-			await invalidateAll(); // tailored score may have changed → refresh the row
-			await reloadDraft(jobId);
-		} catch (e) {
-			draftError = (e as Error).message;
-		} finally {
-			draftPolling = false;
-		}
-	}
-
-	function dismissDraftPanel() {
-		draftTask = null;
-		draftError = null;
 	}
 
 	// Generic enhance for the inline status/notes/unemployment forms: refresh the
@@ -760,57 +734,18 @@
 				<div class="card" style="margin-top:14px">
 					<div class="card-h"><h3>Tailored draft</h3></div>
 					<div class="card-b">
-						<div style="margin-bottom:12px">
-							{#if !hasProvider}
-								<a class="btn" href="/settings" title="Select an AI CLI in Settings">Generate tailored draft — set up AI</a>
-							{:else}
-								<form
-									method="POST"
-									action="?/generateDraft"
-									use:enhance={() => {
-										draftStarting = true;
-										draftError = null;
-										const jobId = j.id;
-										return async ({ result }) => {
-											draftStarting = false;
-											if (result.type === 'success' && result.data?.task_id) {
-												draftTask = null;
-												pollDraftTask(result.data.task_id as string, jobId);
-											} else if (result.type === 'failure') {
-												draftError = (result.data?.error as string) ?? 'could not start drafting';
-											}
-										};
-									}}
-								>
-									<input type="hidden" name="job_id" value={j.id} />
-									<button type="submit" class="btn primary" disabled={draftStarting || draftPolling}>
-										{#if draftStarting || draftPolling}
-											Generating…
-										{:else if detailDraft && (detailDraft.has_resume_md || detailDraft.has_cover_letter_md)}
-											Regenerate tailored draft
-										{:else}
-											Generate tailored draft
-										{/if}
-									</button>
-								</form>
-							{/if}
-						</div>
-						{#if draftError && !draftTask}<p class="err-text" style="margin-bottom:12px">{draftError}</p>{/if}
-						{#if draftTask}
-							<ScoreProgress task={draftTask} onDismiss={dismissDraftPanel} runningVerb="Generating" doneVerb="Generated" resultsLabel="stages" />
-						{/if}
-						{#if detailDraft && (detailDraft.has_resume_pdf || detailDraft.has_cover_letter_pdf)}
-							<div class="draft-actions">
-								{#if detailDraft.has_resume_pdf}<a class="btn primary" href={api.draftResumePdfUrl(base, j.id)} download>Download resume PDF</a>{/if}
-								{#if detailDraft.has_cover_letter_pdf}<a class="btn primary" href={api.draftCoverLetterPdfUrl(base, j.id)} download>Download cover letter PDF</a>{/if}
-							</div>
-							<form method="POST" action="?/renderDraft" use:enhance={detailEnhance} style="margin-top:8px">
-								<input type="hidden" name="job_id" value={j.id} />
-								<button type="submit" class="btn sm">Re-render PDFs from markdown</button>
-							</form>
-						{:else if hasProvider}
-							<p class="muted small">No draft yet. Generate above, or run <code>/draft {j.id}</code> in Claude Code.</p>
-						{/if}
+						{#key j.id}
+							<TailoredDraftCard
+								jobId={j.id}
+								draft={detailDraft}
+								{hasProvider}
+								apiBase={base}
+								onDraftChange={async () => {
+									await invalidateAll();
+									await reloadDraft(j.id);
+								}}
+							/>
+						{/key}
 					</div>
 				</div>
 

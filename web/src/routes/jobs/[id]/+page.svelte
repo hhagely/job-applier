@@ -1,12 +1,10 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import type { PageData } from './$types';
-	import { api, APPLICATION_STATUSES, type ApplicationStatus, type TaskSnapshot } from '$lib/api';
-	import { pollTask } from '$lib/pollTask';
+	import { APPLICATION_STATUSES, type ApplicationStatus } from '$lib/api';
 	import { fmtDateTime as fmtUpdated, defaultFollowupDate } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
-	import ScoreProgress from '$lib/ScoreProgress.svelte';
+	import TailoredDraftCard from '$lib/TailoredDraftCard.svelte';
 	import ScoreBreakdown from '$lib/ScoreBreakdown.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { sourceInfo } from '$lib/sources';
@@ -24,27 +22,6 @@
 	let si = $derived(sourceInfo(job.source));
 
 	const hasProvider = $derived(Boolean(data.aiProvider));
-	let draftTask = $state<TaskSnapshot | null>(null);
-	let draftPolling = $state(false);
-	let draftStarting = $state(false);
-	let draftError = $state<string | null>(null);
-
-	async function pollDraftTask(taskId: string) {
-		draftPolling = true;
-		try {
-			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (draftTask = snap));
-			await invalidateAll();
-		} catch (e) {
-			draftError = (e as Error).message;
-		} finally {
-			draftPolling = false;
-		}
-	}
-
-	function dismissDraftPanel() {
-		draftTask = null;
-		draftError = null;
-	}
 
 	let pendingStatus = $state<ApplicationStatus>('new');
 	let followupInput = $state<string>('');
@@ -176,70 +153,13 @@
 		<div class="card">
 			<div class="card-h"><h2>Tailored draft</h2></div>
 			<div class="card-b">
-				<div style="margin-bottom:12px">
-					{#if !hasProvider}
-						<a class="btn" href="/settings" title="Select an AI CLI in Settings">Generate tailored draft — set up AI</a>
-					{:else}
-						<form
-							method="POST"
-							action="?/generateDraft"
-							use:enhance={() => {
-								draftStarting = true;
-								draftError = null;
-								return async ({ result }) => {
-									draftStarting = false;
-									if (result.type === 'success' && result.data?.task_id) {
-										draftTask = null;
-										pollDraftTask(result.data.task_id as string);
-									} else if (result.type === 'failure') {
-										draftError = (result.data?.error as string) ?? 'could not start drafting';
-									}
-								};
-							}}
-						>
-							<button type="submit" class="btn primary" disabled={draftStarting || draftPolling}>
-								{#if draftStarting || draftPolling}
-									Generating…
-								{:else if draft && (draft.has_resume_md || draft.has_cover_letter_md)}
-									Regenerate tailored draft
-								{:else}
-									Generate tailored draft
-								{/if}
-							</button>
-						</form>
-					{/if}
-				</div>
-
-				{#if draftError && !draftTask}<p class="err-text" style="margin-bottom:12px">{draftError}</p>{/if}
-				{#if draftTask}
-					<ScoreProgress task={draftTask} onDismiss={dismissDraftPanel} runningVerb="Generating" doneVerb="Generated" resultsLabel="stages" />
-				{/if}
-
-				{#if draft && (draft.has_resume_pdf || draft.has_cover_letter_pdf)}
-					<div class="draft-actions">
-						{#if draft.has_resume_pdf}
-							<a class="btn primary" href={api.draftResumePdfUrl(apiBase, job.id)} download>Download resume PDF</a>
-						{:else}<span class="muted">No tailored resume yet</span>{/if}
-						{#if draft.has_cover_letter_pdf}
-							<a class="btn primary" href={api.draftCoverLetterPdfUrl(apiBase, job.id)} download>Download cover letter PDF</a>
-						{:else}<span class="muted">No cover letter yet</span>{/if}
-					</div>
-					<div class="draft-meta">
-						{#if draft.updated_at}<span class="muted small">Last generated {fmtUpdated(draft.updated_at)}</span>{/if}
-						<form method="POST" action="?/renderDraft" style="display:inline">
-							<button type="submit" class="btn sm">Re-render PDFs from markdown</button>
-						</form>
-					</div>
-					<p class="muted small" style="margin-top:8px">
-						Run <code>/draft {job.id}</code> in Claude Code to regenerate the tailored markdown from the current job description.
-					</p>
-				{:else}
-					<p class="muted small">
-						No draft yet. Run <code>/draft {job.id}</code> in Claude Code (or the button above) to generate a tailored resume and cover
-						letter (both PDFs). Drafts strictly use only what's in your master resume — they reorder and re-emphasize, but won't
-						invent skills or experience.
-					</p>
-				{/if}
+				<TailoredDraftCard
+					jobId={job.id}
+					{draft}
+					{hasProvider}
+					{apiBase}
+					onDraftChange={() => invalidateAll()}
+				/>
 			</div>
 		</div>
 
@@ -318,18 +238,6 @@
 	}
 	.small {
 		font-size: 11.5px;
-	}
-	.draft-actions {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-		margin-bottom: 8px;
-	}
-	.draft-meta {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
 	}
 	pre {
 		background: var(--bg);
