@@ -2,7 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import type { PageData } from './$types';
-	import { api, type ApplicationStatus, type TaskSnapshot } from '$lib/api';
+	import { api, APPLICATION_STATUSES, type ApplicationStatus, type TaskSnapshot } from '$lib/api';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -11,16 +11,7 @@
 
 	let { data }: { data: PageData } = $props();
 
-	const statuses: ApplicationStatus[] = [
-		'new',
-		'interested',
-		'drafted',
-		'applied',
-		'screening',
-		'interviewing',
-		'rejected',
-		'archived'
-	];
+	const statuses = APPLICATION_STATUSES;
 
 	let apiBase = $derived(data.apiBase ?? '');
 	let job = $derived(data.job);

@@ -6,6 +6,7 @@
 	import { page } from '$app/stores';
 	import {
 		api,
+		APPLICATION_STATUSES,
 		type ApplicationStatus,
 		type Draft,
 		type Job,
@@ -239,16 +240,7 @@
 	// selected row so triage happens without leaving the list. Score/status come
 	// from the list payload (instant); description + draft are fetched per select. ---
 	const base = $derived(data.apiBase ?? '');
-	const STATUS_OPTS: ApplicationStatus[] = [
-		'new',
-		'interested',
-		'drafted',
-		'applied',
-		'screening',
-		'interviewing',
-		'rejected',
-		'archived'
-	];
+	const STATUS_OPTS = APPLICATION_STATUSES;
 
 	let detailJob = $state<JobDetail | null>(null);
 	let detailDraft = $state<Draft | null>(null);

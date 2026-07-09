@@ -24,6 +24,9 @@ export function getApiBase(): string {
 	return '';
 }
 
+// `dropped` is intentionally omitted from the client type: dropped jobs are
+// never persisted, so the API never emits them. Keep in sync with FilterStatus
+// in models/db.py, which does include `dropped`.
 export type FilterStatus = 'passed' | 'manual';
 export type ApplicationStatus =
 	| 'new'
@@ -34,6 +37,22 @@ export type ApplicationStatus =
 	| 'interviewing'
 	| 'rejected'
 	| 'archived';
+
+/**
+ * All application statuses, in pipeline order — the single client-side source for
+ * validation guards and status dropdowns. Keep in sync with the ApplicationStatus
+ * enum in models/db.py (no shared codegen across the Python/TS boundary).
+ */
+export const APPLICATION_STATUSES: ApplicationStatus[] = [
+	'new',
+	'interested',
+	'drafted',
+	'applied',
+	'screening',
+	'interviewing',
+	'rejected',
+	'archived'
+];
 
 export interface Company {
 	id: number;

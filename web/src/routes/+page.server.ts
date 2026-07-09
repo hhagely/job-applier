@@ -1,20 +1,9 @@
-import { api, type ApplicationStatus, type FilterStatus } from '$lib/api';
+import { api, APPLICATION_STATUSES, type ApplicationStatus, type FilterStatus } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 const VALID: FilterStatus[] = ['passed', 'manual'];
-
-const VALID_STATUS: ApplicationStatus[] = [
-	'new',
-	'interested',
-	'drafted',
-	'applied',
-	'screening',
-	'interviewing',
-	'rejected',
-	'archived'
-];
 
 export const load: PageServerLoad = async ({ url, fetch }) => {
 	const filterParam = url.searchParams.get('filter');
@@ -36,7 +25,7 @@ export const actions: Actions = {
 	bulkStatus: async ({ request, fetch }) => {
 		const form = await request.formData();
 		const status = String(form.get('status') ?? '') as ApplicationStatus;
-		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
+		if (!APPLICATION_STATUSES.includes(status)) return fail(400, { error: 'invalid status' });
 
 		const ids = form
 			.getAll('ids')
@@ -98,7 +87,7 @@ export const actions: Actions = {
 		const id = Number(form.get('job_id'));
 		if (!Number.isFinite(id)) return fail(400, { error: 'invalid id' });
 		const status = String(form.get('status') ?? '') as ApplicationStatus;
-		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
+		if (!APPLICATION_STATUSES.includes(status)) return fail(400, { error: 'invalid status' });
 		const followupRaw = (form.get('next_followup_at') as string | null) || '';
 		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
 		try {

@@ -1,18 +1,7 @@
-import { api, type ApplicationStatus } from '$lib/api';
+import { api, APPLICATION_STATUSES, type ApplicationStatus } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-
-const VALID_STATUS: ApplicationStatus[] = [
-	'new',
-	'interested',
-	'drafted',
-	'applied',
-	'screening',
-	'interviewing',
-	'rejected',
-	'archived'
-];
 
 export const load: PageServerLoad = async ({ params, fetch }) => {
 	const id = Number(params.id);
@@ -40,7 +29,7 @@ export const actions: Actions = {
 		const notes = (form.get('notes') as string | null) || undefined;
 		const followupRaw = (form.get('next_followup_at') as string | null) || '';
 		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
-		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
+		if (!APPLICATION_STATUSES.includes(status)) return fail(400, { error: 'invalid status' });
 		try {
 			await api.setStatus(fetch, serverApiBase(), id, status, { notes, next_followup_at });
 			return { ok: true };
