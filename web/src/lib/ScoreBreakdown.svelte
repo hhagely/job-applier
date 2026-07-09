@@ -41,8 +41,8 @@
 				<div class="rub-row">
 					<div class="rr-l">{label}</div>
 					{#if num !== null}
-						<div class="rr-track">
-							<div class="rr-fill" style="width:{num}%;background:{scoreBandVar(num)}"></div>
+						<div class="meter">
+							<i style="width:{num}%;background:{scoreBandVar(num)}"></i>
 						</div>
 						<div class="rr-n">{num}</div>
 					{:else}
@@ -82,12 +82,6 @@
 		gap: 6px;
 		flex-wrap: wrap;
 	}
-	.rationale {
-		color: var(--muted);
-		font-size: 13px;
-		line-height: 1.6;
-		margin-top: 12px;
-	}
 	details.rubric {
 		margin-top: 14px;
 		border-top: 1px solid var(--border);
@@ -122,16 +116,6 @@
 	.rub-row .rr-l {
 		font-size: 12px;
 		color: var(--muted);
-	}
-	.rub-row .rr-track {
-		height: 7px;
-		border-radius: 20px;
-		background: var(--surface-2);
-		overflow: hidden;
-	}
-	.rub-row .rr-fill {
-		height: 100%;
-		border-radius: 20px;
 	}
 	.rub-row .rr-n {
 		font-family: var(--mono);

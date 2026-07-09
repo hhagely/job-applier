@@ -2,7 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import type { Job } from '$lib/api';
-	import { daysOverdue, fmtDate } from '$lib/date';
+	import { daysOverdue, fmtDate, formatOverdue } from '$lib/date';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -44,14 +44,14 @@
 		<div class="fu-list">
 			{#each data.jobs as job (job.id)}
 				{@const overdue = daysOverdue(followupDate(job))}
-				<div class="fu-card">
+				<div class="card fu-card">
 					<div class="fu-main">
 						<a href={`/jobs/${job.id}`} class="fu-title">{job.title}</a>
 						<div class="fu-sub">
 							<span>{job.company?.name ?? 'Unknown'}</span>
 							· <span>applied {fmtDate(appliedAt(job))}</span>
 							· <span class="fu-over" class:soon={overdue < 14}>
-								{overdue === 0 ? 'due today' : `${overdue}d overdue`}
+								{formatOverdue(overdue)}
 							</span>
 						</div>
 					</div>
@@ -89,9 +89,6 @@
 		max-width: 920px;
 	}
 	.fu-card {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
 		padding: 14px 16px;
 		display: flex;
 		align-items: center;
