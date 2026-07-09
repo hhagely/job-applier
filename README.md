@@ -2,8 +2,9 @@
 
 A personal job board. Pulls remote roles from open job sources, filters them
 against a configurable search profile (role titles, seniority, required and
-excluded tech), scores survivors against your resume via Claude Code, and
-surfaces the results in a SvelteKit review UI so you can decide which ones are
+excluded tech), scores survivors against your resume using an AI CLI you choose
+(Claude Code, Gemini, Codex, or fully-local Ollama), and surfaces the results in
+a SvelteKit review UI so you can decide which ones are
 worth tailoring an application for. Tailored resume + cover-letter drafts and
 follow-up tracking are built in.
 
@@ -14,22 +15,27 @@ aggregator feeds (RemoteOK, We Work Remotely, Hacker News "Who is hiring").
 ## Architecture
 
 ```
-┌──────────────┐   ingest   ┌──────────┐   filter   ┌──────────┐
-│  Source(s)   │ ─────────► │ SQLite   │ ─────────► │ FastAPI  │
-│ Greenhouse,… │            │ jobs.db  │            │ :8000    │
-└──────────────┘            └──────────┘            └────┬─────┘
-                                  ▲                      │ JSON
-                                  │ POST /score          ▼
-                            ┌─────┴──────┐         ┌──────────┐
-                            │ Claude     │ ◄─────► │ SvelteKit│
-                            │ Code       │         │ :5174    │
-                            │ /match-…   │         └──────────┘
-                            └────────────┘
+┌──────────────┐   ingest   ┌──────────┐   filter   ┌──────────┐   HTTP   ┌──────────┐
+│  Source(s)   │ ─────────► │ SQLite   │ ─────────► │ FastAPI  │ ◄──────► │ SvelteKit│
+│ Greenhouse,… │            │ jobs.db  │            │ :8000    │          │ :5174    │
+└──────────────┘            └──────────┘            └────┬─────┘          └──────────┘
+                                                         │ spawns a sandboxed
+                                                         ▼ subprocess per job
+                                                ┌───────────────────┐
+                                                │ AI CLI you pick:  │
+                                                │ claude / gemini / │
+                                                │ codex / ollama    │
+                                                └───────────────────┘
 ```
 
-The LLM never runs server-side. Scoring, resume tweaks, and cover-letter drafts
-all happen by you running slash commands inside Claude Code on this repo, which
-reads pending items from the API and posts results back.
+The LLM runs server-side, but only by shelling out to an AI CLI you install and
+pick in the app — never through an SDK or a raw API key. Scoring, cover-letter
+drafting, and role suggestions spawn the selected provider (Claude Code, Gemini
+CLI, Codex CLI, or local Ollama) as a **sandboxed** subprocess: no tools, a
+scrubbed environment, a throwaway working directory, and a timeout (job
+descriptions are untrusted scraped text, so model output is treated as data).
+Each CLI authenticates via its own login, so there are no API keys to manage —
+and the app runs fully, minus the AI features, with no provider installed.
 
 ## Setup
 
@@ -37,6 +43,15 @@ reads pending items from the API and posts results back.
 make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
+
+To use the AI features (scoring, drafting, role suggestions), install and log
+into **one** supported AI CLI, then select it at http://localhost:5174/settings:
+
+- **Claude Code** (`claude`) or **Gemini CLI** (`gemini`) — recommended.
+- **Codex CLI** (`codex`) or **Ollama** (`ollama`, fully local, no subscription) — best-effort.
+
+The app detects whichever CLIs are on your `PATH`. Everything except the AI
+features works with no provider installed.
 
 > **This is a single-user local tool.** The FastAPI server binds to `127.0.0.1`
 > and has no authentication. CORS is locked to the local SvelteKit origin. Do
@@ -55,32 +70,29 @@ uv run job-applier init   # create the SQLite DB
    it as the active resume. Older uploads are kept but inactive.
 3. **Configure your search profile** at http://localhost:5174/search — set role
    titles, seniority terms, required tech, and excluded tech. These drive the
-   hard filter at ingest. Run `/suggest-roles` in Claude Code to have it propose
-   a profile based on your resume; you accept or edit before it applies.
+   hard filter at ingest. Click **Suggest roles from resume** on `/search` (needs
+   an AI provider selected in Settings) to have the model propose a profile from
+   your resume; you accept or edit it before it applies.
 4. **Ingest** new postings:
    ```sh
    make ingest
    ```
-5. **Score the queue** — open Claude Code in this repo and run:
-   ```
-   /match-pending
-   ```
-   It pulls the active resume from `/api/resume/current`, fetches unscored jobs
-   (plus any whose score is stale because the resume changed), and writes scores
-   back. Refresh the UI to see them.
+5. **Score the queue** — on `/dashboard`, click **Score pending (N)**. The
+   backend pulls the active resume, fetches unscored jobs (plus any whose score
+   is stale because the resume changed), and scores each against the JD via your
+   selected AI CLI. It runs as a background task with a live progress bar; the
+   scores appear in the queue as they land.
 6. **Review** in the UI — change a job's status to `interested`, `drafted`,
    `applied`, `screening`, `interviewing`, `rejected`, etc. Status changes use
    SvelteKit form actions, so they round-trip through the backend without
    client-side fetch code. Add jobs to the draft cart from any row; the cart
    persists across `/`, `/jobs/[id]`, and `/followups`.
-7. **Draft tailored applications** for the jobs you want to apply to:
-   ```
-   /draft <job-id> [<job-id> ...]
-   ```
-   Writes a tailored resume + cover-letter markdown per job, renders both PDFs
-   via weasyprint under `applications/<id>/`, and re-scores the tailored draft
-   against the JD so you see a `baseline → tailored` delta. The job's status is
-   moved to `drafted`.
+7. **Draft tailored applications** for the jobs you want to apply to — add them
+   to the draft cart from any row and click **Draft list (N)** on the queue, or
+   draft a single job from its `/jobs/[id]` page. Each run writes a tailored
+   resume + cover-letter markdown, renders both PDFs under `applications/<id>/`,
+   moves the job to `drafted`, and re-scores the tailored draft against the JD so
+   you see a `baseline → tailored` delta.
 8. **Track follow-ups** at http://localhost:5174/followups — applied jobs past
    their follow-up date surface here so nothing goes silent.
 
@@ -88,7 +100,10 @@ uv run job-applier init   # create the SQLite DB
 
 ```
 src/job_applier/
-  api/         # FastAPI app + Pydantic schemas
+  api/         # FastAPI app + Pydantic schemas (includes api/ai.py — the AI router)
+  ai/          # Provider-agnostic AI layer: sandboxed CLI runner (providers.py),
+               #   scoring / drafting / suggest, char-ban enforcement, background
+               #   task runner, and the canonical prompt templates (ai/prompts/)
   filters/     # Hard-rule filter, driven by SearchProfile
   models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
   sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, RemoteOK, WWR, HN)
@@ -105,7 +120,7 @@ web/           # SvelteKit app
   src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft)
   src/routes/followups/+page.{svelte,server.ts}        # applied jobs past their follow-up date
   src/routes/resume/+page.{svelte,server.ts}           # resume upload + view
-.claude/commands/
+.claude/commands/    # legacy Claude-Code slash commands (mirror src/job_applier/ai/prompts/)
   match-pending.md   # score the pending queue against the active resume
   draft.md           # /draft <job-id>...  tailored resume + cover letter
   score-draft.md     # /score-draft <job-id>...  re-score a tailored draft for the baseline → tailored delta
@@ -218,20 +233,26 @@ Create a file under `src/job_applier/sources/` that implements the
 `sources/__init__.py`. If the source needs per-company config, add a seed list
 to `companies.py` and a key to `_SEEDS` in `sources/refresh.py`.
 
-## Slash commands
+## AI flows
 
-All LLM work runs inside Claude Code on this repo — no Anthropic API calls,
-no API keys to manage. Each command reads from / writes to the local API.
+All LLM work runs server-side by shelling out to the AI CLI you selected at
+`/settings` — no Anthropic/OpenAI SDK, no API keys to manage (each CLI uses its
+own login), and every call is sandboxed as described under Architecture. The
+flows are triggered from the UI; the equivalent **legacy** Claude-Code slash
+command is listed for anyone who prefers to drive it from a Claude Code session
+on this repo.
 
-| Command                       | What it does                                                                                                |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `/match-pending`              | Score every unscored job (and stale-scored jobs) against the active resume. Writes baseline scores.         |
-| `/draft <id> [<id> ...]`      | Generate a tailored resume + cover letter per job (markdown + PDF), set status to `drafted`, score the tailored draft. |
-| `/score-draft <id> [<id> ...]`| Re-score a tailored draft against the JD using the same rubric as `/match-pending`. Writes a `tailored`-kind score. |
-| `/suggest-roles`              | Read the active resume and POST a recommended `SearchProfile` to `recommendations_draft` for review at `/search`. |
+| Flow (UI trigger)                                     | Legacy command             | What it does                                                                                                    |
+| ----------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Score pending** (`/dashboard`)                      | `/match-pending`           | Score every unscored job (and stale-scored jobs) against the active resume. Writes baseline scores.            |
+| **Draft list** (queue cart) or draft one (`/jobs/[id]`)| `/draft <id> ...`          | Generate a tailored resume + cover letter per job (markdown + PDF), set status to `drafted`, re-score the draft.|
+| _(runs automatically after each draft)_               | `/score-draft <id> ...`    | Re-score a tailored draft against the JD using the same rubric as scoring. Writes a `tailored`-kind score.      |
+| **Suggest roles from resume** (`/search`)             | `/suggest-roles`           | Read the active resume and propose a `SearchProfile` to `recommendations_draft` for review at `/search`.        |
 
-Scores are snapshotted to `MatchScoreHistory` whenever they're overwritten, so
-the `baseline → tailored` delta and prior-resume scores remain visible.
+The prompt templates that define the scoring rubric and ATS-format rules live in
+`src/job_applier/ai/prompts/` (canonical); the `.claude/commands/` files mirror
+them. Scores are snapshotted to `MatchScoreHistory` whenever they're overwritten,
+so the `baseline → tailored` delta and prior-resume scores remain visible.
 
 ## Make targets
 

@@ -1,4 +1,4 @@
-.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron electron-dev dist ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
+.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron electron-dev dist ingest refresh-slugs refresh-slugs-full prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies (+ Chromium for PDF rendering)
 	uv sync
