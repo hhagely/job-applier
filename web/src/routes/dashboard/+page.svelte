@@ -8,7 +8,8 @@
 	import { scoreBandVar } from '$lib/score';
 	import { sourceInfo } from '$lib/sources';
 	import { onCommand } from '$lib/shell/commandBus';
-	import { api, type Job, type TaskSnapshot } from '$lib/api';
+	import { type Job, type TaskSnapshot } from '$lib/api';
+	import { pollTask } from '$lib/pollTask';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -36,15 +37,8 @@
 
 	async function pollIngestTask(taskId: string) {
 		ingestPolling = true;
-		const base = data.apiBase ?? '';
 		try {
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const snap = await api.getTask(fetch, base, taskId);
-				ingestTask = snap;
-				if (snap.status !== 'running') break;
-				await new Promise((r) => setTimeout(r, 1000));
-			}
+			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (ingestTask = snap));
 			await invalidateAll();
 		} catch (e) {
 			ingestError = (e as Error).message;
@@ -55,15 +49,8 @@
 
 	async function pollScoreTask(taskId: string) {
 		scorePolling = true;
-		const base = data.apiBase ?? '';
 		try {
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const snap = await api.getTask(fetch, base, taskId);
-				scoreTask = snap;
-				if (snap.status !== 'running') break;
-				await new Promise((r) => setTimeout(r, 1000));
-			}
+			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (scoreTask = snap));
 			await invalidateAll();
 		} catch (e) {
 			scoreError = (e as Error).message;

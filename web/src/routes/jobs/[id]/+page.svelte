@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import type { PageData } from './$types';
 	import { api, APPLICATION_STATUSES, type ApplicationStatus, type TaskSnapshot } from '$lib/api';
+	import { pollTask } from '$lib/pollTask';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -29,15 +30,8 @@
 
 	async function pollDraftTask(taskId: string) {
 		draftPolling = true;
-		const base = data.apiBase ?? '';
 		try {
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const snap = await api.getTask(fetch, base, taskId);
-				draftTask = snap;
-				if (snap.status !== 'running') break;
-				await new Promise((r) => setTimeout(r, 1000));
-			}
+			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (draftTask = snap));
 			await invalidateAll();
 		} catch (e) {
 			draftError = (e as Error).message;

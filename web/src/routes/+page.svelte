@@ -13,6 +13,7 @@
 		type JobDetail,
 		type TaskSnapshot
 	} from '$lib/api';
+	import { pollTask } from '$lib/pollTask';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import ScoreBadge from '$lib/ScoreBadge.svelte';
@@ -130,15 +131,8 @@
 
 	async function pollDraftBatchTask(taskId: string) {
 		draftBatchPolling = true;
-		const base = data.apiBase ?? '';
 		try {
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const snap = await api.getTask(fetch, base, taskId);
-				draftBatchTask = snap;
-				if (snap.status !== 'running') break;
-				await new Promise((r) => setTimeout(r, 1000));
-			}
+			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (draftBatchTask = snap));
 			await invalidateAll();
 		} catch (e) {
 			draftBatchError = (e as Error).message;
@@ -319,13 +313,7 @@
 	async function pollDraftTask(taskId: string, jobId: number) {
 		draftPolling = true;
 		try {
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const snap = await api.getTask(fetch, base, taskId);
-				draftTask = snap;
-				if (snap.status !== 'running') break;
-				await new Promise((r) => setTimeout(r, 1000));
-			}
+			await pollTask(fetch, base, taskId, (snap) => (draftTask = snap));
 			await invalidateAll(); // tailored score may have changed → refresh the row
 			await reloadDraft(jobId);
 		} catch (e) {
