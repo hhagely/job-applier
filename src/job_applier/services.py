@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
 from job_applier.config import settings
@@ -111,9 +112,17 @@ def select_pending_jobs(
     Always includes unscored jobs. With ``include_stale``, also includes jobs
     whose only score is against a non-active resume.
     """
+    # Eager-load the relationships the selection + its consumers read per row
+    # (score for _needs_scoring; company/application for the pending-match
+    # serializer and the scoring loop), avoiding a lazy load per job.
     stmt = (
         select(JobPosting)
         .where(JobPosting.filter_status == FilterStatus.passed)
+        .options(
+            selectinload(JobPosting.company),
+            selectinload(JobPosting.score),
+            selectinload(JobPosting.application),
+        )
         .order_by(JobPosting.ingested_at.desc())
     )
     jobs = list(session.exec(stmt).all())

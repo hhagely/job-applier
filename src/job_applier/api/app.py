@@ -3,6 +3,7 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
 from job_applier import ingest, services
@@ -168,7 +169,13 @@ def list_jobs(
     offset: int = 0,
     session: Session = Depends(get_session),
 ):
-    stmt = select(JobPosting)
+    # Eager-load the 1:1/n:1 relationships _job_summary reads, so rendering N rows
+    # is a constant handful of queries instead of ~3 lazy loads per row (N+1).
+    stmt = select(JobPosting).options(
+        selectinload(JobPosting.company),
+        selectinload(JobPosting.score),
+        selectinload(JobPosting.application),
+    )
     if filter_status is not None:
         stmt = stmt.where(JobPosting.filter_status == filter_status)
     if not include_duplicates:
