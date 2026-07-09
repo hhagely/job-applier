@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 from job_applier.ai import bans, providers, scoring
 from job_applier.api import services
+from job_applier.config import settings
 from job_applier.models.db import ApplicationStatus, JobPosting, Session
 
 
@@ -73,7 +74,9 @@ def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> DraftEnv
         text = prompt
         if attempt == 1:
             text += "\n\nIMPORTANT: return ONLY the JSON object with resume_md and cover_letter_md."
-        raw = providers.run(provider, text, expect_json=True, model=model)
+        raw = providers.run(
+            provider, text, expect_json=True, model=model, timeout=settings.ai_draft_timeout
+        )
         try:
             data = providers.extract_json(raw)
             return DraftEnvelope.model_validate(data)

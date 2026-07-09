@@ -21,8 +21,10 @@ Description:
 The tailored resume and cover letter must contain **only** facts present in the
 master resume (reordered, re-emphasized, rephrased, or omitted). You MAY reorder
 sections/bullets to lead with what the job cares about, rephrase a bullet to use
-the job's vocabulary **only when the underlying claim is unchanged**, drop
-irrelevant bullets/roles, and tighten wording. You may NOT add a skill, tool,
+the job's vocabulary **only when the underlying claim is unchanged**, drop or
+tighten individual bullets, and reorder freely. Keep every employer and its full
+date range (see "Preserve the experience arc" below) — trim *within* a role, do
+not remove whole roles. You may NOT add a skill, tool,
 framework, employer, project, year, metric, certification, degree, or
 accomplishment that does not appear in the master resume; inflate seniority,
 scope, or impact; invent contact details; or claim experience the resume doesn't
@@ -55,12 +57,22 @@ plain markdown only (no tables, columns, HTML, or image links). Rules:
   Present`). Three-letter month + four-digit year. Never `07/2024` or `2024-07`.
 - **Per-role header is three lines**: bold title on its own line, then
   `Company, City, ST` (or `Remote`), then the date range.
+- **Preserve the experience arc**: include *every* role from the master resume
+  with its real title and full date range, oldest to newest, so total years and
+  the seniority progression stay visible. To save space, trim or drop bullets
+  *within* older roles (an older role can shrink to its header plus one line), but
+  do not drop the role itself. Two pages is fine at senior/staff level; never
+  sacrifice the arc to fit one page. A truncated history scores as less experience.
 - **Keyword mirroring (most important)**: every hard skill/tool/framework from
   the JD that the resume genuinely supports must appear in `## Skills` using the
-  JD's exact phrasing (JD says "CI/CD pipelines" -> write that), AND appear in at
-  least one bullet in the last two roles, embedded naturally. Use canonical names
-  (JavaScript, TypeScript, Node.js, React, PostgreSQL) unless the JD uses a short
-  form. No version numbers in Skills. Never add a skill the resume doesn't show.
+  JD's exact phrasing (JD says "CI/CD pipelines" -> write that), AND be
+  *demonstrated in bullets*, not just listed: each such skill in at least one
+  bullet, and the JD's top three or four must-haves in two or more bullets across
+  different roles, embedded naturally. Scoring rewards a skill shown in real work
+  context far more than a bare Skills line, so surface them in the history. Use
+  canonical names (JavaScript, TypeScript, Node.js, React, PostgreSQL) unless the
+  JD uses a short form. No version numbers in Skills. Never add a skill the resume
+  doesn't show.
 - **Seniority**: keep the resume's actual most-recent title verbatim. If the JD
   targets a higher token (Staff/Principal) the resume doesn't show, do not invent
   it; lean on years/scope in the summary instead.
