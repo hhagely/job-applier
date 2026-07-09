@@ -46,38 +46,28 @@ function data(overrides = {}) {
 	};
 }
 
-describe('board Score-pending button', () => {
-	it('prompts to set up AI when no provider is selected', () => {
-		render(Board, { props: { data: data({ aiProvider: null }) } });
-		const link = screen.getByRole('link', { name: /Score pending — set up AI/ });
-		expect(link).toHaveAttribute('href', '/settings');
-	});
-
-	it('shows an enabled "Score pending (N)" button when a provider is set', () => {
+describe('queue header actions', () => {
+	// Scrape + score moved to the Dashboard; the queue header now carries
+	// filter/draft-list controls only.
+	it('has no Run scrape or Score pending controls', () => {
 		render(Board, { props: { data: data() } });
-		const btn = screen.getByRole('button', { name: /Score pending \(1\)/ });
-		expect(btn).toBeEnabled();
+		expect(screen.queryByRole('button', { name: /Run scrape/ })).toBeNull();
+		expect(screen.queryByRole('button', { name: /Score pending/ })).toBeNull();
 	});
 
-	it('disables the button when nothing is pending', () => {
-		const scored: Partial<Job> = {
-			score: {
-				score: 80,
-				rubric: {},
-				scored_by: 'claude-cli',
-				scored_at: new Date().toISOString(),
-				score_kind: 'baseline',
-				is_stale: false
-			}
-		};
-		render(Board, { props: { data: data({ jobs: [job(scored)] }) } });
-		expect(screen.getByRole('button', { name: /Score pending \(0\)/ })).toBeDisabled();
+	it('shows a Clear filters button, disabled when no filters are active', () => {
+		render(Board, { props: { data: data() } });
+		expect(screen.getByRole('button', { name: /Clear filters/ })).toBeDisabled();
 	});
-});
 
-describe('board Run-scrape button', () => {
-	it('always shows an enabled Run scrape button (no provider needed)', () => {
+	it('shows a disabled "Draft list empty" button when the draft list is empty', () => {
+		render(Board, { props: { data: data() } });
+		expect(screen.getByRole('button', { name: /Draft list empty/ })).toBeDisabled();
+	});
+
+	it('prompts to set up AI for drafting when no provider is selected', () => {
 		render(Board, { props: { data: data({ aiProvider: null }) } });
-		expect(screen.getByRole('button', { name: /Run scrape/ })).toBeEnabled();
+		const link = screen.getByRole('link', { name: /Draft list — set up AI/ });
+		expect(link).toHaveAttribute('href', '/settings');
 	});
 });

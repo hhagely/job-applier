@@ -1,6 +1,6 @@
 // Tiny event bus so the command palette (in the root layout) can trigger
 // page-scoped actions (run scrape, score pending) that live as form actions on
-// the queue page. The palette navigates to the page, then emits; the page
+// the dashboard page. The palette navigates to the page, then emits; the page
 // listens and submits the matching form.
 
 import { browser } from '$app/environment';

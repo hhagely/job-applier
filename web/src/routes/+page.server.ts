@@ -64,27 +64,21 @@ export const actions: Actions = {
 		return { ok: true, count: ids.length };
 	},
 
-	// Kick off a background scoring run. The mutation stays server-side per
-	// convention; the client then polls GET /api/ai/tasks/{id} for progress.
-	scorePending: async ({ fetch }) => {
+	// Kick off a background batch-draft of every job in the draft list, via the
+	// configured AI provider. Client polls GET /api/ai/tasks/{id} for progress.
+	draftBatch: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const ids = form
+			.getAll('ids')
+			.map((v) => Number(v))
+			.filter((n) => Number.isFinite(n));
+		if (ids.length === 0) return fail(400, { error: 'draft list is empty' });
 		try {
-			const { task_id } = await api.startScorePending(fetch, serverApiBase(), {
-				include_stale: true
-			});
-			return { ok: true, task_id };
+			const { task_id } = await api.startDraftBatch(fetch, serverApiBase(), ids);
+			return { ok: true, task_id, kind: 'draft' };
 		} catch (e) {
-			// The API returns 409 when no provider is selected / no active resume.
+			// 409 when no provider selected / no active resume.
 			return fail(409, { error: (e as Error).message });
-		}
-	},
-
-	// Kick off a background scrape of every source (needs no AI provider).
-	runIngest: async ({ fetch }) => {
-		try {
-			const { task_id } = await api.startIngest(fetch, serverApiBase());
-			return { ok: true, task_id, kind: 'ingest' };
-		} catch (e) {
-			return fail(500, { error: (e as Error).message });
 		}
 	},
 

@@ -20,8 +20,8 @@
 		run: () => void | Promise<void>;
 	}
 
-	async function runQueueCommand(name: ShellCommand) {
-		if ($page.url.pathname !== '/') await goto('/');
+	async function runDashboardCommand(name: ShellCommand) {
+		if ($page.url.pathname !== '/dashboard') await goto('/dashboard');
 		emitCommand(name);
 	}
 
@@ -32,8 +32,8 @@
 			ico: n.icon,
 			run: () => goto(n.href)
 		})),
-		{ t: 'Run scrape now', cat: 'Action', ico: 'refresh', run: () => runQueueCommand('scrape') },
-		{ t: 'Score pending jobs', cat: 'Action', ico: 'star', run: () => runQueueCommand('score') },
+		{ t: 'Run scrape now', cat: 'Action', ico: 'refresh', run: () => runDashboardCommand('scrape') },
+		{ t: 'Score pending jobs', cat: 'Action', ico: 'star', run: () => runDashboardCommand('score') },
 		{ t: 'Toggle light / dark theme', cat: 'Action', ico: 'sun', run: () => theme.toggle() },
 		{ t: 'Show keyboard shortcuts', cat: 'Help', ico: 'key', run: () => onShowHelp() }
 	];

@@ -137,6 +137,32 @@ def test_generate_draft_saves_md_renders_pdf_and_scores(tmp_path, monkeypatch):
         assert job.application.status == ApplicationStatus.drafted
 
 
+def test_generate_draft_uses_configured_timeout(tmp_path, monkeypatch):
+    """Drafting runs the provider with the roomier ai_draft_timeout, not the 120s
+    default — a full resume + cover letter routinely runs past two minutes."""
+    monkeypatch.setattr(settings, "applications_dir", tmp_path)
+    monkeypatch.setattr(settings, "ai_draft_timeout", 555)
+    monkeypatch.setattr(drafting, "_render_html_to_pdf", lambda html: b"%PDF fake")
+
+    seen: dict[str, object] = {}
+
+    def _run(provider, prompt, **kwargs):
+        if "skills_overlap" in prompt:  # the score.md rubric marker
+            return SCORE_JSON
+        seen["timeout"] = kwargs.get("timeout")
+        return DRAFT_ENVELOPE
+
+    monkeypatch.setattr(providers, "run", _run)
+
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        job = _seed_job(s)
+        drafting.generate_draft(s, "claude", job)
+
+    assert seen["timeout"] == 555
+
+
 def test_draft_character_bans_enforced(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "applications_dir", tmp_path)
     monkeypatch.setattr(providers, "run", _route_provider(DIRTY_ENVELOPE))
@@ -292,6 +318,75 @@ def test_draft_endpoint_requires_resume(client):
 def test_draft_endpoint_404_for_missing_job(client):
     c, _e = client
     assert c.post("/api/jobs/9999/ai/draft", json={}).status_code == 404
+
+
+# ---- batch draft (Draft-list header button) -------------------------------
+
+
+def test_draft_batch_requires_provider(client):
+    c, e = client
+    with Session(e) as s:
+        _seed_resume(s)
+        job = _seed_job(s)
+        jid = job.id
+    r = c.post("/api/ai/draft-batch", json={"job_ids": [jid]})
+    assert r.status_code == 409
+    assert "provider" in r.json()["detail"].lower()
+
+
+def test_draft_batch_requires_resume(client):
+    c, e = client
+    with Session(e) as s:
+        set_setting(s, "ai_provider", "claude")
+        job = _seed_job(s)
+        jid = job.id
+    r = c.post("/api/ai/draft-batch", json={"job_ids": [jid]})
+    assert r.status_code == 409
+    assert "resume" in r.json()["detail"].lower()
+
+
+def test_draft_batch_rejects_when_no_valid_jobs(client):
+    c, e = client
+    with Session(e) as s:
+        set_setting(s, "ai_provider", "claude")
+        _seed_resume(s)
+    r = c.post("/api/ai/draft-batch", json={"job_ids": [9999]})
+    assert r.status_code == 400
+
+
+def test_draft_batch_worker_drafts_each_and_tolerates_failure(monkeypatch):
+    """The worker advances one step per job and records a failing job without
+    aborting the rest of the batch."""
+    from job_applier.ai import scoring, tasks
+    from job_applier.api import ai as ai_endpoints
+
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        j1 = _seed_job(s, title="Job One")
+        j2 = _seed_job(s, title="Job Two")
+        ids = [j1.id, j2.id]
+
+    # The worker opens its own session on the app engine; point that at our test
+    # engine and stub the actual draft so no provider/CLI is invoked.
+    monkeypatch.setattr(scoring, "open_session", lambda: Session(e))
+
+    drafted: list[int] = []
+
+    def _fake_generate(session, provider, job, *, model=None, progress_cb=None):
+        drafted.append(job.id)
+        if job.title == "Job Two":
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(drafting, "generate_draft", _fake_generate)
+
+    state = tasks.TaskState(id="t1", kind="draft_batch", total=len(ids))
+    ai_endpoints._run_draft_batch(state, provider="claude", model=None, job_ids=ids)
+
+    assert drafted == ids
+    assert state.done == 2
+    assert len(state.errors) == 1 and "boom" in state.errors[0]
+    assert any("drafted" in line for line in state.results)
 
 
 def test_suggest_endpoint_requires_provider(client):

@@ -1,6 +1,7 @@
 import { api, type Job } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
-import type { PageServerLoad } from './$types';
+import { fail } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
 
 function isArchived(j: Job): boolean {
 	return j.application?.status === 'archived';
@@ -20,6 +21,8 @@ export const load: PageServerLoad = async ({ fetch }) => {
 
 	const jobs = allPassed.filter((j) => !isArchived(j));
 	const scored = jobs.filter((j) => j.score != null);
+	// Unscored or stale-scored roles — the count the "Score pending" action targets.
+	const pending = jobs.filter((j) => j.score == null || j.score?.is_stale).length;
 
 	const strong = scored.filter((j) => (j.score?.score ?? 0) >= 80).length;
 	const applied = jobs.filter((j) => j.application?.status === 'applied').length;
@@ -70,9 +73,36 @@ export const load: PageServerLoad = async ({ fetch }) => {
 			followupsDue: followups.length,
 			avg
 		},
+		pending,
 		dist,
 		bySource,
 		topMatches,
 		followups: followups.slice(0, 5)
 	};
+};
+
+export const actions: Actions = {
+	// Kick off a background scoring run. The mutation stays server-side per
+	// convention; the client then polls GET /api/ai/tasks/{id} for progress.
+	scorePending: async ({ fetch }) => {
+		try {
+			const { task_id } = await api.startScorePending(fetch, serverApiBase(), {
+				include_stale: true
+			});
+			return { ok: true, task_id };
+		} catch (e) {
+			// The API returns 409 when no provider is selected / no active resume.
+			return fail(409, { error: (e as Error).message });
+		}
+	},
+
+	// Kick off a background scrape of every source (needs no AI provider).
+	runIngest: async ({ fetch }) => {
+		try {
+			const { task_id } = await api.startIngest(fetch, serverApiBase());
+			return { ok: true, task_id, kind: 'ingest' };
+		} catch (e) {
+			return fail(500, { error: (e as Error).message });
+		}
+	}
 };

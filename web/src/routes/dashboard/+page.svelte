@@ -1,11 +1,14 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+	import { enhance } from '$app/forms';
+	import { goto, invalidateAll } from '$app/navigation';
 	import Icon from '$lib/Icon.svelte';
 	import ScoreBadge from '$lib/ScoreBadge.svelte';
+	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import { scoreBandVar } from '$lib/score';
 	import { sourceInfo } from '$lib/sources';
-	import { emitCommand } from '$lib/shell/commandBus';
-	import type { Job } from '$lib/api';
+	import { onCommand } from '$lib/shell/commandBus';
+	import { api, type Job, type TaskSnapshot } from '$lib/api';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -14,10 +17,77 @@
 	const distMax = $derived(Math.max(1, ...data.dist.map((d) => d.n)));
 	const sourceMax = $derived(Math.max(1, ...data.bySource.map((s) => s.n)));
 
-	async function runScrape() {
-		await goto('/');
-		emitCommand('scrape');
+	// --- Background actions (scrape + score), owned by the Dashboard. Each runs as
+	// a server form action; the client then polls GET /api/ai/tasks/{id}. ---
+	const hasProvider = $derived(Boolean(data.aiProvider));
+	const pendingCount = $derived(data.pending);
+
+	let ingestTask = $state<TaskSnapshot | null>(null);
+	let ingestPolling = $state(false);
+	let ingestStarting = $state(false);
+	let ingestError = $state<string | null>(null);
+	let scrapeForm = $state<HTMLFormElement | null>(null);
+
+	let scoreTask = $state<TaskSnapshot | null>(null);
+	let scorePolling = $state(false);
+	let scoreStarting = $state(false);
+	let scoreError = $state<string | null>(null);
+	let scoreForm = $state<HTMLFormElement | null>(null);
+
+	async function pollIngestTask(taskId: string) {
+		ingestPolling = true;
+		const base = data.apiBase ?? '';
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const snap = await api.getTask(fetch, base, taskId);
+				ingestTask = snap;
+				if (snap.status !== 'running') break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			await invalidateAll();
+		} catch (e) {
+			ingestError = (e as Error).message;
+		} finally {
+			ingestPolling = false;
+		}
 	}
+
+	async function pollScoreTask(taskId: string) {
+		scorePolling = true;
+		const base = data.apiBase ?? '';
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const snap = await api.getTask(fetch, base, taskId);
+				scoreTask = snap;
+				if (snap.status !== 'running') break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			await invalidateAll();
+		} catch (e) {
+			scoreError = (e as Error).message;
+		} finally {
+			scorePolling = false;
+		}
+	}
+
+	function dismissIngestPanel() {
+		ingestTask = null;
+		ingestError = null;
+	}
+	function dismissScorePanel() {
+		scoreTask = null;
+		scoreError = null;
+	}
+
+	// The command palette (Cmd/Ctrl-K) navigates here, then fires the matching action.
+	onMount(() =>
+		onCommand((name) => {
+			if (name === 'scrape') scrapeForm?.requestSubmit();
+			else if (name === 'score' && hasProvider && pendingCount > 0) scoreForm?.requestSubmit();
+		})
+	);
 
 	function overdueDays(iso: string | null | undefined): number {
 		if (!iso) return 0;
@@ -42,13 +112,89 @@
 	</div>
 	<div class="vh-actions">
 		<a class="btn" href="/search">Edit search profile</a>
-		<button class="btn primary" onclick={runScrape}>
-			<Icon name="refresh" size={15} stroke={2} /> Run scrape
-		</button>
+
+		{#if hasProvider}
+			<form
+				bind:this={scoreForm}
+				method="POST"
+				action="?/scorePending"
+				use:enhance={() => {
+					scoreStarting = true;
+					scoreError = null;
+					return async ({ result }) => {
+						scoreStarting = false;
+						if (result.type === 'success' && result.data?.task_id) {
+							scoreTask = null;
+							pollScoreTask(result.data.task_id as string);
+						} else if (result.type === 'failure') {
+							scoreError = (result.data?.error as string) ?? 'could not start scoring';
+						}
+					};
+				}}
+			>
+				<button
+					type="submit"
+					class="btn"
+					disabled={pendingCount === 0 || scoreStarting || scorePolling}
+					title={pendingCount === 0
+						? 'Nothing to score'
+						: `Score ${pendingCount} pending via ${data.aiProvider}`}
+				>
+					<Icon name="star" size={15} stroke={2} />
+					{scoreStarting || scorePolling ? 'Scoring…' : `Score pending (${pendingCount})`}
+				</button>
+			</form>
+		{:else}
+			<a class="btn" href="/settings" title="Select an AI CLI in Settings">
+				Score pending — set up AI
+			</a>
+		{/if}
+
+		<form
+			bind:this={scrapeForm}
+			method="POST"
+			action="?/runIngest"
+			use:enhance={() => {
+				ingestStarting = true;
+				ingestError = null;
+				return async ({ result }) => {
+					ingestStarting = false;
+					if (result.type === 'success' && result.data?.task_id) {
+						ingestTask = null;
+						pollIngestTask(result.data.task_id as string);
+					} else if (result.type === 'failure') {
+						ingestError = (result.data?.error as string) ?? 'could not start scrape';
+					}
+				};
+			}}
+		>
+			<button
+				type="submit"
+				class="btn primary"
+				disabled={ingestStarting || ingestPolling}
+				title="Pull new postings from every source"
+			>
+				<Icon name="refresh" size={15} stroke={2} />
+				{ingestStarting || ingestPolling ? 'Scraping…' : 'Run scrape'}
+			</button>
+		</form>
 	</div>
 </div>
 
 <div class="view-body">
+	{#if ingestError && !ingestTask}<p class="panel-err">{ingestError}</p>{/if}
+	{#if ingestTask}
+		<ScoreProgress
+			task={ingestTask}
+			onDismiss={dismissIngestPanel}
+			runningVerb="Scraping"
+			doneVerb="Scraped"
+			resultsLabel="sources"
+		/>
+	{/if}
+	{#if scoreError && !scoreTask}<p class="panel-err">{scoreError}</p>{/if}
+	{#if scoreTask}<ScoreProgress task={scoreTask} onDismiss={dismissScorePanel} />{/if}
+
 	<div class="kpi-grid">
 		<div class="kpi">
 			<div class="k-label"><Icon name="queue" size={15} />In queue</div>
@@ -170,6 +316,11 @@
 </div>
 
 <style>
+	.panel-err {
+		color: var(--bad);
+		font-size: 0.85rem;
+		margin: 0 0 1rem;
+	}
 	.kpi-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));

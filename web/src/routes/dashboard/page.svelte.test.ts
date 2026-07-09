@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Job } from '$lib/api';
 
-vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
+// SvelteKit ambient modules the dashboard imports (scrape/score forms + command bus).
+vi.mock('$app/environment', () => ({ browser: false }));
+vi.mock('$app/forms', () => ({ enhance: () => ({}) }));
+vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
 import Page from './+page.svelte';
 
@@ -31,12 +34,13 @@ function job(overrides: Partial<Job> = {}): Job {
 	};
 }
 
-function data() {
+function data(overrides = {}) {
 	return {
 		apiBase: '',
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 12, queue: 5, followups: 2, strong: 3 },
 		kpis: { jobs: 12, scored: 8, unreviewed: 5, strong: 3, applied: 4, rejected: 1, followupsDue: 2, avg: 77 },
+		pending: 1,
 		dist: [
 			{ label: '80–100', band: 'strong', n: 3 },
 			{ label: '65–79', band: 'good', n: 4 },
@@ -44,7 +48,8 @@ function data() {
 		],
 		bySource: [{ source: 'greenhouse', n: 7 }],
 		topMatches: [job()],
-		followups: []
+		followups: [],
+		...overrides
 	};
 }
 
@@ -56,5 +61,30 @@ describe('dashboard', () => {
 		expect(screen.getByText('Senior Engineer')).toBeInTheDocument();
 		// score badge from the shared component
 		expect(screen.getByText('88')).toBeInTheDocument();
+	});
+});
+
+describe('dashboard Score-pending button', () => {
+	it('prompts to set up AI when no provider is selected', () => {
+		render(Page, { props: { data: data({ aiProvider: null }) } });
+		const link = screen.getByRole('link', { name: /Score pending — set up AI/ });
+		expect(link).toHaveAttribute('href', '/settings');
+	});
+
+	it('shows an enabled "Score pending (N)" button when a provider is set', () => {
+		render(Page, { props: { data: data({ pending: 1 }) } });
+		expect(screen.getByRole('button', { name: /Score pending \(1\)/ })).toBeEnabled();
+	});
+
+	it('disables the button when nothing is pending', () => {
+		render(Page, { props: { data: data({ pending: 0 }) } });
+		expect(screen.getByRole('button', { name: /Score pending \(0\)/ })).toBeDisabled();
+	});
+});
+
+describe('dashboard Run-scrape button', () => {
+	it('always shows an enabled Run scrape button (no provider needed)', () => {
+		render(Page, { props: { data: data({ aiProvider: null }) } });
+		expect(screen.getByRole('button', { name: /Run scrape/ })).toBeEnabled();
 	});
 });

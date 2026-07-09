@@ -18,88 +18,15 @@
 	import Icon from '$lib/Icon.svelte';
 	import { scoreBandVar } from '$lib/score';
 	import { sourceInfo, type Ease } from '$lib/sources';
-	import { onCommand } from '$lib/shell/commandBus';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
 	const isManual = $derived(data.filter_status === 'manual');
 
-	// --- In-app scoring (Phase 4) ---
-	const pendingCount = $derived(
-		data.jobs.filter((j) => j.score == null || j.score?.is_stale).length
-	);
+	// Provider gate for the detail-pane draft generation (scrape + score now live
+	// on the Dashboard).
 	const hasProvider = $derived(Boolean(data.aiProvider));
-	const showScoreButton = $derived(data.filter_status === 'passed');
-
-	let scoreTask = $state<TaskSnapshot | null>(null);
-	let scorePolling = $state(false);
-	let scoreStarting = $state(false);
-	let scoreError = $state<string | null>(null);
-	let scoreForm = $state<HTMLFormElement | null>(null);
-
-	async function pollScoreTask(taskId: string) {
-		scorePolling = true;
-		const base = data.apiBase ?? '';
-		try {
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const snap = await api.getTask(fetch, base, taskId);
-				scoreTask = snap;
-				if (snap.status !== 'running') break;
-				await new Promise((r) => setTimeout(r, 1000));
-			}
-			await invalidateAll();
-		} catch (e) {
-			scoreError = (e as Error).message;
-		} finally {
-			scorePolling = false;
-		}
-	}
-
-	function dismissScorePanel() {
-		scoreTask = null;
-		scoreError = null;
-	}
-
-	// --- Ingest / scrape (Phase 6.5) ---
-	let ingestTask = $state<TaskSnapshot | null>(null);
-	let ingestPolling = $state(false);
-	let ingestStarting = $state(false);
-	let ingestError = $state<string | null>(null);
-	let scrapeForm = $state<HTMLFormElement | null>(null);
-
-	async function pollIngestTask(taskId: string) {
-		ingestPolling = true;
-		const base = data.apiBase ?? '';
-		try {
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const snap = await api.getTask(fetch, base, taskId);
-				ingestTask = snap;
-				if (snap.status !== 'running') break;
-				await new Promise((r) => setTimeout(r, 1000));
-			}
-			await invalidateAll();
-		} catch (e) {
-			ingestError = (e as Error).message;
-		} finally {
-			ingestPolling = false;
-		}
-	}
-
-	function dismissIngestPanel() {
-		ingestTask = null;
-		ingestError = null;
-	}
-
-	// Command palette can trigger scrape/score by submitting the real forms.
-	onMount(() =>
-		onCommand((name) => {
-			if (name === 'scrape') scrapeForm?.requestSubmit();
-			else if (name === 'score' && hasProvider && pendingCount > 0) scoreForm?.requestSubmit();
-		})
-	);
 
 	type SortKey = 'score-desc' | 'score-asc' | 'posted-desc' | 'ingested-desc' | 'title-asc';
 	type StatusFilter = ApplicationStatus | 'none';
@@ -191,20 +118,37 @@
 	let submitting = $state(false);
 	let copied = $state(false);
 	let copyTimer: ReturnType<typeof setTimeout> | null = null;
-	let draftCopied = $state(false);
-	let draftCopyTimer: ReturnType<typeof setTimeout> | null = null;
-
 	let selectedId = $state<number | null>(null);
 
-	async function copyDraftCommand() {
+	// --- Batch draft (the Draft-list header button): kick off a background draft
+	// of every job in the cart via the configured AI provider, then poll it. ---
+	let draftBatchTask = $state<TaskSnapshot | null>(null);
+	let draftBatchPolling = $state(false);
+	let draftBatchStarting = $state(false);
+	let draftBatchError = $state<string | null>(null);
+
+	async function pollDraftBatchTask(taskId: string) {
+		draftBatchPolling = true;
+		const base = data.apiBase ?? '';
 		try {
-			await navigator.clipboard.writeText(draftCart.command);
-			draftCopied = true;
-			if (draftCopyTimer) clearTimeout(draftCopyTimer);
-			draftCopyTimer = setTimeout(() => (draftCopied = false), 1500);
-		} catch {
-			/* insecure context */
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const snap = await api.getTask(fetch, base, taskId);
+				draftBatchTask = snap;
+				if (snap.status !== 'running') break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			await invalidateAll();
+		} catch (e) {
+			draftBatchError = (e as Error).message;
+		} finally {
+			draftBatchPolling = false;
 		}
+	}
+
+	function dismissDraftBatchPanel() {
+		draftBatchTask = null;
+		draftBatchError = null;
 	}
 
 	async function copySelectedIds() {
@@ -530,89 +474,71 @@
 		</div>
 	</div>
 	<div class="vh-actions">
-		<form
-			bind:this={scrapeForm}
-			method="POST"
-			action="?/runIngest"
-			use:enhance={() => {
-				ingestStarting = true;
-				ingestError = null;
-				return async ({ result }) => {
-					ingestStarting = false;
-					if (result.type === 'success' && result.data?.task_id) {
-						ingestTask = null;
-						pollIngestTask(result.data.task_id as string);
-					} else if (result.type === 'failure') {
-						ingestError = (result.data?.error as string) ?? 'could not start scrape';
-					}
-				};
-			}}
-		>
-			<button
-				type="submit"
-				class="btn"
-				disabled={ingestStarting || ingestPolling}
-				title="Pull new postings from every source"
+		<button class="btn" onclick={clearFilters} disabled={!hasActiveFilters}>Clear filters</button>
+		{#if !hasProvider}
+			<a
+				class="btn primary"
+				href="/settings"
+				title="Select an AI CLI in Settings to draft in-app"
 			>
-				<Icon name="refresh" size={15} stroke={2} />
-				{ingestStarting || ingestPolling ? 'Scraping…' : 'Run scrape'}
-			</button>
-		</form>
-
-		{#if showScoreButton}
-			{#if !hasProvider}
-				<a class="btn danger" href="/settings" title="Select an AI CLI in Settings">
-					Score pending — set up AI
-				</a>
-			{:else}
-				<form
-					bind:this={scoreForm}
-					method="POST"
-					action="?/scorePending"
-					use:enhance={() => {
-						scoreStarting = true;
-						scoreError = null;
-						return async ({ result }) => {
-							scoreStarting = false;
-							if (result.type === 'success' && result.data?.task_id) {
-								scoreTask = null;
-								pollScoreTask(result.data.task_id as string);
-							} else if (result.type === 'failure') {
-								scoreError = (result.data?.error as string) ?? 'could not start scoring';
-							}
-						};
-					}}
+				<Icon name="doc" size={15} stroke={2} /> Draft list — set up AI
+			</a>
+		{:else}
+			<form
+				method="POST"
+				action="?/draftBatch"
+				use:enhance={() => {
+					draftBatchStarting = true;
+					draftBatchError = null;
+					return async ({ result }) => {
+						draftBatchStarting = false;
+						if (result.type === 'success' && result.data?.task_id) {
+							draftBatchTask = null;
+							pollDraftBatchTask(result.data.task_id as string);
+						} else if (result.type === 'failure') {
+							draftBatchError = (result.data?.error as string) ?? 'could not start drafting';
+						}
+					};
+				}}
+			>
+				{#each draftCart.ids as id (id)}
+					<input type="hidden" name="ids" value={id} />
+				{/each}
+				<button
+					type="submit"
+					class="btn primary"
+					disabled={draftCart.ids.length === 0 || draftBatchStarting || draftBatchPolling}
+					title={draftCart.ids.length === 0
+						? 'Add jobs to your draft list first'
+						: `Draft ${draftCart.ids.length} job${draftCart.ids.length === 1 ? '' : 's'} via ${data.aiProvider}`}
 				>
-					<button
-						type="submit"
-						class="btn primary"
-						disabled={pendingCount === 0 || scoreStarting || scorePolling}
-						title={pendingCount === 0
-							? 'Nothing to score'
-							: `Score ${pendingCount} pending via ${data.aiProvider}`}
-					>
-						<Icon name="star" size={15} stroke={2} />
-						{scoreStarting || scorePolling ? 'Scoring…' : `Score pending (${pendingCount})`}
-					</button>
-				</form>
-			{/if}
+					<Icon name="doc" size={15} stroke={2} />
+					{#if draftBatchStarting || draftBatchPolling}
+						Drafting…
+					{:else if draftCart.ids.length === 0}
+						Draft list empty
+					{:else}
+						Draft {draftCart.ids.length} item{draftCart.ids.length === 1 ? '' : 's'}
+					{/if}
+				</button>
+			</form>
 		{/if}
 	</div>
 </div>
 
-{#if ingestError && !ingestTask}
-	<div class="q-panels"><p class="err-text">{ingestError}</p></div>
+{#if draftBatchError && !draftBatchTask}
+	<div class="q-panels"><p class="err-text">{draftBatchError}</p></div>
 {/if}
-{#if ingestTask}
+{#if draftBatchTask}
 	<div class="q-panels">
-		<ScoreProgress task={ingestTask} onDismiss={dismissIngestPanel} runningVerb="Scraping" doneVerb="Scraped" resultsLabel="sources" />
+		<ScoreProgress
+			task={draftBatchTask}
+			onDismiss={dismissDraftBatchPanel}
+			runningVerb="Drafting"
+			doneVerb="Drafted"
+			resultsLabel="drafts"
+		/>
 	</div>
-{/if}
-{#if scoreError && !scoreTask}
-	<div class="q-panels"><p class="err-text">{scoreError}</p></div>
-{/if}
-{#if scoreTask}
-	<div class="q-panels"><ScoreProgress task={scoreTask} onDismiss={dismissScorePanel} /></div>
 {/if}
 
 <div class="md">
@@ -639,9 +565,6 @@
 				<input class="mini-input" type="number" min="0" max="100" placeholder="min score" style="width:88px" bind:value={minScoreInput} aria-label="Minimum score" />
 				<button class="chip" aria-pressed={unscoredOnly} onclick={() => (unscoredOnly = !unscoredOnly)}>Unscored only</button>
 				<button class="chip" aria-pressed={data.include_duplicates} onclick={toggleDuplicates}>Show duplicates</button>
-				{#if hasActiveFilters}
-					<button class="chip" onclick={clearFilters}>Clear filters</button>
-				{/if}
 			</div>
 
 			{#if !isManual}
@@ -691,7 +614,7 @@
 
 		<div class="list-scroll">
 			{#if data.jobs.length === 0}
-				<p class="list-empty">Nothing here. Run a scrape to pull new postings.</p>
+				<p class="list-empty">Nothing here. Run a scrape from the Dashboard to pull new postings.</p>
 			{:else if visible.length === 0}
 				<p class="list-empty">No jobs match the current filters.</p>
 			{:else}
@@ -946,15 +869,6 @@
 		{/if}
 	</div>
 </div>
-
-{#if draftCart.ids.length > 0}
-	<div class="floater draft-cart" class:stacked={selectedCount > 0}>
-		<span class="cart-count">Draft list: {draftCart.ids.length} job{draftCart.ids.length === 1 ? '' : 's'}</span>
-		<code class="cart-cmd" title={draftCart.command}>{draftCart.command}</code>
-		<button type="button" class="btn sm primary" onclick={copyDraftCommand}>{draftCopied ? 'Copied!' : 'Copy /draft'}</button>
-		<button type="button" class="btn sm" onclick={() => draftCart.clear()}>Clear</button>
-	</div>
-{/if}
 
 {#if selectedCount > 0}
 	<form
@@ -1398,30 +1312,6 @@
 	.action-bar {
 		border-color: var(--accent);
 		flex-wrap: wrap;
-	}
-	.draft-cart {
-		border-color: var(--strong);
-	}
-	.draft-cart.stacked {
-		bottom: 5.5rem;
-	}
-	.cart-count {
-		color: var(--strong);
-		font-weight: 600;
-		white-space: nowrap;
-	}
-	.cart-cmd {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 0.2rem 0.45rem;
-		color: var(--fg);
-		font-family: var(--mono);
-		font-size: 0.8rem;
-		max-width: 22rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	.action-count {
 		color: var(--accent);
