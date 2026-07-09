@@ -173,16 +173,19 @@ def list_jobs(
         stmt = stmt.where(JobPosting.filter_status == filter_status)
     if not include_duplicates:
         stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
-    stmt = stmt.order_by(JobPosting.ingested_at.desc()).offset(offset).limit(limit)
+    stmt = stmt.order_by(JobPosting.ingested_at.desc())
     jobs = list(session.exec(stmt).all())
 
-    # In-Python post-filters that need joined data:
+    # In-Python post-filters that need joined data — applied BEFORE pagination so
+    # limit/offset count matching rows, not the raw ingest order (e.g.
+    # ?status=applied&limit=100 returns 100 applied jobs, not applied-among-newest-100).
     if status is not None:
         jobs = [j for j in jobs if j.application and j.application.status == status]
     if min_score is not None:
         jobs = [j for j in jobs if j.score and j.score.score >= min_score]
     if unscored_only:
         jobs = [j for j in jobs if j.score is None]
+    jobs = jobs[offset : offset + limit]
 
     resume_names = _resume_filename_map(session)
     active_id = _active_resume_id(session)

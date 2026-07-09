@@ -46,7 +46,8 @@ def client():
     app.dependency_overrides.clear()
 
 
-def _seed_job(session, *, title="Senior Engineer", company="Acme", source_id="t-1"):
+def _seed_job(session, *, title="Senior Engineer", company="Acme", source_id="t-1",
+              ingested_at=None):
     company_row = Company(name=company)
     session.add(company_row)
     session.flush()
@@ -61,6 +62,10 @@ def _seed_job(session, *, title="Senior Engineer", company="Acme", source_id="t-
         company_id=company_row.id,
     )
     session.add(j)
+    session.flush()
+    if ingested_at is not None:
+        j.ingested_at = ingested_at
+        session.add(j)
     session.commit()
     session.refresh(j)
     return j
@@ -196,6 +201,27 @@ def test_list_jobs_status_filter(client):
 
     applied = c.get("/api/jobs", params={"status": "applied"}).json()
     assert {j["title"] for j in applied} == {"A Engineer"}
+
+
+def test_list_jobs_filters_before_pagination(client):
+    """The joined-data filters must apply BEFORE limit/offset — an old `applied`
+    job must still surface under ?status=applied&limit=2 even when two newer jobs
+    would otherwise fill the page."""
+    from datetime import datetime, timedelta, timezone
+
+    c, e = client
+    now = datetime.now(timezone.utc)
+    with Session(e) as s:
+        old = _seed_job(s, title="Old Applied", source_id="old", company="Old Co",
+                        ingested_at=now - timedelta(days=2))
+        for i in range(2):
+            _seed_job(s, title=f"New {i}", source_id=f"n{i}", company=f"New {i} Co",
+                      ingested_at=now - timedelta(minutes=i))
+        s.add(Application(job_id=old.id, status=ApplicationStatus.applied))
+        s.commit()
+
+    result = c.get("/api/jobs", params={"status": "applied", "limit": 2}).json()
+    assert {j["title"] for j in result} == {"Old Applied"}
 
 
 def test_list_jobs_unscored_only_filter(client):
