@@ -297,6 +297,13 @@ async function boot() {
 		loadUrl = `http://127.0.0.1:${webPort}`;
 	}
 
+	// Surface the stamped app version (electron reads it from package.json, which
+	// `make stamp-version` / the release workflow write from the backend
+	// __version__) to the preload bridge. Set before the window spawns so the
+	// renderer process inherits it. `npm_package_version` is only present under
+	// `npm start`, not in a packaged app, so it can't be relied on there.
+	process.env.JOB_APPLIER_APP_VERSION = app.getVersion();
+
 	mainWindow = new BrowserWindow({
 		width: 1280,
 		height: 860,

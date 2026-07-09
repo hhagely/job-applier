@@ -18,14 +18,32 @@ def test_config_data_dir_relocation(tmp_path):
     s = _clean_settings(data_dir=tmp_path)
     assert s.db_path == tmp_path / "jobs.db"
     assert s.resumes_dir == tmp_path / "resumes"
+    # A relocated data_dir (dev copy or the packaged app's user-data dir) nests
+    # applications under it, so drafts never land next to read-only install files.
+    assert s.applications_dir == tmp_path / "applications"
 
 
 def test_config_explicit_overrides_win(tmp_path):
     custom_db = tmp_path / "elsewhere" / "custom.db"
-    s = _clean_settings(data_dir=tmp_path, db_path=custom_db)
+    custom_apps = tmp_path / "elsewhere" / "drafts"
+    s = _clean_settings(data_dir=tmp_path, db_path=custom_db, applications_dir=custom_apps)
     # An explicit db_path beats the data_dir derivation; resumes_dir still derives.
     assert s.db_path == custom_db
     assert s.resumes_dir == tmp_path / "resumes"
+    # An explicit applications_dir (JOB_APPLIER_APPLICATIONS_DIR) wins too.
+    assert s.applications_dir == custom_apps
+
+
+def test_config_applications_dir_dev_default_backcompat(monkeypatch):
+    # With the repo-default data_dir, applications stays at the historical
+    # REPO_ROOT/applications so the author's existing local drafts aren't orphaned.
+    for var in ("JOB_APPLIER_DATA_DIR", "JOB_APPLIER_APPLICATIONS_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    s = _clean_settings()
+    assert s.applications_dir == REPO_ROOT / "applications"
+    # But the same repo-default derivation for a relocated dir does NOT special-case.
+    s2 = _clean_settings(data_dir=REPO_ROOT / "data" / "copy")
+    assert s2.applications_dir == REPO_ROOT / "data" / "copy" / "applications"
 
 
 def test_config_defaults_unchanged(monkeypatch):

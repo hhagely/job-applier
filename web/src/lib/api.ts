@@ -202,6 +202,16 @@ export interface TaskSnapshot {
 	results: string[];
 }
 
+export interface UpdateInfo {
+	/** The running version (backend __version__). */
+	current: string;
+	/** Latest GitHub Release tag, or null if the check failed / none published. */
+	latest: string | null;
+	update_available: boolean;
+	/** Releases page to open externally. */
+	url: string;
+}
+
 type FetchFn = typeof fetch;
 
 // A backend that's momentarily unreachable — e.g. uvicorn --reload restarting
@@ -431,5 +441,7 @@ export const api = {
 		}),
 
 	suggestRoles: (fetchFn: FetchFn, base: string) =>
-		call<SearchProfile>(fetchFn, base, '/api/ai/suggest-roles', { method: 'POST' })
+		call<SearchProfile>(fetchFn, base, '/api/ai/suggest-roles', { method: 'POST' }),
+
+	getUpdate: (fetchFn: FetchFn, base: string) => call<UpdateInfo>(fetchFn, base, '/api/update')
 };

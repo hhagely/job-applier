@@ -13,6 +13,37 @@ Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday, Workable,
 SmartRecruiters, Jibe, Oracle) and aggregator feeds (RemoteOK, We Work Remotely,
 Hacker News "Who is hiring", Y Combinator).
 
+## Install (desktop app)
+
+Prefer the packaged app — no Python, Node, or dev tools required. Download the
+latest installer for your OS from the
+[**Releases page**](https://github.com/hhagely/job-applier/releases/latest):
+
+- **Windows** — `job-applier-Setup-<version>.exe` (per-user install, no admin).
+  The app is **unsigned**, so on first run Windows SmartScreen shows
+  *"Windows protected your PC / unknown publisher."* Click **More info → Run
+  anyway**. (Expected for an unsigned indie app; there is no paid code-signing
+  certificate.)
+- **Linux** — `job-applier-<version>.AppImage` (`chmod +x` then run) or the
+  `.deb` (`sudo apt install ./job-applier_<version>_amd64.deb`).
+- **macOS** — not built yet (avoids the paid Apple notarization); run from
+  source (**[Setup](#setup)**) if you're on a Mac.
+
+On first launch the app walks you through a short **onboarding** flow: pick an
+AI CLI, upload your resume, and pull the first batch of jobs.
+
+**AI-CLI prerequisite (optional).** Scoring and drafting run through an AI CLI
+you install and log into — install **one** of
+[Claude Code](https://docs.claude.com/en/docs/claude-code) or
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) (recommended), or
+[Ollama](https://ollama.com) (fully local, best-effort). **Everything else
+(ingest, filter, browse, track, PDF export) works with no AI CLI installed** —
+the app just hides the scoring/drafting buttons until you add one at `/settings`.
+
+**Updates.** The app checks GitHub Releases and shows a dismissible banner when a
+newer version is out, linking back to the Releases page — download and install
+over the top. There is no background auto-update (that needs code signing).
+
 ## Architecture
 
 ```

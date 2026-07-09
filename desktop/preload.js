@@ -6,7 +6,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktop', {
 	isElectron: true,
-	version: process.env.npm_package_version || '0.0.0',
+	// Stamped app version, set by the main process from app.getVersion() before the
+	// window spawns (see main.js). Falls back to npm_package_version under `npm start`.
+	version: process.env.JOB_APPLIER_APP_VERSION || process.env.npm_package_version || '0.0.0',
 	platform: process.platform,
 	windowControls: {
 		minimize: () => ipcRenderer.send('window:minimize'),

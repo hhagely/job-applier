@@ -1,11 +1,19 @@
-# electron-builder config for the job-applier desktop shell (Phase 6).
+# electron-builder config for the job-applier desktop shell (Phase 6 + 7).
 # Unsigned by design (locked decision) — Windows shows a one-time SmartScreen
-# "unknown publisher" the README documents. Signing/Releases is Phase 7.
+# "unknown publisher" the README documents.
 appId: dev.hhagely.job-applier
 productName: job-applier
 directories:
   output: dist
   buildResources: build
+
+# GitHub Releases (Phase 7). `electron-builder --publish always` uploads the built
+# installers to the repo's Release for the current tag; `--publish never` (used in
+# the release workflow before the data-isolation guard runs) builds without uploading.
+publish:
+  provider: github
+  owner: hhagely
+  repo: job-applier
 
 # Only the shell code goes into the app bundle; the backend sidecar and the
 # built SvelteKit server ride along as unpacked resources.
@@ -25,14 +33,14 @@ extraResources:
 win:
   target:
     - nsis
-  # icon: build/icon.ico
+  icon: build/icon.ico
 
 linux:
   target:
     - AppImage
     - deb
   category: Utility
-  # icon: build/icon.png
+  icon: build/icon.png
 
 nsis:
   oneClick: false

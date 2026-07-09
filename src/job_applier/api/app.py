@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from job_applier import ingest, services
+from job_applier import __version__, ingest, services
 from job_applier.ai import tasks as ai_tasks
 from job_applier.api import drafts as drafts_router
 from job_applier.api import profile as profile_router
@@ -43,6 +43,7 @@ from job_applier.models.db import (
     create_db_and_tables,
     get_session,
 )
+from job_applier.updates import check_for_update
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -527,4 +528,19 @@ def start_ingest(session: Session = Depends(get_session)):
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "version": __version__}
+
+
+@app.get("/api/version")
+def version() -> dict:
+    """The single source of truth for the app version (Workstream B): the backend
+    ``__version__``. The installer filename and the desktop bridge are stamped from
+    this same value at build time so all three agree."""
+    return {"version": __version__}
+
+
+@app.get("/api/update")
+def update() -> dict:
+    """Compare the running version to the latest GitHub Release. Cached + fail-soft;
+    returns ``update_available: False`` offline / rate-limited (Workstream E)."""
+    return check_for_update()

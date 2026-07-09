@@ -7,6 +7,7 @@
 	import StatusBar from '$lib/shell/StatusBar.svelte';
 	import CommandPalette from '$lib/shell/CommandPalette.svelte';
 	import HelpSheet from '$lib/shell/HelpSheet.svelte';
+	import UpdateBanner from '$lib/shell/UpdateBanner.svelte';
 	import { initTheme, theme } from '$lib/theme.svelte';
 	import { NAV } from '$lib/shell/nav';
 	import type { LayoutData } from './$types';
@@ -72,6 +73,8 @@
 <svelte:window onkeydown={onKeydown} />
 
 <Titlebar onOpenPalette={() => (paletteOpen = true)} onOpenHelp={() => (helpOpen = true)} />
+
+<UpdateBanner update={data.update} />
 
 <div class="shell">
 	<Sidebar counts={data.counts ?? {}} />
