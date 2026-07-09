@@ -11,6 +11,7 @@ from __future__ import annotations
 from xml.etree import ElementTree as ET
 
 from job_applier.sources.ashby import _normalize as ashby_normalize
+from job_applier.sources.base import parse_date_multi, parse_iso_date
 from job_applier.sources.greenhouse import _normalize as greenhouse_normalize
 from job_applier.sources.hackernews import _html_to_text, _parse_header
 from job_applier.sources.lever import _normalize as lever_normalize
@@ -34,6 +35,34 @@ from job_applier.sources.ycombinator import (
     _extract_jobposting_ld,
     _split_hn_title,
 )
+
+
+class TestSharedDateParsing:
+    def test_parse_iso_date_handles_z_and_offset(self):
+        assert parse_iso_date("2026-04-02T21:00:55Z") is not None
+        assert parse_iso_date("2026-04-02T21:00:55+00:00") is not None
+
+    def test_parse_iso_date_rejects_empty_and_non_string(self):
+        assert parse_iso_date(None) is None
+        assert parse_iso_date("") is None
+        assert parse_iso_date(12345) is None  # non-string
+        assert parse_iso_date("not a date") is None
+
+    def test_parse_date_multi_parses_date_only(self):
+        # fromisoformat handles "YYYY-MM-DD" on 3.11+ (returns naive), so the
+        # strptime fallback is a belt-and-suspenders for odder feeds.
+        d = parse_date_multi("2026-04-02")
+        assert d is not None
+        assert (d.year, d.month, d.day) == (2026, 4, 2)
+
+    def test_parse_date_multi_parses_naive_datetime(self):
+        d = parse_date_multi("2026-04-02T21:00:55")
+        assert d is not None
+        assert (d.hour, d.minute, d.second) == (21, 0, 55)
+
+    def test_parse_date_multi_gives_up_on_garbage(self):
+        assert parse_date_multi("Posted 5 Days Ago") is None
+        assert parse_date_multi(None) is None
 
 
 class TestRemoteOK:

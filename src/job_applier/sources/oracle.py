@@ -45,11 +45,10 @@ import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, parse_date_multi
 
 log = logging.getLogger(__name__)
 
@@ -384,7 +383,7 @@ def _normalize(site: OracleSite, posting: dict, detail: dict) -> RawJob | None:
         location=location or None,
         remote=remote,
         employment_type=detail.get("WorkerType") or detail.get("JobType"),
-        posted_at=_parse_date(detail.get("PostedDate") or posting.get("PostedDate")),
+        posted_at=parse_date_multi(detail.get("PostedDate") or posting.get("PostedDate")),
         tags=[
             t
             for t in (detail.get("JobFamily"), detail.get("Category"), workplace or None)
@@ -424,18 +423,3 @@ def _secondary_locations(posting: dict) -> str:
         if isinstance(loc, dict) and loc.get("Name")
     ]
     return ", ".join(names)
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        pass
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None

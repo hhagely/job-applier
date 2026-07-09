@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -86,16 +85,7 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
         location=location or (secondary_text or None),
         remote=remote,
         employment_type=item.get("employmentType"),
-        posted_at=_parse_date(item.get("publishedAt") or item.get("updatedAt")),
+        posted_at=parse_iso_date(item.get("publishedAt") or item.get("updatedAt")),
         tags=[t for t in [department, team, workplace_type] if t],
         raw=item,
     )
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
