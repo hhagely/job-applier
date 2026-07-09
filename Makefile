@@ -1,4 +1,4 @@
-.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron electron-dev dist check-no-personal-data stamp-version ingest refresh-slugs refresh-slugs-full prune dedupe-jd diagnose-filter clean lint test test-api test-web help
+.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron electron-dev dist check-no-personal-data stamp-version release ingest refresh-slugs refresh-slugs-full prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
 setup: ## Install backend + frontend dependencies (+ Chromium for PDF rendering)
 	uv sync
@@ -39,6 +39,10 @@ check-no-personal-data: ## Fail if the packaged app tree contains personal data 
 
 stamp-version: ## Stamp desktop/package.json version from src/job_applier/__init__.py __version__
 	uv run python desktop/scripts/stamp_version.py
+
+release: ## Cut a release: bump version + commit + tag + push (triggers release.yml). Usage: make release VERSION=X.Y.Z
+	@test -n "$(VERSION)" || { echo "Usage: make release VERSION=X.Y.Z"; exit 1; }
+	uv run python desktop/scripts/release.py $(VERSION)
 
 app-dev: build-web ## Boot API + built web server on free ports and open the browser (no make api/web dance)
 	uv run job-applier app-dev
