@@ -5,8 +5,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from job_applier import services
 from job_applier.ai import bans, drafting, providers, suggest
-from job_applier.api import services
 from job_applier.api.app import app
 from job_applier.api.schemas import SearchProfileRecommendationIn
 from job_applier.config import settings
@@ -286,7 +286,7 @@ def test_save_recommendations_service_matches_endpoint():
     )
 
     with Session(e1) as s:
-        services.save_recommendations(s, rec)
+        services.save_recommendations(s, rec.model_dump())
         svc = s.exec(select(SearchProfile)).one()
 
     def _dep():

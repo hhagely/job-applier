@@ -14,9 +14,10 @@ import functools
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
+from job_applier import services
 from job_applier.ai import drafting, providers, scoring, suggest, tasks
-from job_applier.api import services
 from job_applier.api.deps import require_ai_ready
+from job_applier.api.profile import profile_out
 from job_applier.api.schemas import (
     AiTestIn,
     AiTestOut,
@@ -239,4 +240,4 @@ def suggest_roles_endpoint(
         profile = suggest.suggest_roles(session, provider, model=model)
     except (suggest.SuggestError, providers.ProviderError) as exc:
         raise HTTPException(502, f"suggestion failed: {exc}") from exc
-    return services.profile_out(profile)
+    return profile_out(profile)

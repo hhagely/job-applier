@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException
 from sqlmodel import Session
 
-from job_applier.api import services
+from job_applier import services
 from job_applier.models.db import JobPosting, get_session, get_setting
 
 

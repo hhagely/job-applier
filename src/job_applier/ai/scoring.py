@@ -14,9 +14,8 @@ from typing import Callable, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
+from job_applier import services
 from job_applier.ai import providers
-from job_applier.api import services
-from job_applier.api.schemas import ScoreIn
 from job_applier.models.db import ApplicationStatus, JobPosting, Session, engine
 
 # Below this score a job is auto-archived after scoring (60 itself survives).
@@ -167,13 +166,11 @@ def score_one(
     services.upsert_score(
         session,
         job.id,
-        ScoreIn(
-            score=final_score,
-            rubric=payload.rubric,
-            reasoning=payload.reasoning,
-            scored_by=f"{provider}-cli",
-            score_kind=score_kind,
-        ),
+        score=final_score,
+        rubric=payload.rubric,
+        reasoning=payload.reasoning,
+        scored_by=f"{provider}-cli",
+        score_kind=score_kind,
     )
     return ScoreResult(job.id, final_score, payload.reasoning)
 

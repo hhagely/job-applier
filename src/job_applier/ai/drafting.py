@@ -15,8 +15,8 @@ from typing import Callable, Optional
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+from job_applier import services
 from job_applier.ai import bans, providers, scoring
-from job_applier.api import services
 from job_applier.config import settings
 from job_applier.models.db import ApplicationStatus, JobPosting, Session
 

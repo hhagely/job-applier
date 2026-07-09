@@ -5,12 +5,11 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 
-from job_applier import ingest
+from job_applier import ingest, services
 from job_applier.ai import tasks as ai_tasks
 from job_applier.api import drafts as drafts_router
 from job_applier.api import profile as profile_router
 from job_applier.api import resume as resume_router
-from job_applier.api import services
 from job_applier.api.ai import router as ai_router
 from job_applier.api.deps import require_job
 from job_applier.api.schemas import (
@@ -421,7 +420,15 @@ def stale_score_count(session: Session = Depends(get_session)) -> dict:
 @app.post("/api/jobs/{job_id}/score", response_model=ScoreOut)
 def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_session)):
     try:
-        score = services.upsert_score(session, job_id, body)
+        score = services.upsert_score(
+            session,
+            job_id,
+            score=body.score,
+            rubric=body.rubric,
+            reasoning=body.reasoning,
+            scored_by=body.scored_by,
+            score_kind=body.score_kind,
+        )
     except services.JobNotFound:
         raise HTTPException(404, "job not found")
     except ValueError as exc:

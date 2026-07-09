@@ -3,9 +3,12 @@ orchestrator (Phase 4). Keeping the score upsert, pending-match selection, and
 bulk-status mutation here means there is exactly one code path for each — the
 background scorer and the REST endpoints can't drift.
 
-These functions take an explicit ``Session`` and raise plain exceptions
-(``JobNotFound`` / ``ValueError``); the HTTP layer maps those to status codes so
-this module stays framework-agnostic (callable from a background thread too).
+These functions take an explicit ``Session``, accept primitives, and return ORM
+rows (or raise plain exceptions ``JobNotFound`` / ``ValueError``); the HTTP layer
+owns the request/response DTOs and maps those exceptions to status codes. Keeping
+this module free of ``job_applier.api`` imports is deliberate: the application
+layer must not depend on the web edge, so a background thread (or a second entry
+point) can call it without dragging in FastAPI.
 """
 
 from __future__ import annotations
@@ -15,11 +18,6 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from job_applier.api.schemas import (
-    ScoreIn,
-    SearchProfileOut,
-    SearchProfileRecommendationIn,
-)
 from job_applier.config import settings
 from job_applier.models.db import (
     Application,
@@ -50,7 +48,16 @@ def active_resume(session: Session) -> Optional[Resume]:
 # ---- scoring persistence --------------------------------------------------
 
 
-def upsert_score(session: Session, job_id: int, body: ScoreIn) -> MatchScore:
+def upsert_score(
+    session: Session,
+    job_id: int,
+    *,
+    score: int,
+    rubric: Optional[dict] = None,
+    reasoning: Optional[str] = None,
+    scored_by: str = "claude-code",
+    score_kind: str = "baseline",
+) -> MatchScore:
     """Upsert the active score for a job, snapshotting the prior value to history.
 
     One code path for the REST endpoint and the background scorer. Baseline
@@ -60,7 +67,7 @@ def upsert_score(session: Session, job_id: int, body: ScoreIn) -> MatchScore:
     job = session.get(JobPosting, job_id)
     if job is None:
         raise JobNotFound(job_id)
-    if not 0 <= body.score <= 100:
+    if not 0 <= score <= 100:
         raise ValueError("score must be 0-100")
 
     existing = job.score
@@ -79,18 +86,18 @@ def upsert_score(session: Session, job_id: int, body: ScoreIn) -> MatchScore:
         )
 
     resume = active_resume(session)
-    score = existing or MatchScore(job_id=job_id)
-    score.score = body.score
-    score.rubric = body.rubric
-    score.reasoning = body.reasoning
-    score.scored_by = body.scored_by
-    score.scored_at = datetime.now(timezone.utc)
-    score.score_kind = body.score_kind
-    score.resume_id = resume.id if resume and body.score_kind == "baseline" else None
-    session.add(score)
+    row = existing or MatchScore(job_id=job_id)
+    row.score = score
+    row.rubric = rubric or {}
+    row.reasoning = reasoning
+    row.scored_by = scored_by
+    row.scored_at = datetime.now(timezone.utc)
+    row.score_kind = score_kind
+    row.resume_id = resume.id if resume and score_kind == "baseline" else None
+    session.add(row)
     session.commit()
-    session.refresh(score)
-    return score
+    session.refresh(row)
+    return row
 
 
 # ---- pending-match selection ----------------------------------------------
@@ -200,30 +207,12 @@ def load_or_create_profile(session: Session) -> SearchProfile:
     return p
 
 
-def profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
-    if p is None:
-        return SearchProfileOut(using_defaults=True)
-    using_defaults = not p.required_tech or not p.seniority_terms
-    return SearchProfileOut(
-        id=p.id,
-        role_titles=list(p.role_titles or []),
-        seniority_terms=list(p.seniority_terms or []),
-        required_tech=list(p.required_tech or []),
-        excluded_tech=list(p.excluded_tech or []),
-        extracted_skills=list(p.extracted_skills or []),
-        recommendations_draft=p.recommendations_draft,
-        updated_at=p.updated_at,
-        using_defaults=using_defaults,
-    )
-
-
-def save_recommendations(
-    session: Session, body: SearchProfileRecommendationIn
-) -> SearchProfile:
+def save_recommendations(session: Session, recommendations: dict) -> SearchProfile:
     """Persist an LLM proposal as a draft on the profile. Never mutates the active
-    fields — the user reviews + accepts via PUT to apply."""
+    fields — the user reviews + accepts via PUT to apply. ``recommendations`` is a
+    plain dict (the router/flow owns the DTO it was validated from)."""
     p = load_or_create_profile(session)
-    p.recommendations_draft = body.model_dump()
+    p.recommendations_draft = dict(recommendations)
     p.updated_at = datetime.now(timezone.utc)
     session.add(p)
     session.commit()

@@ -10,18 +10,33 @@ import json
 from importlib import resources
 from typing import Optional
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from sqlmodel import select
 
+from job_applier import services
 from job_applier.ai import providers
-from job_applier.api import services
-from job_applier.api.schemas import SearchProfileRecommendationIn
 from job_applier.models.db import SearchProfile, Session
 
 
 class SuggestError(Exception):
     """The provider output couldn't be parsed into a recommendation."""
+
+
+class SuggestedProfile(BaseModel):
+    """The recommendation payload the suggest flow validates provider output into.
+
+    Mirrors the API's ``SearchProfileRecommendationIn`` on purpose, so this flow
+    doesn't depend on the web layer. It is persisted verbatim (``model_dump``) as
+    the profile's ``recommendations_draft`` via ``services.save_recommendations``.
+    """
+
+    role_titles: list[str] = []
+    seniority_terms: list[str] = []
+    required_tech: list[str] = []
+    excluded_tech: list[str] = []
+    extracted_skills: list[str] = []
+    rationale: Optional[str] = None
 
 
 _template_cache: Optional[str] = None
@@ -61,7 +76,7 @@ def build_suggest_prompt(resume_text: str, profile: Optional[SearchProfile]) -> 
 
 def _run_and_parse(
     provider: str, prompt: str, model: Optional[str]
-) -> SearchProfileRecommendationIn:
+) -> SuggestedProfile:
     last_err: Optional[Exception] = None
     for attempt in range(2):
         text = prompt
@@ -70,7 +85,7 @@ def _run_and_parse(
         raw = providers.run(provider, text, expect_json=True, model=model)
         try:
             data = providers.extract_json(raw)
-            return SearchProfileRecommendationIn.model_validate(data)
+            return SuggestedProfile.model_validate(data)
         except (ValueError, ValidationError) as exc:
             last_err = exc
     raise SuggestError(f"invalid suggestion JSON after retry: {last_err}")
@@ -93,4 +108,4 @@ def suggest_roles(
     rec = _run_and_parse(
         provider, build_suggest_prompt(resume.extracted_text, profile), model
     )
-    return services.save_recommendations(session, rec)
+    return services.save_recommendations(session, rec.model_dump())

@@ -6,11 +6,12 @@ auto-applied).
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
-from job_applier.api import services
+from job_applier import services
 from job_applier.api.schemas import (
     SearchProfileBody,
     SearchProfileOut,
@@ -20,8 +21,32 @@ from job_applier.models.db import SearchProfile, get_session
 
 router = APIRouter(tags=["search-profile"])
 
-_profile_out = services.profile_out
 _load_or_create_profile = services.load_or_create_profile
+
+
+def profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
+    """Present a ``SearchProfile`` ORM row (or ``None``) as the API response DTO.
+
+    Lives in the API layer because it produces an HTTP schema; the AI suggest
+    endpoint reuses it so the profile response shape can't drift between routers.
+    """
+    if p is None:
+        return SearchProfileOut(using_defaults=True)
+    using_defaults = not p.required_tech or not p.seniority_terms
+    return SearchProfileOut(
+        id=p.id,
+        role_titles=list(p.role_titles or []),
+        seniority_terms=list(p.seniority_terms or []),
+        required_tech=list(p.required_tech or []),
+        excluded_tech=list(p.excluded_tech or []),
+        extracted_skills=list(p.extracted_skills or []),
+        recommendations_draft=p.recommendations_draft,
+        updated_at=p.updated_at,
+        using_defaults=using_defaults,
+    )
+
+
+_profile_out = profile_out
 
 
 @router.get("/api/search-profile", response_model=SearchProfileOut)
@@ -56,7 +81,7 @@ def post_recommendations(
     Does NOT mutate the active fields — the user reviews + accepts via PUT to
     apply. Overwrites any prior draft.
     """
-    p = services.save_recommendations(session, body)
+    p = services.save_recommendations(session, body.model_dump())
     return _profile_out(p)
 
 
