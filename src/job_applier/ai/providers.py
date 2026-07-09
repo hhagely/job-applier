@@ -1,10 +1,12 @@
 """AI CLI provider registry + sandboxed invocation.
 
-The security contract (Finding 5 in the plan): job descriptions are third-party
-scraped text and are fed to a CLI that *can* run tools. So every invocation is
-sandboxed — tools disabled, run in a throwaway cwd with no repo files reachable,
-a scrubbed env, argv only (never ``shell=True``), and a timeout. Model output is
-treated as data.
+The security contract: job descriptions are third-party scraped text and are fed
+to a CLI that *can* run tools. Two backstops apply to EVERY provider regardless of
+its flags — a throwaway cwd with no repo files reachable, and a scrubbed env (keys
+stripped) — plus argv only (never ``shell=True``) and a timeout. On top of those,
+the Claude and Codex adapters pass explicit tool/approval-sandbox flags in
+``build_argv``; Gemini and Ollama have no such flag and lean on the two shared
+backstops alone. Model output is always treated as data.
 
 All provider-specific CLI flags live in ``build_argv`` / ``version_argv`` so flag
 drift across CLI versions is a one-line edit here (the single point of drift).
@@ -18,7 +20,9 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 # ---- errors ---------------------------------------------------------------
 
@@ -33,6 +37,13 @@ class ProviderNotFound(ProviderError):
 
 class ProviderTimeout(ProviderError):
     """The CLI didn't finish within the timeout."""
+
+
+class ProviderJSONError(ProviderError):
+    """Provider output couldn't be parsed/validated into the expected JSON model."""
+
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 # ---- provider registry ----------------------------------------------------
@@ -53,9 +64,7 @@ class Provider:
     def version_argv(self) -> list[str]:
         return [self.bin, "--version"]
 
-    def build_argv(
-        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
-    ) -> list[str]:
+    def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         raise NotImplementedError
 
 
@@ -65,9 +74,7 @@ class ClaudeProvider(Provider):
     bin = "claude"
     tier = "recommended"
 
-    def build_argv(
-        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
-    ) -> list[str]:
+    def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Sandbox: empty tool allowlist + `dontAsk` permission mode => the CLI
         # auto-denies every tool call, so it cannot edit files or run commands even
         # if the (untrusted) prompt asks it to. NOT `plan` mode: plan tells the model
@@ -109,10 +116,11 @@ class GeminiProvider(Provider):
     bin = "gemini"
     tier = "recommended"
 
-    def build_argv(
-        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
-    ) -> list[str]:
-        # Non-interactive prompt mode; no tool grants are given.
+    def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
+        # Non-interactive prompt mode. The Gemini CLI exposes no tool/approval
+        # sandbox flag we rely on here, so this adapter leans on the shared
+        # backstops (throwaway cwd + scrubbed env) rather than a per-invocation
+        # tool denial like the Claude/Codex adapters use.
         argv = [self.bin, "-p", prompt]
         if model:
             argv += ["-m", model]
@@ -125,9 +133,7 @@ class CodexProvider(Provider):
     bin = "codex"
     tier = "best-effort"
 
-    def build_argv(
-        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
-    ) -> list[str]:
+    def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Non-interactive exec with a read-only sandbox and no approval prompts.
         return [
             self.bin,
@@ -146,9 +152,7 @@ class OllamaProvider(Provider):
     bin = "ollama"
     tier = "best-effort"
 
-    def build_argv(
-        self, prompt: str, *, expect_json: bool = False, model: Optional[str] = None
-    ) -> list[str]:
+    def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Fully local; ollama has no tool/file access to sandbox. Needs a model.
         return [self.bin, "run", model or DEFAULT_OLLAMA_MODEL, prompt]
 
@@ -253,7 +257,6 @@ def run(
     name: str,
     prompt: str,
     *,
-    expect_json: bool = False,
     timeout: float = 120,
     model: Optional[str] = None,
     cwd: Optional[str] = None,
@@ -269,7 +272,7 @@ def run(
     if shutil.which(provider.bin) is None:
         raise ProviderNotFound(f"'{provider.bin}' is not installed / not on PATH")
 
-    argv = provider.build_argv(prompt, expect_json=expect_json, model=model)
+    argv = provider.build_argv(prompt, model=model)
     env = _scrubbed_env()
 
     # A temp cwd means no repo files are reachable even if a tool sneaks through.
@@ -367,3 +370,37 @@ def _first_balanced_object(text: str) -> Optional[str]:
             if depth == 0:
                 return text[start : i + 1]
     return None
+
+
+# ---- run + validate JSON --------------------------------------------------
+
+
+def run_json(
+    name: str,
+    prompt: str,
+    schema: type[_ModelT],
+    *,
+    model: Optional[str] = None,
+    timeout: float = 120,
+    nudge: str = "IMPORTANT: return ONLY the JSON object, no prose or fences.",
+    attempts: int = 2,
+) -> _ModelT:
+    """Run provider ``name`` and validate its output into ``schema``.
+
+    Retries once (up to ``attempts``) with ``nudge`` appended when the first
+    response doesn't parse. This "run -> extract_json -> model_validate, retry
+    with a nudge" loop was copy-pasted into the scoring, drafting, and suggest
+    flows; it lives here once. Provider invocation errors (timeout, not found,
+    non-zero exit) propagate as ``ProviderError`` subclasses; a parse/validation
+    failure after the last attempt is raised as ``ProviderJSONError`` for the
+    caller to map to its flow-specific error.
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(attempts):
+        text = prompt if attempt == 0 else f"{prompt}\n\n{nudge}"
+        raw = run(name, text, model=model, timeout=timeout)
+        try:
+            return schema.model_validate(extract_json(raw))
+        except (ValueError, ValidationError) as exc:
+            last_err = exc
+    raise ProviderJSONError(str(last_err))

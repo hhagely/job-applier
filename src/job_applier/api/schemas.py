@@ -22,7 +22,7 @@ class ScoreOut(BaseModel):
     scored_at: datetime
     resume_id: Optional[int] = None
     resume_filename: Optional[str] = None
-    score_kind: str = "baseline"
+    score_kind: Literal["baseline", "tailored"] = "baseline"
     is_stale: bool = False
 
 
@@ -220,6 +220,6 @@ class TaskOut(BaseModel):
     kind: str
     total: int
     done: int
-    status: str
+    status: Literal["running", "done", "error"]
     errors: list[str] = []
     results: list[str] = []

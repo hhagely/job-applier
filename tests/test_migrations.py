@@ -137,3 +137,51 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
 
     after = _cols(db_path, "jobposting") | _cols(db_path, "matchscore")
     assert before == after
+
+
+def _model_columns(model) -> set[str]:
+    return {c.name for c in model.__table__.columns}
+
+
+def test_migrated_legacy_tables_have_every_model_column(tmp_path, monkeypatch):
+    """Generic parity guard against "added a model column, forgot the _ensure_*
+    helper". A fresh install hides that bug (create_all builds the current models),
+    but a user's upgraded-in-place DB is left missing the column. So we migrate a
+    legacy DB and assert every column the model declares is now present on the
+    tables that receive migrations. Add a column to one of these without a helper
+    and this fails, where the per-helper tests above (which check specific columns)
+    would not notice the new one.
+    """
+    db_path, _ = _run_startup(tmp_path, monkeypatch)
+    from job_applier.models.db import JobPosting, MatchScore, MatchScoreHistory
+
+    for model, table in (
+        (JobPosting, "jobposting"),
+        (MatchScore, "matchscore"),
+        (MatchScoreHistory, "matchscorehistory"),
+    ):
+        missing = _model_columns(model) - _cols(db_path, table)
+        assert not missing, (
+            f"{table} is missing {sorted(missing)} after migration — add an "
+            f"_ensure_* helper for it in models/db.py (a fresh install would hide "
+            f"this, an upgraded DB would not)."
+        )
+
+
+def test_no_ensure_helper_is_orphaned():
+    """Every ``_ensure_*`` migration helper defined in models/db.py must be called
+    from ``create_db_and_tables``; an orphaned helper silently skips its migration
+    on every existing DB."""
+    import inspect
+
+    from job_applier.models import db
+
+    helpers = [
+        name
+        for name in dir(db)
+        if name.startswith("_ensure_") and callable(getattr(db, name))
+    ]
+    assert helpers, "expected _ensure_* migration helpers in models/db.py"
+    startup_src = inspect.getsource(db.create_db_and_tables)
+    orphaned = [h for h in helpers if h not in startup_src]
+    assert not orphaned, f"migration helpers never called from startup: {orphaned}"

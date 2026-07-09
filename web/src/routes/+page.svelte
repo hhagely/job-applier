@@ -16,9 +16,11 @@
 	import { pollTask } from '$lib/pollTask';
 	import { defaultFollowupDate } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
+	import { isUsedForUnemployment } from '$lib/jobFilters';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
-	import ScoreBadge from '$lib/ScoreBadge.svelte';
 	import ScoreBreakdown from '$lib/ScoreBreakdown.svelte';
+	import TailoredDraftCard from '$lib/TailoredDraftCard.svelte';
+	import JobListRow from '$lib/JobListRow.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { sourceInfo, type Ease } from '$lib/sources';
 	import type { PageData } from './$types';
@@ -182,10 +184,6 @@
 		return next;
 	}
 
-	function isUsedForUnemployment(job: Job): boolean {
-		return job.application?.used_for_unemployment ?? false;
-	}
-
 	function clearFilters() {
 		activeStatuses = new Set();
 		activeEases = new Set();
@@ -245,12 +243,6 @@
 	let detailLoading = $state(false);
 	let detailErr = $state<string | null>(null);
 
-	// Draft-generation (per selected job), mirrors the /jobs/[id] flow.
-	let draftTask = $state<TaskSnapshot | null>(null);
-	let draftPolling = $state(false);
-	let draftStarting = $state(false);
-	let draftError = $state<string | null>(null);
-
 	// Status/notes/unemployment editing state, seeded when the selection changes.
 	let pendingStatus = $state<ApplicationStatus>('new');
 	let followupInput = $state<string>('');
@@ -271,9 +263,6 @@
 
 	$effect(() => {
 		const id = selectedJob?.id ?? null;
-		// reset the draft panel when moving to a different job
-		draftTask = null;
-		draftError = null;
 		if (id == null) {
 			detailJob = null;
 			detailDraft = null;
@@ -312,24 +301,6 @@
 		} catch {
 			/* keep the stale draft rather than blanking the panel */
 		}
-	}
-
-	async function pollDraftTask(taskId: string, jobId: number) {
-		draftPolling = true;
-		try {
-			await pollTask(fetch, base, taskId, (snap) => (draftTask = snap));
-			await invalidateAll(); // tailored score may have changed → refresh the row
-			await reloadDraft(jobId);
-		} catch (e) {
-			draftError = (e as Error).message;
-		} finally {
-			draftPolling = false;
-		}
-	}
-
-	function dismissDraftPanel() {
-		draftTask = null;
-		draftError = null;
 	}
 
 	// Generic enhance for the inline status/notes/unemployment forms: refresh the
@@ -398,12 +369,6 @@
 
 	// Only offer source facets that actually appear in the current queue.
 	const SOURCE_FILTERS = $derived([...new Set(data.jobs.map((j) => j.source))].sort());
-
-	function isFollowupDue(job: Job): boolean {
-		const due = job.application?.next_followup_at;
-		if (!due || job.application?.outcome) return false;
-		return new Date(due).getTime() <= Date.now();
-	}
 
 	let followupDate = $state<string>(defaultFollowupDate());
 
@@ -605,38 +570,13 @@
 				<p class="list-empty">No jobs match the current filters.</p>
 			{:else}
 				{#each visible as job (job.id)}
-					{@const si = sourceInfo(job.source)}
-					<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-					<div
-						id="jrow-{job.id}"
-						class="jrow"
-						class:sel={selectedJob?.id === job.id}
-						class:dup={job.duplicate_of != null}
-						onclick={() => selectJob(job.id)}
-					>
-						<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-						<input
-							type="checkbox"
-							checked={selected.has(job.id)}
-							onclick={(e) => e.stopPropagation()}
-							onchange={() => toggleSelect(job.id)}
-							aria-label="select job"
-						/>
-						<ScoreBadge score={job.score?.score ?? null} size="sm" stale={job.score?.is_stale ?? false} />
-						<div class="jr-main">
-							<div class="jr-title">{job.title}</div>
-							<div class="jr-meta">
-								<span class="pill src-{job.source}"><span class="dot-badge"></span>{si.label}</span>
-								<span class="co">{job.company?.name ?? 'Unknown'}</span>
-								{#if job.location}· <span>{job.location}</span>{/if}
-								{#if job.application}<span class="tag status-{job.application.status}">{job.application.status}</span>{/if}
-								{#if isFollowupDue(job)}<span class="tag" style="color:var(--good)">follow-up due</span>{/if}
-								{#if isUsedForUnemployment(job)}<span class="tag status-applied">✓ unemployment</span>{/if}
-								{#if job.duplicate_of != null}<span class="tag" style="color:var(--good)">dup #{job.duplicate_of}</span>{/if}
-								{#if draftCart.has(job.id)}<span class="tag status-draft">in draft</span>{/if}
-							</div>
-						</div>
-					</div>
+					<JobListRow
+						{job}
+						active={selectedJob?.id === job.id}
+						selected={selected.has(job.id)}
+						onSelect={() => selectJob(job.id)}
+						onToggleSelect={() => toggleSelect(job.id)}
+					/>
 				{/each}
 			{/if}
 		</div>
@@ -760,57 +700,18 @@
 				<div class="card" style="margin-top:14px">
 					<div class="card-h"><h3>Tailored draft</h3></div>
 					<div class="card-b">
-						<div style="margin-bottom:12px">
-							{#if !hasProvider}
-								<a class="btn" href="/settings" title="Select an AI CLI in Settings">Generate tailored draft — set up AI</a>
-							{:else}
-								<form
-									method="POST"
-									action="?/generateDraft"
-									use:enhance={() => {
-										draftStarting = true;
-										draftError = null;
-										const jobId = j.id;
-										return async ({ result }) => {
-											draftStarting = false;
-											if (result.type === 'success' && result.data?.task_id) {
-												draftTask = null;
-												pollDraftTask(result.data.task_id as string, jobId);
-											} else if (result.type === 'failure') {
-												draftError = (result.data?.error as string) ?? 'could not start drafting';
-											}
-										};
-									}}
-								>
-									<input type="hidden" name="job_id" value={j.id} />
-									<button type="submit" class="btn primary" disabled={draftStarting || draftPolling}>
-										{#if draftStarting || draftPolling}
-											Generating…
-										{:else if detailDraft && (detailDraft.has_resume_md || detailDraft.has_cover_letter_md)}
-											Regenerate tailored draft
-										{:else}
-											Generate tailored draft
-										{/if}
-									</button>
-								</form>
-							{/if}
-						</div>
-						{#if draftError && !draftTask}<p class="err-text" style="margin-bottom:12px">{draftError}</p>{/if}
-						{#if draftTask}
-							<ScoreProgress task={draftTask} onDismiss={dismissDraftPanel} runningVerb="Generating" doneVerb="Generated" resultsLabel="stages" />
-						{/if}
-						{#if detailDraft && (detailDraft.has_resume_pdf || detailDraft.has_cover_letter_pdf)}
-							<div class="draft-actions">
-								{#if detailDraft.has_resume_pdf}<a class="btn primary" href={api.draftResumePdfUrl(base, j.id)} download>Download resume PDF</a>{/if}
-								{#if detailDraft.has_cover_letter_pdf}<a class="btn primary" href={api.draftCoverLetterPdfUrl(base, j.id)} download>Download cover letter PDF</a>{/if}
-							</div>
-							<form method="POST" action="?/renderDraft" use:enhance={detailEnhance} style="margin-top:8px">
-								<input type="hidden" name="job_id" value={j.id} />
-								<button type="submit" class="btn sm">Re-render PDFs from markdown</button>
-							</form>
-						{:else if hasProvider}
-							<p class="muted small">No draft yet. Generate above, or run <code>/draft {j.id}</code> in Claude Code.</p>
-						{/if}
+						{#key j.id}
+							<TailoredDraftCard
+								jobId={j.id}
+								draft={detailDraft}
+								{hasProvider}
+								apiBase={base}
+								onDraftChange={async () => {
+									await invalidateAll();
+									await reloadDraft(j.id);
+								}}
+							/>
+						{/key}
 					</div>
 				</div>
 
@@ -958,67 +859,6 @@
 		text-align: center;
 		color: var(--faint);
 		font-size: 13px;
-	}
-	.jrow {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 12px 14px;
-		border-bottom: 1px solid var(--border);
-		cursor: pointer;
-		position: relative;
-	}
-	.jrow:hover {
-		background: var(--surface-2);
-	}
-	.jrow.sel {
-		background: var(--accent-soft);
-	}
-	.jrow.sel::before {
-		content: '';
-		position: absolute;
-		left: 0;
-		top: 0;
-		bottom: 0;
-		width: 3px;
-		background: var(--accent);
-	}
-	.jrow.dup {
-		opacity: 0.6;
-	}
-	.jrow.dup:hover {
-		opacity: 1;
-	}
-	.jrow input[type='checkbox'] {
-		width: 15px;
-		height: 15px;
-		accent-color: var(--accent);
-		flex: none;
-	}
-	.jr-main {
-		min-width: 0;
-		flex: 1;
-	}
-	.jr-title {
-		font-weight: 600;
-		font-size: 13px;
-		line-height: 1.35;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.jr-meta {
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		margin-top: 5px;
-		color: var(--faint);
-		font-size: 11.5px;
-		flex-wrap: wrap;
-	}
-	.jr-meta .co {
-		color: var(--muted);
-		font-weight: 560;
 	}
 	.list-foot {
 		flex: none;

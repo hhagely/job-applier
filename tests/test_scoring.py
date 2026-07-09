@@ -7,10 +7,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from job_applier import services
 from job_applier.ai import scoring, tasks
-from job_applier.api import services
 from job_applier.api.app import app
-from job_applier.api.schemas import ScoreIn
 from job_applier.models.db import (
     JobPosting,
     MatchScore,
@@ -243,7 +242,7 @@ def test_upsert_score_service_matches_endpoint():
     with Session(e1) as s:
         _seed_resume(s)
         job = _seed_job(s)
-        services.upsert_score(s, job.id, ScoreIn(score=77, rubric={"a": 1}, reasoning="via svc"))
+        services.upsert_score(s, job.id, score=77, rubric={"a": 1}, reasoning="via svc")
         svc_score = s.exec(select(MatchScore)).one()
 
     # Via HTTP endpoint (same engine-shaped setup).

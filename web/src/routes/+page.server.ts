@@ -1,5 +1,6 @@
 import { api, APPLICATION_STATUSES, type ApplicationStatus, type FilterStatus } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
+import { activeJobs } from '$lib/jobFilters';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -17,7 +18,7 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 		include_duplicates,
 		limit: 200
 	});
-	const jobs = all.filter((j) => j.application?.status !== 'archived');
+	const jobs = activeJobs(all);
 	return { jobs, filter_status, include_duplicates };
 };
 

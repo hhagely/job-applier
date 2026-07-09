@@ -1,17 +1,9 @@
-import { api, type Job } from '$lib/api';
+import { api } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
+import { activeJobs, isUnreviewed } from '$lib/jobFilters';
 import { scoreBand } from '$lib/score';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-
-function isArchived(j: Job): boolean {
-	return j.application?.status === 'archived';
-}
-
-function isUnreviewed(j: Job): boolean {
-	const s = j.application?.status;
-	return s == null || s === 'new';
-}
 
 export const load: PageServerLoad = async ({ fetch }) => {
 	const base = serverApiBase();
@@ -20,7 +12,7 @@ export const load: PageServerLoad = async ({ fetch }) => {
 		api.getFollowups(fetch, base)
 	]);
 
-	const jobs = allPassed.filter((j) => !isArchived(j));
+	const jobs = activeJobs(allPassed);
 	const scored = jobs.filter((j) => j.score != null);
 	// Unscored or stale-scored roles — the count the "Score pending" action targets.
 	const pending = jobs.filter((j) => j.score == null || j.score?.is_stale).length;

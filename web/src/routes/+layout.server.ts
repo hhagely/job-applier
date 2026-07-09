@@ -1,5 +1,6 @@
-import { api, type Job } from '$lib/api';
+import { api } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
+import { activeJobs, isUnreviewed } from '$lib/jobFilters';
 import { scoreBand } from '$lib/score';
 import type { LayoutServerLoad } from './$types';
 
@@ -12,15 +13,6 @@ export interface ShellCounts {
 	followups: number | null;
 	/** Strong matches (score >= 80) — used by the dashboard/statusbar. */
 	strong: number | null;
-}
-
-function isArchived(j: Job): boolean {
-	return j.application?.status === 'archived';
-}
-
-function isUnreviewed(j: Job): boolean {
-	const s = j.application?.status;
-	return s == null || s === 'new';
 }
 
 // Expose the browser-reachable API base (injected as window.__API_BASE__ by the
@@ -43,7 +35,7 @@ export const load: LayoutServerLoad = async ({ fetch }) => {
 			api.listJobs(fetch, base, { filter_status: 'passed', limit: 500 }),
 			api.getFollowups(fetch, base)
 		]);
-		const active = passed.filter((j) => !isArchived(j));
+		const active = activeJobs(passed);
 		counts.jobs = active.length;
 		counts.queue = active.filter(isUnreviewed).length;
 		counts.strong = active.filter((j) => scoreBand(j.score?.score) === 'strong').length;

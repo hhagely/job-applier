@@ -1,16 +1,17 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from job_applier import ingest
+from job_applier import ingest, services
 from job_applier.ai import tasks as ai_tasks
 from job_applier.api import drafts as drafts_router
 from job_applier.api import profile as profile_router
 from job_applier.api import resume as resume_router
-from job_applier.api import services
 from job_applier.api.ai import router as ai_router
 from job_applier.api.deps import require_job
 from job_applier.api.schemas import (
@@ -43,7 +44,16 @@ from job_applier.models.db import (
     get_session,
 )
 
-app = FastAPI(title="job-applier API")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    create_db_and_tables()
+    yield
+    # Tear the background worker down on shutdown (e.g. Electron closing the app),
+    # cancelling any queued task instead of leaking the thread / subprocess.
+    ai_tasks.shutdown()
+
+
+app = FastAPI(title="job-applier API", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,11 +73,6 @@ app.include_router(ai_router)
 app.include_router(resume_router.router)
 app.include_router(profile_router.router)
 app.include_router(drafts_router.router)
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    create_db_and_tables()
 
 
 def _company_out(c: Optional[Company]) -> Optional[CompanyOut]:
@@ -169,7 +174,13 @@ def list_jobs(
     offset: int = 0,
     session: Session = Depends(get_session),
 ):
-    stmt = select(JobPosting)
+    # Eager-load the 1:1/n:1 relationships _job_summary reads, so rendering N rows
+    # is a constant handful of queries instead of ~3 lazy loads per row (N+1).
+    stmt = select(JobPosting).options(
+        selectinload(JobPosting.company),
+        selectinload(JobPosting.score),
+        selectinload(JobPosting.application),
+    )
     if filter_status is not None:
         stmt = stmt.where(JobPosting.filter_status == filter_status)
     if not include_duplicates:
@@ -421,7 +432,15 @@ def stale_score_count(session: Session = Depends(get_session)) -> dict:
 @app.post("/api/jobs/{job_id}/score", response_model=ScoreOut)
 def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_session)):
     try:
-        score = services.upsert_score(session, job_id, body)
+        score = services.upsert_score(
+            session,
+            job_id,
+            score=body.score,
+            rubric=body.rubric,
+            reasoning=body.reasoning,
+            scored_by=body.scored_by,
+            score_kind=body.score_kind,
+        )
     except services.JobNotFound:
         raise HTTPException(404, "job not found")
     except ValueError as exc:
