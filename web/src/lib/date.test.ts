@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { fmtDate, fmtDateTime, daysOverdue, defaultFollowupDate, DAY_MS } from './date';
+import {
+	fmtDate,
+	fmtDateTime,
+	daysOverdue,
+	defaultFollowupDate,
+	relTime,
+	formatOverdue,
+	DAY_MS
+} from './date';
 
 describe('fmtDate', () => {
 	it('returns an em dash for null/undefined/empty', () => {
@@ -40,5 +48,32 @@ describe('defaultFollowupDate', () => {
 	});
 	it('returns today for 0 days', () => {
 		expect(defaultFollowupDate(0, now)).toBe('2026-04-02');
+	});
+});
+
+describe('relTime', () => {
+	const now = 100 * DAY_MS;
+	it('says "today" for now or the future', () => {
+		expect(relTime(new Date(100 * DAY_MS).toISOString(), now)).toBe('today');
+		expect(relTime(new Date(101 * DAY_MS).toISOString(), now)).toBe('today');
+	});
+	it('uses the singular for exactly one day', () => {
+		expect(relTime(new Date(99 * DAY_MS).toISOString(), now)).toBe('1 day ago');
+	});
+	it('counts days under a month', () => {
+		expect(relTime(new Date(95 * DAY_MS).toISOString(), now)).toBe('5 days ago');
+	});
+	it('rolls up to months and pluralizes', () => {
+		expect(relTime(new Date(70 * DAY_MS).toISOString(), now)).toBe('1 month ago');
+		expect(relTime(new Date(10 * DAY_MS).toISOString(), now)).toBe('3 months ago');
+	});
+});
+
+describe('formatOverdue', () => {
+	it('says "due today" at zero', () => {
+		expect(formatOverdue(0)).toBe('due today');
+	});
+	it('renders a day count otherwise', () => {
+		expect(formatOverdue(5)).toBe('5d overdue');
 	});
 });

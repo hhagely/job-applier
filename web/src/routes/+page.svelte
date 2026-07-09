@@ -6,21 +6,21 @@
 	import { page } from '$app/state';
 	import {
 		api,
-		APPLICATION_STATUSES,
 		type ApplicationStatus,
 		type Draft,
 		type Job,
-		type JobDetail,
-		type TaskSnapshot
+		type JobDetail
 	} from '$lib/api';
-	import { pollTask } from '$lib/pollTask';
-	import { defaultFollowupDate } from '$lib/date';
+	import { createTaskRunner } from '$lib/taskRunner.svelte';
+	import { defaultFollowupDate, relTime } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import { isUsedForUnemployment } from '$lib/jobFilters';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import ScoreBreakdown from '$lib/ScoreBreakdown.svelte';
 	import TailoredDraftCard from '$lib/TailoredDraftCard.svelte';
+	import StatusTrackingCard from '$lib/StatusTrackingCard.svelte';
 	import JobListRow from '$lib/JobListRow.svelte';
+	import JobDescription from '$lib/JobDescription.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { sourceInfo, type Ease } from '$lib/sources';
 	import type { PageData } from './$types';
@@ -127,30 +127,16 @@
 
 	// --- Batch draft (the Draft-list header button): kick off a background draft
 	// of every job in the cart via the configured AI provider, then poll it. ---
-	let draftBatchTask = $state<TaskSnapshot | null>(null);
-	let draftBatchPolling = $state(false);
-	let draftBatchStarting = $state(false);
-	let draftBatchError = $state<string | null>(null);
-
-	async function pollDraftBatchTask(taskId: string) {
-		draftBatchPolling = true;
-		try {
-			const snap = await pollTask(fetch, data.apiBase ?? '', taskId, (s) => (draftBatchTask = s));
+	const draftBatch = createTaskRunner({
+		apiBase: () => data.apiBase ?? '',
+		onSettled: async (snap) => {
 			// Drafting finished — empty the cart so the same jobs aren't re-drafted on
 			// the next run. Keep it on error so the user can retry the failed batch.
 			if (snap.status === 'done') draftCart.clear();
 			await invalidateAll();
-		} catch (e) {
-			draftBatchError = (e as Error).message;
-		} finally {
-			draftBatchPolling = false;
-		}
-	}
-
-	function dismissDraftBatchPanel() {
-		draftBatchTask = null;
-		draftBatchError = null;
-	}
+		},
+		failMessage: 'could not start drafting'
+	});
 
 	async function copySelectedIds() {
 		const ids = [...selected].sort((a, b) => a - b).join(' ');
@@ -162,15 +148,6 @@
 		} catch {
 			/* insecure context */
 		}
-	}
-
-	function relTime(iso: string): string {
-		const diff = Date.now() - new Date(iso).getTime();
-		const days = Math.floor(diff / 86_400_000);
-		if (days <= 0) return 'today';
-		if (days === 1) return '1 day ago';
-		if (days < 30) return `${days} days ago`;
-		return `${Math.floor(days / 30)} months ago`;
 	}
 
 	function jobStatusKey(job: Job): StatusFilter {
@@ -236,30 +213,11 @@
 	// selected row so triage happens without leaving the list. Score/status come
 	// from the list payload (instant); description + draft are fetched per select. ---
 	const base = $derived(data.apiBase ?? '');
-	const STATUS_OPTS = APPLICATION_STATUSES;
 
 	let detailJob = $state<JobDetail | null>(null);
 	let detailDraft = $state<Draft | null>(null);
 	let detailLoading = $state(false);
 	let detailErr = $state<string | null>(null);
-
-	// Status/notes/unemployment editing state, seeded when the selection changes.
-	let pendingStatus = $state<ApplicationStatus>('new');
-	let followupInput = $state<string>('');
-	let seededFor = -1;
-	const usedUnempInline = $derived(selectedJob?.application?.used_for_unemployment ?? false);
-
-	$effect(() => {
-		const j = selectedJob;
-		if (j && j.id !== seededFor) {
-			seededFor = j.id;
-			pendingStatus = j.application?.status ?? 'new';
-			const existing = j.application?.next_followup_at;
-			followupInput = existing
-				? new Date(existing).toISOString().slice(0, 10)
-				: defaultFollowupDate();
-		}
-	});
 
 	$effect(() => {
 		const id = selectedJob?.id ?? null;
@@ -301,21 +259,6 @@
 		} catch {
 			/* keep the stale draft rather than blanking the panel */
 		}
-	}
-
-	// Generic enhance for the inline status/notes/unemployment forms: refresh the
-	// list on success (so the row's status tag updates) without resetting inputs.
-	function detailEnhance() {
-		return async ({
-			result,
-			update
-		}: {
-			result: { type: string };
-			update: (opts?: { reset?: boolean }) => Promise<void>;
-		}) => {
-			if (result.type === 'success') await invalidateAll();
-			await update({ reset: false });
-		};
 	}
 
 	const allVisibleSelected = $derived(
@@ -435,36 +378,20 @@
 				<Icon name="doc" size={15} stroke={2} /> Draft list — set up AI
 			</a>
 		{:else}
-			<form
-				method="POST"
-				action="?/draftBatch"
-				use:enhance={() => {
-					draftBatchStarting = true;
-					draftBatchError = null;
-					return async ({ result }) => {
-						draftBatchStarting = false;
-						if (result.type === 'success' && result.data?.task_id) {
-							draftBatchTask = null;
-							pollDraftBatchTask(result.data.task_id as string);
-						} else if (result.type === 'failure') {
-							draftBatchError = (result.data?.error as string) ?? 'could not start drafting';
-						}
-					};
-				}}
-			>
+			<form method="POST" action="?/draftBatch" use:enhance={draftBatch.enhance}>
 				{#each draftCart.ids as id (id)}
 					<input type="hidden" name="ids" value={id} />
 				{/each}
 				<button
 					type="submit"
 					class="btn primary"
-					disabled={draftCart.ids.length === 0 || draftBatchStarting || draftBatchPolling}
+					disabled={draftCart.ids.length === 0 || draftBatch.busy}
 					title={draftCart.ids.length === 0
 						? 'Add jobs to your draft list first'
 						: `Draft ${draftCart.ids.length} job${draftCart.ids.length === 1 ? '' : 's'} via ${data.aiProvider}`}
 				>
 					<Icon name="doc" size={15} stroke={2} />
-					{#if draftBatchStarting || draftBatchPolling}
+					{#if draftBatch.busy}
 						Drafting…
 					{:else if draftCart.ids.length === 0}
 						Draft list empty
@@ -477,14 +404,14 @@
 	</div>
 </div>
 
-{#if draftBatchError && !draftBatchTask}
-	<div class="q-panels"><p class="err-text">{draftBatchError}</p></div>
+{#if draftBatch.error && !draftBatch.snap}
+	<div class="q-panels"><p class="err-text">{draftBatch.error}</p></div>
 {/if}
-{#if draftBatchTask}
+{#if draftBatch.snap}
 	<div class="q-panels">
 		<ScoreProgress
-			task={draftBatchTask}
-			onDismiss={dismissDraftBatchPanel}
+			task={draftBatch.snap}
+			onDismiss={draftBatch.dismiss}
 			runningVerb="Drafting"
 			doneVerb="Drafted"
 			resultsLabel="drafts"
@@ -657,42 +584,11 @@
 					<div class="card">
 						<div class="card-h"><h3>Status &amp; tracking</h3></div>
 						<div class="card-b">
-							<form method="POST" action="?/setStatus" use:enhance={detailEnhance}>
-								<input type="hidden" name="job_id" value={j.id} />
-								<div class="row-form">
-									<select class="input" name="status" bind:value={pendingStatus} style="flex:1;min-width:9rem">
-										{#each STATUS_OPTS as s (s)}<option value={s}>{s}</option>{/each}
-									</select>
-									{#if pendingStatus === 'applied'}
-										<input class="input" type="date" name="next_followup_at" bind:value={followupInput} style="width:auto" />
-									{/if}
-									<button type="submit" class="btn">Update</button>
-								</div>
-							</form>
-							{#if j.application?.next_followup_at}
-								<p class="muted small">
-									Next follow-up: {new Date(j.application.next_followup_at).toLocaleDateString()}
-									{#if j.application.outcome}· outcome: <strong>{j.application.outcome}</strong>{/if}
-								</p>
-							{/if}
-
-							<div class="field-label">Unemployment claim</div>
-							<form method="POST" action="?/setUnemployment" class="row-form" use:enhance={detailEnhance}>
-								<input type="hidden" name="job_id" value={j.id} />
-								<input type="hidden" name="used" value={usedUnempInline ? 'false' : 'true'} />
-								<button type="submit" class="btn" class:primary={usedUnempInline}>
-									{usedUnempInline ? '✓ Used for unemployment' : 'Mark used for unemployment'}
-								</button>
-							</form>
-
-							<div class="field-label">Notes</div>
-							{#key j.id}
-								<form method="POST" action="?/setNotes" use:enhance={detailEnhance}>
-									<input type="hidden" name="job_id" value={j.id} />
-									<textarea class="input" name="notes" rows="3" placeholder="Personal notes about this role…">{j.application?.notes ?? ''}</textarea>
-									<button type="submit" class="btn sm" style="margin-top:8px">Save notes</button>
-								</form>
-							{/key}
+							<StatusTrackingCard
+								jobId={j.id}
+								application={j.application}
+								onChange={() => invalidateAll()}
+							/>
 						</div>
 					</div>
 				</div>
@@ -721,10 +617,7 @@
 						{#if detailErr}
 							<p class="err-text">Couldn't load the description: {detailErr}</p>
 						{:else if detailJob}
-							<div class="description">
-								<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-								{@html detailJob.description}
-							</div>
+							<JobDescription html={detailJob.description} />
 						{:else}
 							<p class="muted small">Loading description…</p>
 						{/if}
@@ -916,13 +809,9 @@
 		line-height: 1.2;
 	}
 	.d-org {
-		display: flex;
-		align-items: center;
-		gap: 9px;
 		color: var(--muted);
 		font-size: 13px;
 		margin-top: 8px;
-		flex-wrap: wrap;
 	}
 	.d-cols {
 		display: grid;
@@ -955,71 +844,6 @@
 		align-items: center;
 		flex-wrap: wrap;
 	}
-	.row-form {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-		align-items: center;
-	}
-	.field-label {
-		font-size: 12px;
-		font-weight: 600;
-		color: var(--fg);
-		margin: 16px 0 8px;
-	}
-	.small {
-		font-size: 11.5px;
-		margin-top: 8px;
-	}
-	.draft-actions {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	/* imported job description HTML — normalize into the theme */
-	.description :global(*) {
-		color: var(--fg) !important;
-		background-color: transparent !important;
-		max-width: 100%;
-	}
-	.description :global(a) {
-		color: var(--accent) !important;
-	}
-	.description :global(p) {
-		line-height: 1.65;
-		margin: 0 0 0.75em;
-		font-size: 13px;
-	}
-	.description :global(ul),
-	.description :global(ol) {
-		padding-left: 1.4rem;
-		margin: 0 0 0.75em;
-		font-size: 13px;
-	}
-	.description :global(li) {
-		margin: 0.2em 0;
-	}
-	.description :global(h1),
-	.description :global(h2),
-	.description :global(h3) {
-		font-size: 14px;
-		margin: 1em 0 0.4em;
-	}
-	.description :global(img) {
-		max-width: 100%;
-		height: auto;
-	}
-	.description :global(pre),
-	.description :global(code) {
-		background: var(--surface-2) !important;
-		font-family: var(--mono);
-	}
-	.description :global(pre) {
-		padding: 0.6rem;
-		border-radius: 8px;
-		overflow-x: auto;
-	}
-
 	/* floating bottom bars (above the 27px status bar) */
 	.floater {
 		position: fixed;

@@ -10,8 +10,8 @@
 	// host owns its draft state differently — the Queue lazy-fetches it per
 	// selection, /jobs/[id] gets it from the loader.
 	import { enhance } from '$app/forms';
-	import { api, type Draft, type TaskSnapshot } from '$lib/api';
-	import { pollTask } from '$lib/pollTask';
+	import { api, type Draft } from '$lib/api';
+	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import { fmtDateTime } from '$lib/date';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 
@@ -31,27 +31,11 @@
 		onDraftChange?: () => void | Promise<void>;
 	} = $props();
 
-	let draftTask = $state<TaskSnapshot | null>(null);
-	let draftPolling = $state(false);
-	let draftStarting = $state(false);
-	let draftError = $state<string | null>(null);
-
-	async function pollDraftTask(taskId: string) {
-		draftPolling = true;
-		try {
-			await pollTask(fetch, apiBase, taskId, (snap) => (draftTask = snap));
-			await onDraftChange?.();
-		} catch (e) {
-			draftError = (e as Error).message;
-		} finally {
-			draftPolling = false;
-		}
-	}
-
-	function dismissDraftPanel() {
-		draftTask = null;
-		draftError = null;
-	}
+	const draftRun = createTaskRunner({
+		apiBase: () => apiBase,
+		onSettled: () => onDraftChange?.(),
+		failMessage: 'could not start drafting'
+	});
 </script>
 
 <div style="margin-bottom:12px">
@@ -60,26 +44,10 @@
 			Generate tailored draft — set up AI
 		</a>
 	{:else}
-		<form
-			method="POST"
-			action="?/generateDraft"
-			use:enhance={() => {
-				draftStarting = true;
-				draftError = null;
-				return async ({ result }) => {
-					draftStarting = false;
-					if (result.type === 'success' && result.data?.task_id) {
-						draftTask = null;
-						pollDraftTask(result.data.task_id as string);
-					} else if (result.type === 'failure') {
-						draftError = (result.data?.error as string) ?? 'could not start drafting';
-					}
-				};
-			}}
-		>
+		<form method="POST" action="?/generateDraft" use:enhance={draftRun.enhance}>
 			<input type="hidden" name="job_id" value={jobId} />
-			<button type="submit" class="btn primary" disabled={draftStarting || draftPolling}>
-				{#if draftStarting || draftPolling}
+			<button type="submit" class="btn primary" disabled={draftRun.busy}>
+				{#if draftRun.busy}
 					Generating…
 				{:else if draft && (draft.has_resume_md || draft.has_cover_letter_md)}
 					Regenerate tailored draft
@@ -91,16 +59,16 @@
 	{/if}
 </div>
 
-{#if draftError && !draftTask}<p class="err-text" style="margin-bottom:12px">{draftError}</p>{/if}
-{#if draftTask}
-	<ScoreProgress
-		task={draftTask}
-		onDismiss={dismissDraftPanel}
-		runningVerb="Generating"
-		doneVerb="Generated"
-		resultsLabel="stages"
-	/>
+{#if draftRun.error && !draftRun.snap}
+	<p class="err-text" style="margin-bottom:12px">{draftRun.error}</p>
 {/if}
+<ScoreProgress
+	task={draftRun.snap}
+	onDismiss={draftRun.dismiss}
+	runningVerb="Generating"
+	doneVerb="Generated"
+	resultsLabel="stages"
+/>
 
 {#if draft && (draft.has_resume_pdf || draft.has_cover_letter_pdf)}
 	<div class="draft-actions">
@@ -121,7 +89,7 @@
 				async ({ result }) => {
 					if (result.type === 'success') await onDraftChange?.();
 					else if (result.type === 'failure')
-						draftError = (result.data?.error as string) ?? 'could not re-render';
+						draftRun.setError((result.data?.error as string) ?? 'could not re-render');
 				}}
 		>
 			<input type="hidden" name="job_id" value={jobId} />
@@ -140,9 +108,6 @@
 {/if}
 
 <style>
-	.small {
-		font-size: 11.5px;
-	}
 	.draft-actions {
 		display: flex;
 		gap: 8px;

@@ -25,13 +25,21 @@
 	const si = $derived(sourceInfo(job.source));
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
 	id="jrow-{job.id}"
 	class="jrow"
 	class:sel={active}
 	class:dup={job.duplicate_of != null}
+	role="button"
+	tabindex="0"
+	aria-pressed={active}
 	onclick={onSelect}
+	onkeydown={(e) => {
+		if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			onSelect();
+		}
+	}}
 >
 	<input
 		type="checkbox"
@@ -68,6 +76,10 @@
 	}
 	.jrow:hover {
 		background: var(--surface-2);
+	}
+	.jrow:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
 	}
 	.jrow.sel {
 		background: var(--accent-soft);

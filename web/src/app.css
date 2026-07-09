@@ -686,6 +686,20 @@ kbd {
 	margin-top: 6px;
 	line-height: 1.5;
 }
+/* inline form row (select/date/button on one wrapping line) */
+.row-form {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	align-items: center;
+}
+/* standalone sub-section label inside a card body */
+.field-label {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--fg);
+	margin: 16px 0 8px;
+}
 .input,
 select.input,
 textarea.input {
@@ -1034,6 +1048,14 @@ select.input {
 	flex-wrap: wrap;
 	gap: 7px;
 }
+/* the company/source/location line under a job title — layout only; the host
+   sets its own color/size (a detail header vs the view-head subtitle). */
+.d-org {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	flex-wrap: wrap;
+}
 .skill-tag {
 	font-size: 12px;
 	padding: 4px 10px;
@@ -1090,4 +1112,74 @@ select.input {
 }
 .muted {
 	color: var(--muted);
+}
+.small {
+	font-size: 11.5px;
+}
+/* muted explanatory paragraph — LLM rationale under a score, etc. */
+.rationale {
+	color: var(--muted);
+	font-size: 13px;
+	line-height: 1.6;
+	margin-top: 12px;
+}
+
+/* thin track+fill meter — height via --meter-h (default 7px); the fill <i>
+   takes its width + color inline. Used by score rubrics, dashboard bars, and
+   the task-progress panel. */
+.meter {
+	height: var(--meter-h, 7px);
+	border-radius: 20px;
+	background: var(--surface-2);
+	overflow: hidden;
+}
+.meter > i {
+	display: block;
+	height: 100%;
+	border-radius: 20px;
+}
+
+/* imported job-description HTML — normalize scraped markup into the theme.
+   Shared by the queue detail pane and /jobs/[id] via <JobDescription>. */
+.jd-prose * {
+	color: var(--fg) !important;
+	background-color: transparent !important;
+	max-width: 100%;
+}
+.jd-prose a {
+	color: var(--accent) !important;
+}
+.jd-prose p {
+	line-height: 1.65;
+	margin: 0 0 0.75em;
+	font-size: 13px;
+}
+.jd-prose ul,
+.jd-prose ol {
+	padding-left: 1.4rem;
+	margin: 0 0 0.75em;
+	font-size: 13px;
+}
+.jd-prose li {
+	margin: 0.2em 0;
+}
+.jd-prose h1,
+.jd-prose h2,
+.jd-prose h3 {
+	font-size: 14px;
+	margin: 1em 0 0.4em;
+}
+.jd-prose img {
+	max-width: 100%;
+	height: auto;
+}
+.jd-prose pre,
+.jd-prose code {
+	background: var(--surface-2) !important;
+	font-family: var(--mono);
+}
+.jd-prose pre {
+	padding: 0.6rem;
+	border-radius: 8px;
+	overflow-x: auto;
 }

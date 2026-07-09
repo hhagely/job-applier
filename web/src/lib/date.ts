@@ -24,3 +24,20 @@ export function daysOverdue(iso: string | null | undefined, now: number = Date.n
 export function defaultFollowupDate(days = 7, now: number = Date.now()): string {
 	return new Date(now + days * DAY_MS).toISOString().slice(0, 10);
 }
+
+/** Coarse "how long ago" label for a past timestamp — the queue detail-pane
+ *  ingested/posted format ("today", "3 days ago", "2 months ago"). */
+export function relTime(iso: string, now: number = Date.now()): string {
+	const days = Math.floor((now - new Date(iso).getTime()) / DAY_MS);
+	if (days <= 0) return 'today';
+	if (days === 1) return '1 day ago';
+	if (days < 30) return `${days} days ago`;
+	const months = Math.floor(days / 30);
+	return `${months} month${months === 1 ? '' : 's'} ago`;
+}
+
+/** Follow-up overdue label from a whole-day count — "due today" / "5d overdue".
+ *  Pair with {@link daysOverdue}. */
+export function formatOverdue(days: number): string {
+	return days === 0 ? 'due today' : `${days}d overdue`;
+}

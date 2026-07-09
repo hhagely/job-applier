@@ -8,7 +8,7 @@
 		doneVerb = 'Scored',
 		resultsLabel = 'per-job results'
 	}: {
-		task: TaskSnapshot;
+		task: TaskSnapshot | null | undefined;
 		onDismiss: () => void;
 		runningVerb?: string;
 		doneVerb?: string;
@@ -16,9 +16,10 @@
 	} = $props();
 
 	let resultsOpen = $state(false);
-	const pct = $derived(task.total > 0 ? Math.round((task.done / task.total) * 100) : 100);
+	const pct = $derived(task && task.total > 0 ? Math.round((task.done / task.total) * 100) : 100);
 </script>
 
+{#if task}
 <section class="score-panel" class:done={task.status !== 'running'}>
 	<div class="score-panel-head">
 		<strong>
@@ -40,7 +41,7 @@
 		{/if}
 	</div>
 
-	<div class="score-progress"><div class="score-bar" style={`width:${pct}%`}></div></div>
+	<div class="meter score-progress"><i class="score-bar" style={`width:${pct}%`}></i></div>
 
 	{#if task.results.length > 0}
 		<button type="button" class="score-toggle" onclick={() => (resultsOpen = !resultsOpen)}>
@@ -63,17 +64,18 @@
 		</ul>
 	{/if}
 </section>
+{/if}
 
 <style>
 	.score-panel {
-		background: var(--panel);
+		background: var(--surface);
 		border: 1px solid var(--accent);
 		border-radius: 8px;
 		padding: 0.75rem 0.9rem;
 		margin-bottom: 1rem;
 	}
 	.score-panel.done {
-		border-color: var(--panel-border);
+		border-color: var(--border);
 	}
 	.score-panel-head {
 		display: flex;
@@ -83,14 +85,14 @@
 		font-size: 0.9rem;
 	}
 	.score-errcount {
-		color: var(--bad);
+		color: var(--weak);
 		font-size: 0.8rem;
 	}
 	.score-dismiss {
 		margin-left: auto;
 		background: transparent;
 		color: var(--muted);
-		border: 1px solid var(--panel-border);
+		border: 1px solid var(--border);
 		border-radius: 4px;
 		padding: 0.2rem 0.55rem;
 		cursor: pointer;
@@ -101,13 +103,9 @@
 		border-color: var(--accent);
 	}
 	.score-progress {
-		height: 6px;
-		background: #20262d;
-		border-radius: 3px;
-		overflow: hidden;
+		--meter-h: 6px;
 	}
 	.score-bar {
-		height: 100%;
 		background: var(--accent);
 		transition: width 0.3s ease;
 	}
@@ -125,7 +123,7 @@
 		list-style: none;
 		padding: 0;
 		margin: 0.4rem 0 0;
-		font-family: ui-monospace, monospace;
+		font-family: var(--mono);
 		font-size: 0.78rem;
 		max-height: 14rem;
 		overflow-y: auto;
@@ -137,6 +135,6 @@
 		color: var(--muted);
 	}
 	.score-errlist li {
-		color: var(--bad);
+		color: var(--weak);
 	}
 </style>
