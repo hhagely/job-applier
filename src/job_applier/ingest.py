@@ -328,12 +328,12 @@ def run_ingest(
     commit timing. On failure the partial source's uncommitted rows are rolled back
     and its stats are restored so the summary stays truthful.
     """
-    if sources is None:
-        sources = get_all_sources()
     stats = IngestStats()
-    total = len(sources)
     with Session(engine()) as session:
         filter_config = load_active_config(session)
+        if sources is None:
+            sources = get_all_sources(filter_config=filter_config)
+        total = len(sources)
         for i, source in enumerate(sources):
             snapshot = copy.copy(stats)
             try:

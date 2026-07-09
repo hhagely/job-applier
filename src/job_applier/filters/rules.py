@@ -24,17 +24,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from sqlmodel import Session, select
 
+from job_applier.contracts import RawJob
 from job_applier.models.db import FilterStatus, SearchProfile, engine
-
-if TYPE_CHECKING:
-    # Annotation-only — importing ``RawJob`` at runtime forms a cycle
-    # (sources -> filters -> sources). ``from __future__ import annotations``
-    # keeps the references string-evaluated at runtime.
-    from job_applier.sources.base import RawJob
 
 
 def _alt_pattern(terms: list[str]) -> str:

@@ -122,7 +122,9 @@ def test_ingest_endpoint_starts_and_runs_task(monkeypatch):
 
     # Avoid real network/sources: 2 sources for the total, a fake run that drives
     # the progress callback the task wires up.
-    monkeypatch.setattr("job_applier.sources.get_all_sources", lambda: [object(), object()])
+    monkeypatch.setattr(
+        "job_applier.sources.get_all_sources", lambda *a, **k: [object(), object()]
+    )
 
     def _fake_run(sources=None, progress_cb=None):
         for i, name in enumerate(["alpha", "beta"], start=1):
@@ -162,8 +164,8 @@ def test_ingest_endpoint_persists_via_real_run(monkeypatch):
     sources = [FakeSource("alpha", [_raw("a1"), _raw("a2", title="Staff Engineer")])]
     # The endpoint's total uses job_applier.sources.get_all_sources (imported at
     # call time); run_ingest uses the name bound in its own module namespace.
-    monkeypatch.setattr("job_applier.sources.get_all_sources", lambda: sources)
-    monkeypatch.setattr(ingest, "get_all_sources", lambda: sources)
+    monkeypatch.setattr("job_applier.sources.get_all_sources", lambda *a, **k: sources)
+    monkeypatch.setattr(ingest, "get_all_sources", lambda *a, **k: sources)
     monkeypatch.setattr(ingest, "engine", lambda: e)
 
     with TestClient(app) as c:

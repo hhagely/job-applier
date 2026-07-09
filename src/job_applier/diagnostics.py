@@ -46,11 +46,11 @@ def diagnose_filter(
     filter_config: FilterConfig | None = None,
 ) -> FilterDiagnostic:
     """Fetch from each source and bucket the filter outcome of every RawJob."""
-    if sources is None:
-        sources = get_all_sources()
     if filter_config is None:
         with Session(engine()) as session:
             filter_config = load_active_config(session)
+    if sources is None:
+        sources = get_all_sources(filter_config=filter_config)
 
     result = FilterDiagnostic()
     for source in sources:

@@ -8,6 +8,10 @@ The aggregator sources (RemoteOK, WeWorkRemotely, HackerNews) take no slug
 config — they always fetch a fixed set of feeds.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from sqlmodel import Session, select
 
 from job_applier.models import SourceSlug, engine
@@ -25,6 +29,9 @@ from job_applier.sources.weworkremotely import WeWorkRemotelySource
 from job_applier.sources.workday import WorkdaySource
 from job_applier.sources.ycombinator import YCombinatorSource
 
+if TYPE_CHECKING:
+    from job_applier.filters import FilterConfig
+
 
 def _enabled_slugs(source: str) -> list[str]:
     with Session(engine()) as session:
@@ -37,20 +44,17 @@ def _enabled_slugs(source: str) -> list[str]:
     return sorted(r.slug for r in rows)
 
 
-def get_all_sources() -> list[SourceAdapter]:
+def get_all_sources(filter_config: FilterConfig | None = None) -> list[SourceAdapter]:
     """Build the ingest source list from current DB state.
 
-    The active ``FilterConfig`` is passed into Workable + SmartRecruiters so
-    those adapters can skip the per-job detail fetch for titles that already
-    fail seniority or sales rules — the dominant cost on those sources, and
-    the only realistic way to stay under Workable's IP rate limit on a
-    multi-hundred-slug board sweep.
+    ``filter_config`` (the active ``FilterConfig``) is passed into Workable +
+    SmartRecruiters so those adapters can skip the per-job detail fetch for titles
+    that already fail seniority or sales rules — the dominant cost on those sources,
+    and the only realistic way to stay under Workable's IP rate limit on a
+    multi-hundred-slug board sweep. Callers that actually fetch (ingest, diagnose)
+    load the config once and inject it here, so it isn't loaded twice per run; the
+    count-only caller (the ingest endpoint's source total) can omit it.
     """
-    # Lazy import — ``filters.rules`` imports ``RawJob`` from ``sources.base``,
-    # so a module-level import here would form a cycle.
-    from job_applier.filters import load_active_config
-
-    filter_config = load_active_config()
     return [
         GreenhouseSource(_enabled_slugs("greenhouse")),
         LeverSource(_enabled_slugs("lever")),
