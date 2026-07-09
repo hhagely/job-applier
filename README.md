@@ -9,8 +9,9 @@ worth tailoring an application for. Tailored resume + cover-letter drafts and
 follow-up tracking are built in.
 
 No LinkedIn or Indeed scraping — those violate ToS and risk account bans.
-Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday) and
-aggregator feeds (RemoteOK, We Work Remotely, Hacker News "Who is hiring").
+Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday, Workable,
+SmartRecruiters, Jibe, Oracle) and aggregator feeds (RemoteOK, We Work Remotely,
+Hacker News "Who is hiring", Y Combinator).
 
 ## Architecture
 
@@ -106,7 +107,7 @@ src/job_applier/
                #   task runner, and the canonical prompt templates (ai/prompts/)
   filters/     # Hard-rule filter, driven by SearchProfile
   models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
-  sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, RemoteOK, WWR, HN)
+  sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters, Jibe, Oracle, RemoteOK, WWR, HN, YC)
   ingest.py    # Pipeline: fetch → dedupe (per-source, cross-source, JD-SimHash) → filter → persist
   drafts.py    # Tailored resume / cover-letter markdown + weasyprint PDF rendering
   resume_io.py # PDF → text extraction + on-disk storage
@@ -175,32 +176,40 @@ exists or its required-tech list is empty.
 | Lever            | DB slug list (`SourceSlug`)     | `api.lever.co/v0/postings/{slug}`                                     |
 | Ashby            | DB slug list (`SourceSlug`)     | `api.ashbyhq.com/posting-api/job-board/{slug}`. Slugs are case-sensitive (`Notion`, not `notion`). |
 | Workday          | DB slug list, packed format     | Slug is `{tenant}\|{region}\|{site}` — e.g. `salesforce\|wd12\|External_Career_Site`. List call returns only titles; descriptions need a per-posting detail fetch, so the adapter pre-filters titles before going deep. |
+| Workable         | DB slug list (`SourceSlug`)     | `apply.workable.com/api/v3/accounts/{slug}/jobs` (list) + v1 detail for the full description. |
+| SmartRecruiters  | DB slug list (`SourceSlug`)     | `api.smartrecruiters.com/v1/companies/{slug}/postings`. Slugs are case-sensitive (`Visa` ≠ `visa`). |
+| Jibe (iCIMS)     | DB slug list (`SourceSlug`)     | `{tenant}.jibeapply.com/api/jobs`. Slug is the jibeapply.com subdomain (e.g. `githubinc`). |
+| Oracle (Recruiting Cloud) | DB slug list, packed format | Slug is `{apiHost}\|{siteNumber}\|{publicJobBaseUrl}[\|{company}]`. Served by the candidate-experience `recruitingCEJobRequisitions` JSON API on the underlying Fusion host (the vanity careers domain 302s API calls away); job links use the public base. |
 | RemoteOK         | none                            | Single-endpoint aggregator (`remoteok.com/api`).                      |
 | We Work Remotely | none                            | Per-category RSS feeds; engineering categories only.                  |
 | Hacker News      | none                            | Most recent monthly "Who is hiring" thread, parsed via Algolia HN API. Top-level comments are individual postings. |
+| Y Combinator     | none                            | HN `jobstories` feed + JSON-LD scraped from `ycombinator.com` job pages. |
 
 ### Managing the company slug list
 
-Per-company slugs (Greenhouse / Lever / Ashby / Workday) live in the database
-(`SourceSlug` table), not in code. Initial setup seeds the table from
-`src/job_applier/sources/companies.py` on first `job-applier init` — and the
-seed is per-source, so adding a new source type later picks up its seed on the
-next `init` without disturbing the populated tables.
+Per-company slugs (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters,
+Jibe, Oracle) live in the database (`SourceSlug` table), not in code. Initial
+setup seeds the table from `src/job_applier/sources/companies.py` on first
+`job-applier init` — and the seed is per-source, so adding a new source type
+later picks up its seed on the next `init` without disturbing the populated
+tables.
 
 ```sh
-# Pull new Greenhouse/Lever candidates from the SimplifyJobs feed and verify
+# Pull new Greenhouse/Lever/Workable/SmartRecruiters candidates from the
+# SimplifyJobs feed and verify them.
 make refresh-slugs
 
-# Same, but also re-verify every existing slug across all four per-company
-# sources (Greenhouse, Lever, Ashby, Workday) and auto-disable dead boards.
+# Same, but also re-verify every existing slug and auto-disable dead boards.
 # A Workday tenant returning HTTP 422 is treated as a permanent rejection
 # and disabled, since 422 means the tenant rejects the public CXS body shape.
 make refresh-slugs-full
 ```
 
-Discovery (the candidate-pull) only covers Greenhouse + Lever — the
-SimplifyJobs feed doesn't carry Ashby or Workday URLs, and there's no
-equivalent public list for them. Re-verification covers all four sources.
+Discovery (the candidate-pull) covers the four sources the SimplifyJobs feed
+carries URLs for: Greenhouse, Lever, Workable, and SmartRecruiters. There's no
+equivalent public list for the others. Re-verification is broader — it covers
+those four plus Ashby and Workday, auto-disabling dead boards; Jibe and Oracle
+are seed-only (neither discovered nor re-verified).
 
 The SimplifyJobs feed is heavily new-grad / intern biased — it's only useful
 as a wide net for *valid* slugs, not relevant ones. To add a target company
@@ -262,7 +271,7 @@ so the `baseline → tailored` delta and prior-resume scores remain visible.
 | `make api`               | Run FastAPI on `:8000` with auto-reload                           |
 | `make web`               | Run SvelteKit dev server on `:5174`                               |
 | `make ingest`            | Pull jobs from configured sources                                 |
-| `make refresh-slugs`     | Discover new Greenhouse/Lever slugs from the SimplifyJobs feed    |
+| `make refresh-slugs`     | Discover new Greenhouse/Lever/Workable/SmartRecruiters slugs from SimplifyJobs |
 | `make refresh-slugs-full`| Discover + re-verify existing slugs (auto-disables dead boards)   |
 | `make prune`             | Clear description/raw on old or archived postings (keeps hashes)  |
 | `make dedupe-jd`         | Backfill JD SimHash fingerprints + soft-link near-duplicate JDs   |
