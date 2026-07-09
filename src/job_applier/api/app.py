@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -43,7 +44,16 @@ from job_applier.models.db import (
     get_session,
 )
 
-app = FastAPI(title="job-applier API")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    create_db_and_tables()
+    yield
+    # Tear the background worker down on shutdown (e.g. Electron closing the app),
+    # cancelling any queued task instead of leaking the thread / subprocess.
+    ai_tasks.shutdown()
+
+
+app = FastAPI(title="job-applier API", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,11 +73,6 @@ app.include_router(ai_router)
 app.include_router(resume_router.router)
 app.include_router(profile_router.router)
 app.include_router(drafts_router.router)
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    create_db_and_tables()
 
 
 def _company_out(c: Optional[Company]) -> Optional[CompanyOut]:
