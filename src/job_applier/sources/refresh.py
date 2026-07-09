@@ -34,9 +34,36 @@ from job_applier.sources.companies import (
     WORKABLE_COMPANIES,
     WORKDAY_BOARDS,
 )
+from job_applier.sources.oracle import parse_slug as parse_oracle_slug
 from job_applier.sources.workday import parse_slug as parse_workday_slug
 
 log = logging.getLogger(__name__)
+
+# Sources whose slug packs several structured fields into one delimited string
+# (Workday ``tenant|region|site``, Oracle ``apiHost|siteNumber|publicBase[|company]``).
+# A malformed pack makes ``parse_slug`` return None, which the adapter silently
+# filters out at ingest — no board, no error. Validate on write so a bad seed
+# entry surfaces as a warning instead of a slug that never ingests anything.
+_PACKED_SLUG_VALIDATORS = {
+    "workday": parse_workday_slug,
+    "oracle": parse_oracle_slug,
+}
+
+
+def _valid_slugs(source: str, slugs: list[str]) -> list[str]:
+    """Return the slugs that parse for ``source``, warning about any that don't.
+
+    A no-op for sources without a packed slug format."""
+    validate = _PACKED_SLUG_VALIDATORS.get(source)
+    if validate is None:
+        return list(slugs)
+    kept: list[str] = []
+    for slug in slugs:
+        if validate(slug) is None:
+            log.warning("skipping malformed %s slug (does not parse): %r", source, slug)
+        else:
+            kept.append(slug)
+    return kept
 
 GH_VERIFY = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 LV_VERIFY = "https://api.lever.co/v0/postings/{slug}?mode=json"
@@ -113,8 +140,9 @@ def seed_if_empty() -> int:
             ).first()
             if existing is not None:
                 continue
-            session.add_all(SourceSlug(source=source, slug=s) for s in slugs)
-            inserted += len(slugs)
+            valid = _valid_slugs(source, slugs)
+            session.add_all(SourceSlug(source=source, slug=s) for s in valid)
+            inserted += len(valid)
         if inserted:
             session.commit()
     return inserted

@@ -23,6 +23,7 @@ from job_applier.sources.oracle import _combine_description as oracle_combine_de
 from job_applier.sources.oracle import _normalize as oracle_normalize
 from job_applier.sources.oracle import _parse_list as oracle_parse_list
 from job_applier.sources.oracle import parse_slug as oracle_parse_slug
+from job_applier.sources.refresh import _valid_slugs
 from job_applier.sources.remoteok import _normalize as remoteok_normalize
 from job_applier.sources.smartrecruiters import _normalize as sr_normalize
 from job_applier.sources.weworkremotely import (
@@ -63,6 +64,26 @@ class TestSharedDateParsing:
     def test_parse_date_multi_gives_up_on_garbage(self):
         assert parse_date_multi("Posted 5 Days Ago") is None
         assert parse_date_multi(None) is None
+
+
+class TestSlugValidation:
+    """`_valid_slugs` drops (and warns about) malformed packed slugs on write so a
+    bad seed entry surfaces instead of silently never ingesting."""
+
+    def test_drops_malformed_workday_slugs(self, caplog):
+        good = "acme|wd1|Careers"  # tenant|region|site
+        with caplog.at_level("WARNING"):
+            kept = _valid_slugs("workday", [good, "justtenant", "a|b", "x||z"])
+        assert kept == [good]
+        assert "malformed workday slug" in caplog.text
+
+    def test_drops_malformed_oracle_slugs(self):
+        good = "eeho.fa.us2.oraclecloud.com|CX_1|https://careers.acme.com"
+        assert _valid_slugs("oracle", [good, "onlyhost", "h|CX_1"]) == [good]
+
+    def test_passes_non_packed_sources_through_untouched(self):
+        slugs = ["stripe", "anything-goes", "a|b|c"]
+        assert _valid_slugs("greenhouse", slugs) == slugs
 
 
 class TestRemoteOK:
