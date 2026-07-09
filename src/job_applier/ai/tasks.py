@@ -16,8 +16,10 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Literal
 from uuid import uuid4
+
+TaskStatus = Literal["running", "done", "error"]
 
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="job-applier-task")
 _tasks: "dict[str, TaskState]" = {}
@@ -32,7 +34,7 @@ class TaskState:
     done: int = 0
     errors: list[str] = field(default_factory=list)
     results: list[str] = field(default_factory=list)
-    status: str = "running"  # running | done | error
+    status: TaskStatus = "running"
 
 
 def start_task(kind: str, total: int, fn: Callable[[TaskState], None]) -> str:
