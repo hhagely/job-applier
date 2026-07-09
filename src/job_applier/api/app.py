@@ -12,6 +12,7 @@ from job_applier.api import profile as profile_router
 from job_applier.api import resume as resume_router
 from job_applier.api import services
 from job_applier.api.ai import router as ai_router
+from job_applier.api.deps import require_job
 from job_applier.api.schemas import (
     ApplicationOut,
     BulkStatusUpdate,
@@ -193,10 +194,9 @@ def list_jobs(
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobDetail)
-def get_job(job_id: int, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
+def get_job(
+    job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
+):
     summary = _job_summary(
         job, _resume_filename_map(session), _active_resume_id(session)
     )
@@ -209,12 +209,12 @@ _apply_status_transition = services.apply_status_transition
 
 
 @app.patch("/api/jobs/{job_id}/status", response_model=ApplicationOut)
-def set_status(job_id: int, body: StatusUpdate, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-
-    app_row = job.application or Application(job_id=job_id)
+def set_status(
+    body: StatusUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
+):
+    app_row = job.application or Application(job_id=job.id)
     if body.notes is not None:
         app_row.notes = body.notes
     _apply_status_transition(
@@ -281,11 +281,10 @@ def list_followups(session: Session = Depends(get_session)):
 
 @app.post("/api/jobs/{job_id}/followup", response_model=ApplicationOut)
 def set_followup(
-    job_id: int, body: FollowupUpdate, session: Session = Depends(get_session)
+    body: FollowupUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
 ):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
     app_row = job.application
     if app_row is None:
         raise HTTPException(
@@ -305,11 +304,12 @@ def set_followup(
 
 
 @app.post("/api/jobs/{job_id}/notes", response_model=ApplicationOut)
-def set_notes(job_id: int, body: NotesUpdate, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    app_row = job.application or Application(job_id=job_id, status=ApplicationStatus.new)
+def set_notes(
+    body: NotesUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
+):
+    app_row = job.application or Application(job_id=job.id, status=ApplicationStatus.new)
     app_row.notes = body.notes
     app_row.updated_at = datetime.now(timezone.utc)
     session.add(app_row)
@@ -336,12 +336,11 @@ def _mark_unemployment(job: JobPosting, *, used: bool, now: datetime) -> Applica
 
 @app.post("/api/jobs/{job_id}/unemployment", response_model=ApplicationOut)
 def set_unemployment(
-    job_id: int, body: UnemploymentUpdate, session: Session = Depends(get_session)
+    body: UnemploymentUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
 ):
     """Mark (or unmark) an application as reported for an unemployment claim."""
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
     app_row = _mark_unemployment(
         job, used=body.used, now=datetime.now(timezone.utc)
     )
@@ -442,12 +441,12 @@ def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_sess
 
 
 @app.get("/api/jobs/{job_id}/score-history", response_model=list[ScoreOut])
-def list_score_history(job_id: int, session: Session = Depends(get_session)):
-    if session.get(JobPosting, job_id) is None:
-        raise HTTPException(404, "job not found")
+def list_score_history(
+    job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
+):
     rows = session.exec(
         select(MatchScoreHistory)
-        .where(MatchScoreHistory.job_id == job_id)
+        .where(MatchScoreHistory.job_id == job.id)
         .order_by(MatchScoreHistory.scored_at.desc())
     ).all()
     resume_names = _resume_filename_map(session)

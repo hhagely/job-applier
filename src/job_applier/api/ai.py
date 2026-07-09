@@ -16,6 +16,7 @@ from sqlmodel import Session
 
 from job_applier.ai import drafting, providers, scoring, suggest, tasks
 from job_applier.api import services
+from job_applier.api.deps import require_ai_ready
 from job_applier.api.schemas import (
     AiTestIn,
     AiTestOut,
@@ -126,14 +127,10 @@ def _run_score_pending(
 
 @router.post("/score-pending", response_model=StartTaskOut)
 def start_score_pending(
-    body: ScorePendingIn, session: Session = Depends(get_session)
+    body: ScorePendingIn,
+    session: Session = Depends(get_session),
+    provider: str = Depends(require_ai_ready),
 ) -> StartTaskOut:
-    provider = get_setting(session, AI_PROVIDER_KEY)
-    if not provider:
-        raise HTTPException(409, "no AI provider selected — pick one in Settings")
-    if services.active_resume(session) is None:
-        raise HTTPException(409, "no active resume — upload one on the Resume page")
-
     pending = services.select_pending_jobs(
         session, limit=200, include_stale=body.include_stale
     )
@@ -211,14 +208,10 @@ def _run_draft_batch(
 
 @router.post("/draft-batch", response_model=StartTaskOut)
 def start_draft_batch(
-    body: DraftBatchIn, session: Session = Depends(get_session)
+    body: DraftBatchIn,
+    session: Session = Depends(get_session),
+    provider: str = Depends(require_ai_ready),
 ) -> StartTaskOut:
-    provider = get_setting(session, AI_PROVIDER_KEY)
-    if not provider:
-        raise HTTPException(409, "no AI provider selected — pick one in Settings")
-    if services.active_resume(session) is None:
-        raise HTTPException(409, "no active resume — upload one on the Resume page")
-
     # Dedupe (preserving order) and keep only ids that resolve to a real job.
     ids = [
         jid
@@ -239,12 +232,8 @@ def start_draft_batch(
 @router.post("/suggest-roles", response_model=SearchProfileOut)
 def suggest_roles_endpoint(
     session: Session = Depends(get_session),
+    provider: str = Depends(require_ai_ready),
 ) -> SearchProfileOut:
-    provider = get_setting(session, AI_PROVIDER_KEY)
-    if not provider:
-        raise HTTPException(409, "no AI provider selected — pick one in Settings")
-    if services.active_resume(session) is None:
-        raise HTTPException(409, "no active resume — upload one on the Resume page")
     model = get_setting(session, AI_MODEL_KEY)
     try:
         profile = suggest.suggest_roles(session, provider, model=model)
