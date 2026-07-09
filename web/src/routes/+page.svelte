@@ -14,6 +14,7 @@
 		type TaskSnapshot
 	} from '$lib/api';
 	import { pollTask } from '$lib/pollTask';
+	import { defaultFollowupDate } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import ScoreBadge from '$lib/ScoreBadge.svelte';
@@ -396,9 +397,6 @@
 		return new Date(due).getTime() <= Date.now();
 	}
 
-	function defaultFollowupDate(): string {
-		return new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
-	}
 	let followupDate = $state<string>(defaultFollowupDate());
 
 	function toggleDuplicates() {

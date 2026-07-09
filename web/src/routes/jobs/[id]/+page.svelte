@@ -4,6 +4,7 @@
 	import type { PageData } from './$types';
 	import { api, APPLICATION_STATUSES, type ApplicationStatus, type TaskSnapshot } from '$lib/api';
 	import { pollTask } from '$lib/pollTask';
+	import { fmtDateTime as fmtUpdated, defaultFollowupDate } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -45,16 +46,12 @@
 		draftError = null;
 	}
 
-	function fmtUpdated(iso: string | null | undefined): string {
-		return iso ? new Date(iso).toLocaleString() : '';
-	}
-
 	let pendingStatus = $state<ApplicationStatus>('new');
 	let followupInput = $state<string>('');
 	function followupDefault(): string {
 		const existing = job.application?.next_followup_at;
 		if (existing) return new Date(existing).toISOString().slice(0, 10);
-		return new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+		return defaultFollowupDate();
 	}
 	$effect(() => {
 		pendingStatus = job.application?.status ?? 'new';

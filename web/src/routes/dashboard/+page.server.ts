@@ -1,5 +1,6 @@
 import { api, type Job } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
+import { scoreBand } from '$lib/score';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -24,7 +25,7 @@ export const load: PageServerLoad = async ({ fetch }) => {
 	// Unscored or stale-scored roles — the count the "Score pending" action targets.
 	const pending = jobs.filter((j) => j.score == null || j.score?.is_stale).length;
 
-	const strong = scored.filter((j) => (j.score?.score ?? 0) >= 80).length;
+	const strong = scored.filter((j) => scoreBand(j.score?.score) === 'strong').length;
 	const applied = jobs.filter((j) => j.application?.status === 'applied').length;
 	const rejected = jobs.filter((j) => j.application?.status === 'rejected').length;
 	const unreviewed = jobs.filter(isUnreviewed).length;
@@ -36,17 +37,9 @@ export const load: PageServerLoad = async ({ fetch }) => {
 
 	// Score distribution buckets.
 	const dist = [
-		{ label: '80–100', band: 'strong', n: scored.filter((j) => (j.score?.score ?? 0) >= 80).length },
-		{
-			label: '65–79',
-			band: 'good',
-			n: scored.filter((j) => (j.score?.score ?? 0) >= 65 && (j.score?.score ?? 0) < 80).length
-		},
-		{
-			label: '< 65',
-			band: 'weak',
-			n: scored.filter((j) => (j.score?.score ?? 0) < 65).length
-		}
+		{ label: '80–100', band: 'strong', n: scored.filter((j) => scoreBand(j.score?.score) === 'strong').length },
+		{ label: '65–79', band: 'good', n: scored.filter((j) => scoreBand(j.score?.score) === 'good').length },
+		{ label: '< 65', band: 'weak', n: scored.filter((j) => scoreBand(j.score?.score) === 'weak').length }
 	];
 
 	// By-source counts (descending).

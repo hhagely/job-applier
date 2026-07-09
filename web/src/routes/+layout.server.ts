@@ -1,5 +1,6 @@
 import { api, type Job } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
+import { scoreBand } from '$lib/score';
 import type { LayoutServerLoad } from './$types';
 
 export interface ShellCounts {
@@ -45,7 +46,7 @@ export const load: LayoutServerLoad = async ({ fetch }) => {
 		const active = passed.filter((j) => !isArchived(j));
 		counts.jobs = active.length;
 		counts.queue = active.filter(isUnreviewed).length;
-		counts.strong = active.filter((j) => (j.score?.score ?? -1) >= 80).length;
+		counts.strong = active.filter((j) => scoreBand(j.score?.score) === 'strong').length;
 		counts.followups = followups.length;
 	} catch {
 		// leave counts as nulls — badges simply won't render

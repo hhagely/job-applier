@@ -2,18 +2,10 @@
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import type { Job } from '$lib/api';
+	import { daysOverdue, fmtDate } from '$lib/date';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
-
-	function daysOverdue(iso: string | null | undefined): number {
-		if (!iso) return 0;
-		return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000));
-	}
-
-	function fmtDate(iso: string | null | undefined): string {
-		return iso ? new Date(iso).toLocaleDateString() : '—';
-	}
 
 	function appliedAt(job: Job): string | null | undefined {
 		return job.application?.applied_at;

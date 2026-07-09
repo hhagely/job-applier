@@ -10,6 +10,7 @@
 	import { onCommand } from '$lib/shell/commandBus';
 	import { type Job, type TaskSnapshot } from '$lib/api';
 	import { pollTask } from '$lib/pollTask';
+	import { daysOverdue as overdueDays, fmtDate } from '$lib/date';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -76,14 +77,6 @@
 		})
 	);
 
-	function overdueDays(iso: string | null | undefined): number {
-		if (!iso) return 0;
-		return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000));
-	}
-
-	function fmtDate(iso: string | null | undefined): string {
-		return iso ? new Date(iso).toLocaleDateString() : '—';
-	}
 
 	function openJob(job: Job) {
 		goto(`/jobs/${job.id}`);
