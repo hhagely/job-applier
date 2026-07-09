@@ -133,7 +133,10 @@
 	async function pollDraftBatchTask(taskId: string) {
 		draftBatchPolling = true;
 		try {
-			await pollTask(fetch, data.apiBase ?? '', taskId, (snap) => (draftBatchTask = snap));
+			const snap = await pollTask(fetch, data.apiBase ?? '', taskId, (s) => (draftBatchTask = s));
+			// Drafting finished — empty the cart so the same jobs aren't re-drafted on
+			// the next run. Keep it on error so the user can retry the failed batch.
+			if (snap.status === 'done') draftCart.clear();
 			await invalidateAll();
 		} catch (e) {
 			draftBatchError = (e as Error).message;
@@ -361,6 +364,20 @@
 	}
 
 	function clearSelection() {
+		selected = new Set();
+	}
+
+	// Toggle the checked rows against the cross-route draft cart, then drop the
+	// selection — the rows' "in draft" tags and the header count are the feedback.
+	// When every selected row is already in the cart the action removes them;
+	// otherwise it adds (already-present ids are no-ops via draftCart.add).
+	const allSelectedInCart = $derived(
+		selected.size > 0 && [...selected].every((id) => draftCart.has(id))
+	);
+
+	function toggleSelectedInDraftCart() {
+		if (allSelectedInCart) for (const id of selected) draftCart.remove(id);
+		else for (const id of selected) draftCart.add(id);
 		selected = new Set();
 	}
 
@@ -627,7 +644,10 @@
 		{#if selectedCount > 0}
 			<div class="bulkbar">
 				<b>{selectedCount}</b> selected
-				<button type="button" class="btn sm" style="margin-left:auto" onclick={copySelectedIds}>
+				<button type="button" class="btn sm primary" style="margin-left:auto" onclick={toggleSelectedInDraftCart} title={allSelectedInCart ? 'Remove the selected jobs from the draft list' : 'Add the selected jobs to the draft list'}>
+					<Icon name="doc" size={13} stroke={2} /> {allSelectedInCart ? 'Remove from draft list' : 'Add to draft list'}
+				</button>
+				<button type="button" class="btn sm" onclick={copySelectedIds}>
 					{copied ? 'Copied!' : 'Copy IDs'}
 				</button>
 				<button type="button" class="btn sm" onclick={clearSelection}>Clear</button>
@@ -850,6 +870,10 @@
 		<span class="action-sep" aria-hidden="true"></span>
 		<button type="submit" formaction="?/bulkUnemployment" name="used" value="true" class="btn sm" disabled={submitting} title="Mark selected as used for an unemployment claim">✓ Unemployment</button>
 		<button type="submit" formaction="?/bulkUnemployment" name="used" value="false" class="btn sm ghost" disabled={submitting} title="Clear the unemployment flag on selected">Unmark</button>
+		<span class="action-sep" aria-hidden="true"></span>
+		<button type="button" class="btn sm" onclick={toggleSelectedInDraftCart} title={allSelectedInCart ? 'Remove the selected jobs from the draft list' : 'Add the selected jobs to the draft list'}>
+			<Icon name="doc" size={13} stroke={2} /> {allSelectedInCart ? 'Remove from draft list' : 'Add to draft list'}
+		</button>
 		<button type="button" class="btn sm" onclick={copySelectedIds}>{copied ? 'Copied!' : 'Copy IDs'}</button>
 		<button type="button" class="btn sm ghost" onclick={clearSelection}>Clear</button>
 	</form>
