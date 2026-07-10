@@ -11,6 +11,7 @@ function makeData(overrides = {}) {
 	return {
 		// Layout data is merged into page data by SvelteKit; include its fields.
 		update: null,
+		profile: null,
 		aiProvider: null,
 		counts: { jobs: null, queue: null, followups: null, strong: null },
 		apiBase: '',

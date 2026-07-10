@@ -86,7 +86,7 @@
 <UpdateBanner update={data.update} />
 
 <div class="shell">
-	<Sidebar counts={data.counts ?? {}} />
+	<Sidebar counts={data.counts ?? {}} profile={data.profile ?? null} />
 	<main class="main">
 		{@render children()}
 	</main>
