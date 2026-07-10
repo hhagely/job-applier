@@ -46,7 +46,11 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="job-applier-backend",
-    console=True,
+    # Windowed (no-console) subsystem: the sidecar is spawned by Electron, a
+    # windowless GUI process. A console=True exe would make Windows allocate a
+    # stray empty command-prompt window alongside the app for the child's stdout.
+    # It talks over HTTP and never needs a TTY, so build it headless.
+    console=False,
     disable_windowed_traceback=False,
 )
 
