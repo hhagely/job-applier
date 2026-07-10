@@ -46,3 +46,12 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  # Wipe the user's data (jobs.db, resumes/, drafts, settings) on a real uninstall.
+  # The bundled uninstaller RMDir's "$APPDATA\<package.json name>" — i.e.
+  # %APPDATA%\job-applier-desktop, where the backend's JOB_APPLIER_DATA_DIR points
+  # in production (app.getPath('userData'), see desktop/main.js). NOTE: the folder
+  # is named after the app package name (job-applier-desktop), NOT productName
+  # (job-applier), which is why nothing was being cleaned before. The template
+  # guards this with `${ifNot} ${isUpdated}`, so in-place auto-updates keep data;
+  # only an explicit uninstall clears it.
+  deleteAppDataOnUninstall: true
