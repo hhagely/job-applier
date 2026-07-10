@@ -30,8 +30,6 @@ The total `score` must equal the sum of the five bucket points and lie in `[0, 1
 
 ## Hard rules — force the score down when:
 
-- The job is clearly Angular-primary despite passing the keyword filter: score `0`,
-  reasoning `"Angular-primary stack — disqualified per user's filter"`.
 - The job requires on-site presence in a single location despite being tagged remote:
   score `0`, reasoning explains.
 - The role is below Senior (e.g. "Senior" in the title but the body says 2-4 years
@@ -47,6 +45,9 @@ important honest caveat.
 ## Output contract — STRICT JSON ONLY
 
 Return exactly one JSON object and nothing else (no prose, no code fences). Each bucket
-carries its integer `points` and a one-line `note`:
+carries its integer `points` and a one-line `note`. The example fixes the shape and the
+terse note style only. If the resume is tech-related, the notes may resemble the software
+example shown; if it is in another field, write the notes in that field's terms — always
+about **this** resume and posting.
 
 {"score": 82, "rubric": {"skills_overlap": {"points": 26, "note": "TS/React strong; Rust light"}, "experience_match": {"points": 22, "note": "Staff-level scope matches"}, "role_fit": {"points": 16, "note": "platform work aligns"}, "domain_fit": {"points": 8, "note": "fintech adjacent"}, "hard_requirements": {"points": 10, "note": "remote US-OK"}}, "reasoning": "Strong TypeScript/React overlap at the right seniority. Infra depth is a stretch versus what the role asks. Honest caveat: domain is only adjacent."}

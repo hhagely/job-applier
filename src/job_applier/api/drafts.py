@@ -141,5 +141,7 @@ def start_ai_draft(
         model=model,
         job_id=job.id,
     )
-    task_id = ai_tasks.start_task("draft", ai_endpoints.DRAFT_TASK_STEPS, fn)
+    task_id = ai_tasks.start_task(
+        "draft", ai_endpoints.DRAFT_TASK_STEPS, fn, ref=str(job.id)
+    )
     return StartTaskOut(task_id=task_id)

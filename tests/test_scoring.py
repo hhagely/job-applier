@@ -367,3 +367,117 @@ def test_score_pending_endpoint_runs_task_end_to_end(client, monkeypatch, tmp_pa
 def test_get_task_404_for_unknown_id(client):
     c, _e = client
     assert c.get("/api/ai/tasks/nope").status_code == 404
+
+
+# ---- event stream + dedupe (event-driven progress) ------------------------
+
+
+def test_task_broker_publishes_snapshots_to_subscribers():
+    """publish() fans a JSON-safe snapshot (incl. ref) to every subscriber, and
+    unsubscribe() stops delivery."""
+    received: list[dict] = []
+    cb = received.append  # bind ONCE — a fresh `received.append` wouldn't unsubscribe
+    tasks.subscribe(cb)
+    try:
+        state = tasks.TaskState(id="x1", kind="score_pending", total=3, done=1, ref="7")
+        tasks.publish(state)
+    finally:
+        tasks.unsubscribe(cb)
+
+    assert received and received[0]["id"] == "x1"
+    assert received[0]["kind"] == "score_pending"
+    assert received[0]["done"] == 1 and received[0]["total"] == 3
+    assert received[0]["ref"] == "7"
+    assert received[0]["status"] == "running"
+
+
+def test_task_broker_unsubscribe_stops_delivery():
+    received: list[dict] = []
+    cb = received.append
+    tasks.subscribe(cb)
+    tasks.publish(tasks.TaskState(id="a", kind="ingest", total=1))
+    tasks.unsubscribe(cb)
+    tasks.publish(tasks.TaskState(id="b", kind="ingest", total=1))
+    assert [r["id"] for r in received] == ["a"]
+
+
+def test_score_pending_endpoint_dedupes_concurrent_runs(client, monkeypatch):
+    """A second start while one score run is in flight returns the SAME task id
+    instead of queueing a duplicate scan of the pending queue."""
+    import threading
+
+    c, e = client
+    gate = threading.Event()
+    with Session(e) as s:
+        set_setting(s, "ai_provider", "claude")
+        _seed_resume(s)
+        _seed_job(s, title="Senior Engineer")
+
+    monkeypatch.setattr(scoring, "open_session", lambda: Session(e))
+
+    def _blocking_run(*a, **k):
+        gate.wait(5)  # hold the worker so the task stays "running"
+        return CANNED
+
+    monkeypatch.setattr(scoring.providers, "run", _blocking_run)
+
+    try:
+        first = c.post("/api/ai/score-pending", json={}).json()["task_id"]
+        second = c.post("/api/ai/score-pending", json={}).json()["task_id"]
+        assert first == second
+    finally:
+        gate.set()  # release so the worker thread finishes (no teardown hang)
+
+    for _ in range(250):
+        if c.get(f"/api/ai/tasks/{first}").json()["status"] != "running":
+            break
+        time.sleep(0.02)
+
+
+def test_task_events_generator_replays_running_task():
+    """The /api/ai/events generator replays any in-flight task to a freshly
+    connected subscriber (so progress re-attaches without a poll) and emits the
+    ``: connected`` marker.
+
+    Driven directly rather than through TestClient streaming: TestClient buffers a
+    streaming response and this endpoint's generator is intentionally endless
+    (keepalive loop), so a fixed, bounded read of the async generator is both
+    deterministic and hang-proof.
+    """
+    import asyncio
+
+    from job_applier.api import ai as ai_mod
+
+    # Register a running task straight into the registry (no worker/AI needed).
+    state = tasks.TaskState(id="ev-smoke", kind="ingest", total=2, done=1)
+    with tasks._lock:
+        tasks._tasks[state.id] = state
+
+    class _Req:
+        async def is_disconnected(self):  # only consulted past the replay we read
+            return True
+
+    async def drive():
+        resp = await ai_mod.task_events(_Req())
+        agen = resp.body_iterator
+        chunks: list[str] = []
+        try:
+            for _ in range(50):  # replay lines then ": connected" — bounded
+                chunk = await agen.__anext__()
+                chunks.append(chunk)
+                if chunk.startswith(": connected"):
+                    break
+        finally:
+            await agen.aclose()  # runs the endpoint's finally -> unsubscribe
+        return chunks
+
+    try:
+        chunks = asyncio.run(drive())
+    finally:
+        with tasks._lock:
+            tasks._tasks.pop("ev-smoke", None)
+
+    joined = "".join(chunks)
+    assert "ev-smoke" in joined  # the running task was replayed
+    assert '"kind": "ingest"' in joined
+    assert any(c.startswith(": connected") for c in chunks)

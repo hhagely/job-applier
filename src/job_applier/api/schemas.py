@@ -223,3 +223,4 @@ class TaskOut(BaseModel):
     status: Literal["running", "done", "error"]
     errors: list[str] = []
     results: list[str] = []
+    ref: str | None = None

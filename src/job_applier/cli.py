@@ -37,6 +37,9 @@ def init() -> None:
 def ingest() -> None:
     """Pull jobs from configured sources, dedupe, filter, persist."""
     create_db_and_tables()
+    # Seed slugs if the table is empty — otherwise `make ingest` against a fresh
+    # DB (no prior `init`) would silently run only the config-free aggregators.
+    seed_if_empty()
     stats = run_ingest()
     typer.echo(json.dumps(stats.__dict__, indent=2))
 

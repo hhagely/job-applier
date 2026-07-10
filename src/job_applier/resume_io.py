@@ -46,9 +46,16 @@ def to_markdown(text: str) -> str:
 
 _MULTI_BLANK = re.compile(r"\n{3,}")
 _TRAILING_WS = re.compile(r"[ \t]+\n")
+# C0 control chars that pypdf sometimes emits from malformed PDFs — NUL in
+# particular is illegal in a subprocess argument (breaks the AI CLI call with
+# "embedded null character") and renders as a broken glyph in the extracted-text
+# panel. Keep tab (\x09) and newline (\x0a); drop the rest (plus DEL) so the stored
+# text is clean at the source.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _normalize(text: str) -> str:
+    text = _CONTROL_CHARS.sub("", text)
     text = _TRAILING_WS.sub("\n", text)
     text = _MULTI_BLANK.sub("\n\n", text)
     return text.strip()

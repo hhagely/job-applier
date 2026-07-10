@@ -31,8 +31,11 @@
 		onDraftChange?: () => void | Promise<void>;
 	} = $props();
 
+	// Tracked by kind + this job's id (`ref`) so a draft running for another job
+	// doesn't light up this card. Progress flows over the shared event stream.
 	const draftRun = createTaskRunner({
-		apiBase: () => apiBase,
+		kind: 'draft',
+		ref: () => String(jobId),
 		onSettled: () => onDraftChange?.(),
 		failMessage: 'could not start drafting'
 	});
@@ -97,13 +100,12 @@
 		</form>
 	</div>
 	<p class="muted small" style="margin-top:8px">
-		Run <code>/draft {jobId}</code> in Claude Code to regenerate the tailored markdown from the current job description.
+		Use Regenerate tailored draft above to rebuild the markdown from the current job description.
 	</p>
 {:else}
 	<p class="muted small">
-		No draft yet. Run <code>/draft {jobId}</code> in Claude Code (or the button above) to generate a tailored resume and
-		cover letter (both PDFs). Drafts strictly use only what's in your master resume — they reorder and re-emphasize, but
-		won't invent skills or experience.
+		No draft yet. Use the button above to generate a tailored resume and cover letter (both PDFs). Drafts strictly use
+		only what's in your master resume — they reorder and re-emphasize, but won't invent skills or experience.
 	</p>
 {/if}
 

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
+	import { taskStream } from '$lib/taskStream.svelte';
 	import Titlebar from '$lib/shell/Titlebar.svelte';
 	import Sidebar from '$lib/shell/Sidebar.svelte';
 	import StatusBar from '$lib/shell/StatusBar.svelte';
@@ -23,6 +24,14 @@
 	onMount(() => {
 		mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
 		return initTheme();
+	});
+
+	// One shared event stream for all background tasks. Opened once here (above the
+	// router) so progress survives navigation; refresh page data whenever a task
+	// settles so counts/scores/drafts pick up its results.
+	onMount(() => {
+		taskStream.connect(data.apiBase ?? '', () => invalidateAll());
+		return () => taskStream.disconnect();
 	});
 
 	function onKeydown(e: KeyboardEvent) {
@@ -77,7 +86,7 @@
 <UpdateBanner update={data.update} />
 
 <div class="shell">
-	<Sidebar counts={data.counts ?? {}} />
+	<Sidebar counts={data.counts ?? {}} profile={data.profile ?? null} />
 	<main class="main">
 		{@render children()}
 	</main>

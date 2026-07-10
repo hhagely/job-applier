@@ -2,8 +2,15 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/Icon.svelte';
 	import { NAV, activeNavId, type CountKey } from './nav';
+	import type { ShellProfile } from './profile';
 
-	let { counts = {} }: { counts?: Partial<Record<CountKey, number | null>> } = $props();
+	let {
+		counts = {},
+		profile = null
+	}: {
+		counts?: Partial<Record<CountKey, number | null>>;
+		profile?: ShellProfile | null;
+	} = $props();
 
 	let activeId = $derived(activeNavId(page.url.pathname));
 </script>
@@ -30,13 +37,25 @@
 		{/each}
 	</nav>
 	<div class="side-spacer"></div>
-	<div class="user-chip">
-		<div class="avatar">HH</div>
-		<div style="min-width:0">
-			<div class="u-name">Herb Hagely</div>
-			<div class="u-sub">Senior SWE · St. Louis</div>
-		</div>
-	</div>
+	{#if profile}
+		<a class="user-chip" href="/resume" title="Manage resume">
+			<div class="avatar">{profile.initials}</div>
+			<div style="min-width:0">
+				<div class="u-name">{profile.name}</div>
+				{#if profile.subtitle}
+					<div class="u-sub">{profile.subtitle}</div>
+				{/if}
+			</div>
+		</a>
+	{:else}
+		<a class="user-chip" href="/onboarding" title="Upload your resume">
+			<div class="avatar empty"><Icon name="upload" size={15} /></div>
+			<div style="min-width:0">
+				<div class="u-name">No resume</div>
+				<div class="u-sub">Upload to get started</div>
+			</div>
+		</a>
+	{/if}
 </aside>
 
 <style>

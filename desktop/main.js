@@ -134,7 +134,10 @@ function startBackend(apiPort, pdfBase) {
 		JOB_APPLIER_PDF_SERVICE: pdfBase
 	};
 	const { cmd, args, opts } = backendCommand(apiPort, env);
-	backendProc = spawn(cmd, args, { stdio: 'inherit', ...opts });
+	// windowsHide: never flash a console window when this windowless GUI spawns
+	// the sidecar. Belt-and-suspenders with the headless (console=False)
+	// PyInstaller build — see desktop/sidecar/job-applier-backend.spec.
+	backendProc = spawn(cmd, args, { stdio: 'inherit', windowsHide: true, ...opts });
 	backendProc.on('exit', (code) => {
 		if (code && code !== 0 && !app.isQuitting) {
 			dialog.showErrorBox('job-applier', `Backend exited unexpectedly (code ${code}).`);

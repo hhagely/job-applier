@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import Icon from '$lib/Icon.svelte';
 	import ScoreBadge from '$lib/ScoreBadge.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
@@ -24,14 +24,11 @@
 	const hasProvider = $derived(Boolean(data.aiProvider));
 	const pendingCount = $derived(data.pending);
 
-	const ingest = createTaskRunner({
-		apiBase: () => data.apiBase ?? '',
-		onSettled: () => invalidateAll(),
-		failMessage: 'could not start scrape'
-	});
+	// Progress is driven by the shared event stream (via the runner) so it survives
+	// leaving this page; the layout invalidates page data when a task settles.
+	const ingest = createTaskRunner({ kind: 'ingest', failMessage: 'could not start scrape' });
 	const score = createTaskRunner({
-		apiBase: () => data.apiBase ?? '',
-		onSettled: () => invalidateAll(),
+		kind: 'score_pending',
 		failMessage: 'could not start scoring'
 	});
 	let scrapeForm = $state<HTMLFormElement | null>(null);

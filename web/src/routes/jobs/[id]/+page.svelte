@@ -39,7 +39,7 @@
 			class="btn"
 			class:primary={draftCart.has(job.id)}
 			onclick={() => draftCart.toggle(job.id)}
-			title="Queue this job for a /draft command"
+			title="Add this job to the draft list"
 		>
 			{draftCart.has(job.id) ? '✓ In draft list' : '+ Add to draft list'}
 		</button>
@@ -91,7 +91,7 @@
 							</details>
 						{/if}
 					{:else}
-						<p class="muted">Not yet scored. Run <code>/match-pending</code> or the Score-pending button on the queue.</p>
+						<p class="muted">Not yet scored. Use the Score-pending button on the dashboard.</p>
 					{/if}
 				</div>
 			</div>

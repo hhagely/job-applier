@@ -1,8 +1,9 @@
 import { redirect } from '@sveltejs/kit';
-import { api } from '$lib/api';
+import { api, type Resume } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { activeJobs, isUnreviewed } from '$lib/jobFilters';
 import { scoreBand } from '$lib/score';
+import { deriveProfile } from '$lib/shell/profile';
 import type { LayoutServerLoad } from './$types';
 
 // Set by the onboarding wizard's "Skip / Finish" so a resume-less user isn't
@@ -27,23 +28,27 @@ export interface ShellCounts {
 export const load: LayoutServerLoad = async ({ fetch, url, cookies }) => {
 	const base = serverApiBase();
 
+	// Fetch the active resume once: it drives both the first-run onboarding gate
+	// (below) and the sidebar identity chip. `resumeError` distinguishes a genuine
+	// "no resume" (null — a real state) from "couldn't check" (a flaky API call),
+	// so the gate can fail OPEN and never trap the user in onboarding.
+	let resume: Resume | null = null;
+	let resumeError = false;
+	try {
+		resume = await api.getCurrentResume(fetch, base);
+	} catch {
+		resumeError = true; // fail open — never trap the user on a flaky check
+	}
+
 	// First-run signal: no active resume means the app can't score or draft, so a
 	// stranger who just installed it is walked through the guided /onboarding flow.
-	// Fail OPEN (treat as not-needed) on any error so a flaky check never traps the
-	// user in onboarding. Honor the dismissed cookie so "Skip" sticks.
+	// Honor the dismissed cookie so "Skip" sticks. redirect() throws, so it lives
+	// outside the try above (a catch-all would otherwise swallow the signal).
 	if (url.pathname !== '/onboarding' && !cookies.get(ONBOARDING_DISMISSED_COOKIE)) {
-		let hasResume: boolean | null = null;
-		try {
-			hasResume = !!(await api.getCurrentResume(fetch, base));
-		} catch {
-			hasResume = null; // fail open — never trap the user on a flaky check
-		}
-		// redirect() throws, so it must live OUTSIDE the try above (a catch-all
-		// would otherwise swallow the redirect signal).
-		if (hasResume === false) {
+		if (!resumeError && resume === null) {
 			redirect(307, '/onboarding');
 		}
-		if (hasResume === true) {
+		if (!resumeError && resume !== null) {
 			// Established install: stop re-checking on every navigation.
 			cookies.set(ONBOARDING_DISMISSED_COOKIE, '1', {
 				path: '/',
@@ -85,5 +90,5 @@ export const load: LayoutServerLoad = async ({ fetch, url, cookies }) => {
 		// leave counts as nulls — badges simply won't render
 	}
 
-	return { apiBase: base, aiProvider, counts, update };
+	return { apiBase: base, aiProvider, counts, update, profile: deriveProfile(resume) };
 };

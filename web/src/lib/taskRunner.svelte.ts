@@ -1,70 +1,80 @@
-// Client-side lifecycle for an in-process background task (scrape / score /
-// draft). Wraps the repeated `starting`/`polling`/`snapshot`/`error` state, the
-// `use:enhance` submit handler that reads the `{ task_id }` an action returns,
-// and the poll loop. Callers own what happens when the task settles via
-// `onSettled`. Lives in a `.svelte.ts` module so it can hold `$state`.
-import { pollTask } from '$lib/pollTask';
+// Client-side glue for starting + tracking one background task (scrape / score /
+// draft), backed by the shared event stream (`taskStream`) instead of a poll
+// loop. The `use:enhance` handler starts the task via its form action; progress
+// then arrives over the app-wide SSE connection, so it survives navigation and is
+// visible from the StatusBar. Callers read `snap` / `busy` for their UI.
+//
+// Lives in a `.svelte.ts` module so it can hold `$state` / `$effect`. It must be
+// created during component init (like `$state`) so its settle-effect binds to the
+// calling component.
+import { taskStream } from '$lib/taskStream.svelte';
 import type { TaskSnapshot } from '$lib/api';
 import type { SubmitFunction } from '@sveltejs/kit';
 
 export interface TaskRunnerOptions {
-	/** Base URL for the poll endpoint. Pass a getter (e.g. `() => data.apiBase ?? ''`)
-	 *  so the reactive value is read when the task starts, not captured at init. */
-	apiBase: string | (() => string);
-	/** Ran once the task reaches a terminal state (done or error) with the final
-	 *  snapshot — invalidate, clear a cart, reload a draft, etc. Not called if the
-	 *  poll itself throws (that surfaces as `error`). */
+	/** Backend task `kind` this runner starts and tracks (e.g. `score_pending`). */
+	kind: string;
+	/** Optional per-kind discriminator (e.g. a job id) so a per-entity task is
+	 *  tracked distinctly from others of the same kind. Pass a getter when it comes
+	 *  from a prop that can change. */
+	ref?: string | (() => string | undefined);
+	/** Ran when THIS runner's task settles. The layout already does a global
+	 *  `invalidateAll()` on every settle, so only pass this to refresh state a page
+	 *  loader does NOT own (e.g. the Queue's lazily-fetched draft). */
 	onSettled?: (snap: TaskSnapshot) => void | Promise<void>;
 	/** Fallback message when the start action fails without an `error` field. */
 	failMessage?: string;
 }
 
 export interface TaskRunner {
-	/** Latest snapshot, or null before a run / after dismiss. */
+	/** Latest snapshot for this runner's task, or null before a run / after dismiss. */
 	readonly snap: TaskSnapshot | null;
 	readonly error: string | null;
 	/** True from submit until the task settles — for disabling/spinner copy. */
 	readonly busy: boolean;
-	/** Drop-in `use:enhance` handler: starts the task and begins polling. */
+	/** Drop-in `use:enhance` handler: starts the task; the stream takes it from there. */
 	enhance: SubmitFunction;
-	/** Clear the snapshot + error (the panel "Dismiss" button). */
+	/** Clear this runner's settled task + error (the panel "Dismiss" button). */
 	dismiss(): void;
 	/** Set the error slot directly — for sibling forms that share this panel
-	 *  (e.g. a synchronous "re-render" that isn't itself a polled task). */
+	 *  (e.g. a synchronous "re-render" that isn't itself a tracked task). */
 	setError(message: string | null): void;
 }
 
 export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
-	let snap = $state<TaskSnapshot | null>(null);
 	let starting = $state(false);
-	let polling = $state(false);
 	let error = $state<string | null>(null);
 
-	async function poll(taskId: string) {
-		polling = true;
-		try {
-			const base = typeof opts.apiBase === 'function' ? opts.apiBase() : opts.apiBase;
-			const final = await pollTask(fetch, base, taskId, (s) => (snap = s));
-			await opts.onSettled?.(final);
-		} catch (e) {
-			error = (e as Error).message;
-		} finally {
-			polling = false;
-		}
+	function currentRef(): string | undefined {
+		return typeof opts.ref === 'function' ? opts.ref() : opts.ref;
 	}
+
+	// Clear the optimistic "starting" flag once the stream has picked up the task,
+	// and fire the local onSettled on the running -> terminal transition.
+	let lastStatus: TaskSnapshot['status'] | undefined;
+	$effect(() => {
+		const snap = taskStream.latest(opts.kind, currentRef());
+		if (starting && snap) starting = false;
+		const status = snap?.status;
+		if (status && status !== 'running' && lastStatus === 'running') {
+			void opts.onSettled?.(snap!);
+		}
+		lastStatus = status;
+	});
 
 	return {
 		get snap() {
-			return snap;
+			return taskStream.latest(opts.kind, currentRef());
 		},
 		get error() {
 			return error;
 		},
 		get busy() {
-			return starting || polling;
+			return starting || taskStream.isRunning(opts.kind, currentRef());
 		},
 		dismiss() {
-			snap = null;
+			const snap = taskStream.latest(opts.kind, currentRef());
+			if (snap) taskStream.dismiss(snap.id);
 			error = null;
 		},
 		setError(message: string | null) {
@@ -74,11 +84,13 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 			starting = true;
 			error = null;
 			return async ({ result }) => {
-				starting = false;
 				if (result.type === 'success' && result.data?.task_id) {
-					snap = null;
-					poll(result.data.task_id as string);
-				} else if (result.type === 'failure') {
+					// Task is live on the stream now; the $effect clears `starting`
+					// once its first snapshot arrives (no poll, no flicker).
+					return;
+				}
+				starting = false;
+				if (result.type === 'failure') {
 					error = (result.data?.error as string) ?? opts.failMessage ?? 'action failed';
 				}
 			};

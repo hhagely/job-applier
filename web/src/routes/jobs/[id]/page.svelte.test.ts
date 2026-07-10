@@ -45,6 +45,7 @@ function data(overrides = {}) {
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		update: null,
+		profile: null,
 		...overrides
 	};
 }
