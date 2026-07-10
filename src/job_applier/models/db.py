@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Column, UniqueConstraint
+from sqlalchemy import JSON, Column, UniqueConstraint, event
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
 from job_applier.config import settings
@@ -235,6 +235,23 @@ def engine():
     if _engine is None:
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
         _engine = create_engine(f"sqlite:///{settings.db_path}", echo=False)
+
+        # SQLite defaults to busy_timeout=0 and a rollback journal, so the moment
+        # two connections contend for the write lock the loser raises
+        # "database is locked" — which surfaced as an opaque HTTP 500. Two flows
+        # make this easy to hit: the background scorer/ingest tasks write from
+        # their own thread/session, and the synchronous suggest-roles endpoint
+        # holds its read transaction open for the ~45s of the LLM call before it
+        # commits. WAL lets readers and the single writer coexist, and a busy
+        # timeout makes a contending writer wait for the lock instead of erroring.
+        @event.listens_for(_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=30000")  # ms; wait up to 30s for the lock
+            cur.execute("PRAGMA synchronous=NORMAL")  # safe + faster under WAL
+            cur.close()
+
     return _engine
 
 

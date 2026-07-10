@@ -238,6 +238,12 @@ def suggest_roles_endpoint(
     model = get_setting(session, AI_MODEL_KEY)
     try:
         profile = suggest.suggest_roles(session, provider, model=model)
-    except (suggest.SuggestError, providers.ProviderError) as exc:
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Never surface an opaque 500 for this flow: it shells out to an external
+        # CLI and does DB I/O over a long window, so map SuggestError,
+        # ProviderError, and any unexpected failure (e.g. a transient DB lock) to
+        # a 502 that carries the real reason instead of "Internal Server Error".
         raise HTTPException(502, f"suggestion failed: {exc}") from exc
     return profile_out(profile)
