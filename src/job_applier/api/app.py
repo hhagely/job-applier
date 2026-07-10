@@ -43,11 +43,19 @@ from job_applier.models.db import (
     create_db_and_tables,
     get_session,
 )
+from job_applier.sources.refresh import seed_if_empty
 from job_applier.updates import check_for_update
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     create_db_and_tables()
+    # Seed the per-company source slugs on first boot. The desktop app and
+    # `make api` only ever run the server (never `job-applier init`), so without
+    # this a fresh DB — e.g. the packaged app's userData dir — starts with an
+    # empty SourceSlug table and ingest silently runs only the config-free
+    # aggregators (no Greenhouse/Lever/Oracle/...). Idempotent + per-source, so
+    # it's a no-op on an already-populated DB and cheap to run every boot.
+    seed_if_empty()
     yield
     # Tear the background worker down on shutdown (e.g. Electron closing the app),
     # cancelling any queued task instead of leaking the thread / subprocess.
