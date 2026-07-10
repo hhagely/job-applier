@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { api, getApiBase, type Provider } from '$lib/api';
+	import { taskStream } from '$lib/taskStream.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -67,34 +68,39 @@
 	let ingestProgress = $state({ done: 0, total: 0 });
 	let ingestCount = $state(0);
 	let ingestErr = $state('');
+	let ingestTaskId = $state<string | null>(null);
 
 	async function fetchJobs() {
 		ingestState = 'running';
 		ingestErr = '';
 		try {
 			const { task_id } = await api.startIngest(fetch, base());
-			// Poll the Phase 4 task runner for per-source progress.
-			for (;;) {
-				await new Promise((r) => setTimeout(r, 1000));
-				const snap = await api.getTask(fetch, base(), task_id);
-				ingestProgress = { done: snap.done, total: snap.total };
-				if (snap.status === 'done') {
-					// results are per-source summary strings; sum any trailing counts loosely.
-					ingestCount = snap.results.length;
-					ingestState = 'done';
-					break;
-				}
-				if (snap.status === 'error') {
-					ingestErr = snap.errors.join('; ') || 'Ingest failed.';
-					ingestState = 'error';
-					break;
-				}
-			}
+			// Event-driven: hand the id to the shared stream and react below. The
+			// root layout already holds one EventSource for all task progress, so
+			// there's no poll loop here.
+			ingestTaskId = task_id;
 		} catch (e) {
 			ingestErr = e instanceof Error ? e.message : String(e);
 			ingestState = 'error';
 		}
 	}
+
+	// Drive the wizard's ingest UI off the shared event stream, keyed by the id we
+	// started, so per-source progress and the terminal state arrive as pushes.
+	$effect(() => {
+		if (!ingestTaskId) return;
+		const snap = taskStream.tasks[ingestTaskId];
+		if (!snap) return;
+		ingestProgress = { done: snap.done, total: snap.total };
+		if (snap.status === 'done') {
+			// results are per-source summary strings; count them loosely.
+			ingestCount = snap.results.length;
+			ingestState = 'done';
+		} else if (snap.status === 'error') {
+			ingestErr = snap.errors.join('; ') || 'Ingest failed.';
+			ingestState = 'error';
+		}
+	});
 </script>
 
 <div class="ob-wrap">

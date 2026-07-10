@@ -508,6 +508,7 @@ def _run_ingest_task(state: "ai_tasks.TaskState") -> None:
         state.results.append(
             f"{name}: {stats.inserted} new / {stats.passed_filter} passed (running total)"
         )
+        state.publish()
 
     stats = ingest.run_ingest(progress_cb=_cb)
     state.results.append(

@@ -126,14 +126,15 @@
 	let selectedId = $state<number | null>(null);
 
 	// --- Batch draft (the Draft-list header button): kick off a background draft
-	// of every job in the cart via the configured AI provider, then poll it. ---
+	// of every job in the cart via the configured AI provider. Progress flows over
+	// the shared event stream (survives navigation); the layout invalidates data on
+	// settle, so this hook only needs to empty the cart on success. ---
 	const draftBatch = createTaskRunner({
-		apiBase: () => data.apiBase ?? '',
-		onSettled: async (snap) => {
+		kind: 'draft_batch',
+		onSettled: (snap) => {
 			// Drafting finished — empty the cart so the same jobs aren't re-drafted on
 			// the next run. Keep it on error so the user can retry the failed batch.
 			if (snap.status === 'done') draftCart.clear();
-			await invalidateAll();
 		},
 		failMessage: 'could not start drafting'
 	});

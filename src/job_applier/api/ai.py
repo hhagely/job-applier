@@ -9,10 +9,14 @@ endpoints return 409 rather than erroring, and everything else degrades graceful
 
 from __future__ import annotations
 
+import asyncio
 import functools
+import json
+from typing import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session
+from starlette.responses import StreamingResponse
 
 from job_applier import services
 from job_applier.ai import drafting, providers, scoring, suggest, tasks
@@ -119,6 +123,7 @@ def _run_score_pending(
         state.results.append(f"{outcome.job_id}  {label}  {outcome.title}")
         if outcome.error:
             state.errors.append(f"{outcome.job_id}: {outcome.error}")
+        state.publish()
 
     with scoring.open_session() as session:
         scoring.score_pending(
@@ -132,6 +137,14 @@ def start_score_pending(
     session: Session = Depends(get_session),
     provider: str = Depends(require_ai_ready),
 ) -> StartTaskOut:
+    # Dedupe: the single-worker executor would only queue a second run behind the
+    # first, re-scanning the same pending queue and burning AI calls. If a
+    # score-pending run is already in flight, hand the caller its id so the UI
+    # re-attaches to that run instead of starting a duplicate.
+    existing = tasks.active_task("score_pending")
+    if existing is not None:
+        return StartTaskOut(task_id=existing.id)
+
     pending = services.select_pending_jobs(
         session, limit=200, include_stale=body.include_stale
     )
@@ -161,6 +174,69 @@ def get_task_status(task_id: str) -> TaskOut:
         status=state.status,
         errors=state.errors,
         results=state.results,
+        ref=state.ref,
+    )
+
+
+# Seconds between keepalive comments on an idle stream. Keeps proxies / the
+# browser from reaping a connection that has had no task activity for a while.
+_SSE_KEEPALIVE_SECS = 20.0
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+@router.get("/events")
+async def task_events(request: Request) -> StreamingResponse:
+    """Server-Sent Events stream of *every* background task's progress.
+
+    The client opens one long-lived ``EventSource`` at app load; the store on the
+    far end reduces these snapshots into per-task state, so progress survives
+    navigation and is visible from any page. On connect we replay the snapshots of
+    any currently-running task so a fresh or reconnected client re-attaches
+    without a poll. Workers publish from the task thread; we bridge each snapshot
+    onto this request's event loop with ``call_soon_threadsafe``.
+    """
+    loop = asyncio.get_running_loop()
+    queue: "asyncio.Queue[dict]" = asyncio.Queue()
+
+    def _forward(event: dict) -> None:
+        # Runs on the worker thread — hop back to the event loop thread-safely.
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    # Subscribe BEFORE replaying so any snapshot published during replay is
+    # buffered on the queue rather than lost in the gap.
+    tasks.subscribe(_forward)
+
+    async def gen() -> AsyncIterator[str]:
+        try:
+            for snap in tasks.active_snapshots():
+                yield _sse(snap)
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(), timeout=_SSE_KEEPALIVE_SECS
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield _sse(event)
+        finally:
+            tasks.unsubscribe(_forward)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Disable proxy buffering (nginx) so events flush immediately.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -177,6 +253,7 @@ def run_generate_draft_task(
     def _cb(stage: str) -> None:
         state.done = _DRAFT_STAGES.get(stage, state.done)
         state.results.append(stage)
+        state.publish()
 
     with scoring.open_session() as session:
         job = session.get(JobPosting, job_id)
@@ -205,6 +282,7 @@ def _run_draft_batch(
                 state.results.append(f"{job_id}  ERROR  {title}")
             finally:
                 state.done += 1
+                state.publish()
 
 
 @router.post("/draft-batch", response_model=StartTaskOut)

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/Icon.svelte';
+	import { taskStream, taskLabel } from '$lib/taskStream.svelte';
 
 	let {
 		jobs = null,
@@ -16,10 +17,22 @@
 		onOpenPalette: () => void;
 		onOpenHelp: () => void;
 	} = $props();
+
+	// Live background-task indicator, driven by the shared event stream so it
+	// reflects work started from any page.
+	const running = $derived(taskStream.running);
+	const runLabel = $derived(
+		running
+			? `${taskLabel(running.kind).running} ${running.done}/${running.total}…`
+			: 'Idle'
+	);
 </script>
 
 <footer class="statusbar">
-	<span class="sb-item"><span class="live"></span> Ingest idle</span>
+	<span class="sb-item" title={running ? runLabel : 'No background tasks running'}>
+		<span class="live" class:busy={!!running}></span>
+		{runLabel}
+	</span>
 	{#if jobs != null}<span class="sb-item mono">{jobs} jobs</span>{/if}
 	{#if unreviewed != null}<span class="sb-item mono">{unreviewed} unreviewed</span>{/if}
 	{#if followupsDue != null && followupsDue > 0}

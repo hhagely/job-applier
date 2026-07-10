@@ -31,8 +31,11 @@
 		onDraftChange?: () => void | Promise<void>;
 	} = $props();
 
+	// Tracked by kind + this job's id (`ref`) so a draft running for another job
+	// doesn't light up this card. Progress flows over the shared event stream.
 	const draftRun = createTaskRunner({
-		apiBase: () => apiBase,
+		kind: 'draft',
+		ref: () => String(jobId),
 		onSettled: () => onDraftChange?.(),
 		failMessage: 'could not start drafting'
 	});

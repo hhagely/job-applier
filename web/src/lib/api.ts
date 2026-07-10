@@ -200,6 +200,8 @@ export interface TaskSnapshot {
 	status: 'running' | 'done' | 'error';
 	errors: string[];
 	results: string[];
+	/** Optional per-kind discriminator (e.g. a job id for a tailored-draft run). */
+	ref?: string | null;
 }
 
 export interface UpdateInfo {

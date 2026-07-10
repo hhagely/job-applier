@@ -834,6 +834,26 @@ select.input {
 	background: var(--strong);
 	box-shadow: 0 0 0 3px var(--strong-soft);
 }
+/* A background task is running: switch the idle green dot to a pulsing accent. */
+.statusbar .live.busy {
+	background: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+	animation: sb-pulse 1.4s ease-in-out infinite;
+}
+@keyframes sb-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.35;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.statusbar .live.busy {
+		animation: none;
+	}
+}
 .statusbar .sb-right {
 	margin-left: auto;
 	display: flex;
