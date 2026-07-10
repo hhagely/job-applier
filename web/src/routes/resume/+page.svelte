@@ -74,8 +74,8 @@
 				{/if}
 				{#if form?.ok}
 					<p class="banner info" style="margin-top:12px">
-						Resume uploaded. Run <code>/suggest-roles</code> or the Suggest-roles button to refresh your
-						<a href="/search">search profile</a> recommendations.
+						Resume uploaded. Use the <a href="/search">search profile</a> page's Suggest-roles button to
+						refresh your recommendations.
 					</p>
 				{/if}
 			</div>
@@ -100,7 +100,7 @@
 			<div class="card">
 				<div class="card-h">
 					<h3>Extracted text</h3>
-					<span class="hint" style="margin-left:auto;margin-top:0">what <span class="mono" style="color:var(--accent)">/match-pending</span> sees</span>
+					<span class="hint" style="margin-left:auto;margin-top:0">what the match scorer sees</span>
 				</div>
 				<div class="card-b">
 					<p class="hint" style="margin-top:0;margin-bottom:12px">

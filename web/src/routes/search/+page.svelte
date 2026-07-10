@@ -70,7 +70,7 @@
 			<p class="banner info">
 				No profile saved yet — filter is using built-in defaults.
 				{#if data.hasResume}
-					Run <code>/suggest-roles</code> or the Suggest-roles button for recommendations.
+					Use the Suggest-roles button for recommendations.
 				{:else}
 					Upload a resume first, then suggest roles for recommendations.
 				{/if}

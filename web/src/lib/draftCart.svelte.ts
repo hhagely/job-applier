@@ -53,11 +53,6 @@ class DraftCart {
 		this.ids = [];
 		persist(this.ids);
 	}
-
-	get command(): string {
-		const sorted = [...this.ids].sort((a, b) => a - b);
-		return `/draft ${sorted.join(' ')}`;
-	}
 }
 
 export const draftCart = new DraftCart();

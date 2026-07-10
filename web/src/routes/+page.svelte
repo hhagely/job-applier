@@ -574,7 +574,7 @@
 						</div>
 						<div class="card-b">
 							{#if !j.score}
-								<div class="draft-empty">Not scored yet. Run <code>/match-pending</code> or the Score-pending button.</div>
+								<div class="draft-empty">Not scored yet. Use the Score-pending button on the dashboard.</div>
 							{:else}
 								<ScoreBreakdown score={j.score} />
 							{/if}
