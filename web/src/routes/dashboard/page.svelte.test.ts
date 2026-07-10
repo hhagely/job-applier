@@ -39,6 +39,7 @@ function data(overrides = {}) {
 		apiBase: '',
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 12, queue: 5, followups: 2, strong: 3 },
+		update: null,
 		kpis: { jobs: 12, scored: 8, unreviewed: 5, strong: 3, applied: 4, rejected: 1, followupsDue: 2, avg: 77 },
 		pending: 1,
 		dist: [

@@ -14,11 +14,12 @@ class Settings(BaseSettings):
     # data without touching it. A packaged app points this at a per-OS user-data dir.
     data_dir: Path = REPO_ROOT / "data"
 
-    # db_path / resumes_dir default to None and are derived from data_dir below. An
-    # explicit env override (JOB_APPLIER_DB_PATH / JOB_APPLIER_RESUMES_DIR) still wins.
+    # db_path / resumes_dir / applications_dir default to None and are derived from
+    # data_dir below. An explicit env override (JOB_APPLIER_DB_PATH /
+    # JOB_APPLIER_RESUMES_DIR / JOB_APPLIER_APPLICATIONS_DIR) still wins.
     db_path: Path | None = None
     resumes_dir: Path | None = None
-    applications_dir: Path = REPO_ROOT / "applications"
+    applications_dir: Path | None = None
     max_resume_bytes: int = 10 * 1024 * 1024  # 10 MiB
 
     api_host: str = "127.0.0.1"
@@ -41,6 +42,17 @@ class Settings(BaseSettings):
             self.db_path = self.data_dir / "jobs.db"
         if self.resumes_dir is None:
             self.resumes_dir = self.data_dir / "resumes"
+        if self.applications_dir is None:
+            # Back-compat special case: with the repo-default data_dir, keep drafts
+            # at the historical REPO_ROOT/applications so the author's existing local
+            # drafts aren't orphaned. Any relocated data_dir (dev copy or the
+            # packaged app's user-data dir) nests applications under it, so a
+            # distributed install writes tailored drafts to user-data, not next to
+            # the read-only install resources.
+            if self.data_dir == REPO_ROOT / "data":
+                self.applications_dir = REPO_ROOT / "applications"
+            else:
+                self.applications_dir = self.data_dir / "applications"
         return self
 
 
