@@ -18,11 +18,19 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Optional, TypeVar
 
 from pydantic import BaseModel, ValidationError
+
+# On Windows, a console-subsystem child (an AI CLI, a `--version` probe) spawned by
+# the windowless packaged backend gets allocated its OWN console window — a command
+# prompt that flashes open and shut in the desktop app. CREATE_NO_WINDOW suppresses
+# it. Evaluated lazily so the Windows-only flag is never touched off-Windows (0 is a
+# no-op creationflags value everywhere else).
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # ---- errors ---------------------------------------------------------------
 
@@ -190,6 +198,7 @@ def _probe_version(provider: Provider, *, timeout: float = 5.0) -> Optional[str]
             timeout=timeout,
             env=_scrubbed_env(),
             check=False,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -272,13 +281,26 @@ def run(
     if shutil.which(provider.bin) is None:
         raise ProviderNotFound(f"'{provider.bin}' is not installed / not on PATH")
 
+    # The prompt is passed as an argv string; NUL bytes are illegal in a process
+    # argument (Windows raises ValueError "embedded null character") and carry no
+    # meaning for the model. Prompts are assembled from PDF-extracted resume text
+    # and scraped job descriptions, both of which routinely contain stray NULs, so
+    # strip them here — the single choke point for every provider flow.
+    prompt = prompt.replace("\x00", "")
+
     argv = provider.build_argv(prompt, model=model)
     env = _scrubbed_env()
 
     # A temp cwd means no repo files are reachable even if a tool sneaks through.
+    # ignore_cleanup_errors: on Windows a CLI (or an AV scanner) can still hold a
+    # handle in the dir when cleanup() runs in the finally below, and an
+    # uncaught PermissionError there would escape as an opaque 500. A leaked temp
+    # dir is harmless (the OS reclaims it); a failed AI call is not.
     tmp: Optional[tempfile.TemporaryDirectory] = None
     if cwd is None:
-        tmp = tempfile.TemporaryDirectory(prefix="job-applier-ai-")
+        tmp = tempfile.TemporaryDirectory(
+            prefix="job-applier-ai-", ignore_cleanup_errors=True
+        )
         cwd = tmp.name
     try:
         proc = subprocess.run(
@@ -294,6 +316,7 @@ def run(
             env=env,
             cwd=cwd,
             check=False,
+            creationflags=_NO_WINDOW,
         )
     except subprocess.TimeoutExpired as exc:
         raise ProviderTimeout(f"{provider.bin} timed out after {timeout}s") from exc

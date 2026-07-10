@@ -71,6 +71,53 @@ def test_run_uses_argv_not_shell_with_temp_cwd(monkeypatch):
     assert cwd and "job-applier-ai-" in cwd
 
 
+def test_run_strips_null_bytes_from_prompt(monkeypatch):
+    # PDF-extracted resume text / scraped JDs can carry NUL, which is illegal in a
+    # process argument (Windows: "embedded null character"). run() must strip it so
+    # the argv is valid, without mangling the surrounding text.
+    captured = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/" + b)
+    monkeypatch.setattr(providers.subprocess, "run", _fake_run)
+
+    providers.run("claude", "before\x00after")
+    assert all("\x00" not in part for part in captured["argv"])
+    # The text either side of the NUL survives (joined, not truncated).
+    assert any("beforeafter" in part for part in captured["argv"])
+
+
+def test_run_passes_no_window_creationflag(monkeypatch):
+    # Suppresses the flashing console window when the windowless packaged backend
+    # spawns a console-subsystem CLI on Windows. 0 (no-op) off-Windows.
+    captured = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/" + b)
+    monkeypatch.setattr(providers.subprocess, "run", _fake_run)
+    providers.run("claude", "hi")
+    assert captured["kwargs"]["creationflags"] == providers._NO_WINDOW
+
+
+def test_probe_version_passes_no_window_creationflag(monkeypatch):
+    captured = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, stdout="1.0\n", stderr="")
+
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/" + b)
+    monkeypatch.setattr(providers.subprocess, "run", _fake_run)
+    providers.detect_one(providers.PROVIDERS["claude"])
+    assert captured["kwargs"]["creationflags"] == providers._NO_WINDOW
+
+
 def test_run_scrubs_sensitive_env(monkeypatch):
     captured = {}
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
