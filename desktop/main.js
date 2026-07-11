@@ -6,7 +6,7 @@
 // the window. PDFs render via Electron's printToPDF (an offscreen window), so the
 // packaged app ships no Playwright.
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
 const { spawn, execSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
@@ -169,10 +169,32 @@ async function startWebServer(webPort, apiBase) {
 
 // --- PDF print service (Electron printToPDF) -------------------------------
 
+// Draft PDFs print from trusted local HTML (inline CSS, no subresources), but the
+// draft text itself is derived from an untrusted job description. A prompt-injected
+// draft could embed an <img>/<link> at an attacker URL to exfiltrate the resume's PII
+// when the page renders. Print in an isolated session that cancels every request other
+// than the top-document navigation, so no such subresource is ever fetched. Mirrors the
+// Playwright guard in src/job_applier/pdf.py. JS is disabled too (the HTML needs none).
+const PRINT_PARTITION = 'print-isolated';
+
+function configurePrintSession() {
+	const printSession = session.fromPartition(PRINT_PARTITION);
+	printSession.webRequest.onBeforeRequest((details, callback) => {
+		callback({ cancel: details.resourceType !== 'mainFrame' });
+	});
+	return printSession;
+}
+
 async function printUrlToPdf(url) {
 	const win = new BrowserWindow({
 		show: false,
-		webPreferences: { offscreen: true, javascript: true }
+		webPreferences: {
+			offscreen: true,
+			javascript: false,
+			partition: PRINT_PARTITION,
+			contextIsolation: true,
+			nodeIntegration: false
+		}
 	});
 	try {
 		await win.loadURL(url);
@@ -186,6 +208,7 @@ async function printUrlToPdf(url) {
 }
 
 async function startPdfService() {
+	configurePrintSession();
 	const port = await freePort();
 	pdfServer = http.createServer((req, res) => {
 		if (req.method !== 'POST' || req.url !== '/print') {

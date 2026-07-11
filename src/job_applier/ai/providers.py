@@ -5,8 +5,10 @@ to a CLI that *can* run tools. Two backstops apply to EVERY provider regardless 
 its flags — a throwaway cwd with no repo files reachable, and a scrubbed env (keys
 stripped) — plus argv only (never ``shell=True``) and a timeout. On top of those,
 the Claude and Codex adapters pass explicit tool/approval-sandbox flags in
-``build_argv``; Gemini and Ollama have no such flag and lean on the two shared
-backstops alone. Model output is always treated as data.
+``build_argv``; Gemini pins ``--approval-mode default`` + ``-e none`` (the safe
+non-interactive posture, which drops confirmation-requiring tools, plus zero
+extensions); Ollama has no tools to sandbox and leans on the two shared backstops
+alone. Model output is always treated as data.
 
 All provider-specific CLI flags live in ``build_argv`` / ``version_argv`` so flag
 drift across CLI versions is a one-line edit here (the single point of drift).
@@ -68,6 +70,13 @@ class Provider:
     display_name: str
     bin: str
     tier: Tier
+    # A lighter/cheaper model tier for high-volume *baseline* scoring (the flow
+    # that scores a whole ingest at once). Baseline scoring is triage, not the
+    # final gate, so it shouldn't burn the user's subscription window on the top
+    # tier. ``None`` means "no cheaper default known for this CLI" -> callers fall
+    # back to the configured generation model / account default. Overridable per
+    # provider in Settings (persisted as ``ai_scoring_model``).
+    scoring_model: Optional[str] = None
 
     def version_argv(self) -> list[str]:
         return [self.bin, "--version"]
@@ -81,6 +90,9 @@ class ClaudeProvider(Provider):
     display_name = "Claude Code"
     bin = "claude"
     tier = "recommended"
+    # Sonnet handles the scoring rubric (5 weighted buckets + hard rules) reliably
+    # at a fraction of Opus's usage-window cost. Claude Code accepts the bare alias.
+    scoring_model = "sonnet"
 
     def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Sandbox: empty tool allowlist + `dontAsk` permission mode => the CLI
@@ -123,13 +135,24 @@ class GeminiProvider(Provider):
     display_name = "Gemini CLI"
     bin = "gemini"
     tier = "recommended"
+    # Flash is Gemini's fast/cheap tier — the Sonnet-equivalent for triage scoring.
+    scoring_model = "gemini-2.5-flash"
 
     def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
-        # Non-interactive prompt mode. The Gemini CLI exposes no tool/approval
-        # sandbox flag we rely on here, so this adapter leans on the shared
-        # backstops (throwaway cwd + scrubbed env) rather than a per-invocation
-        # tool denial like the Claude/Codex adapters use.
-        argv = [self.bin, "-p", prompt]
+        # Non-interactive prompt mode, hardened against a prompt-injected job
+        # description coaxing the CLI into running a tool:
+        #   --approval-mode default : pins the safe posture. In non-interactive (-p)
+        #     mode the Gemini CLI excludes confirmation-requiring tools (shell, edit)
+        #     from the tool registry unless they're explicitly allow-listed, which we
+        #     never do. Passing it explicitly means a later change to the CLI's default
+        #     can't silently arm those tools.
+        #   -e none : load ZERO extensions, so an extension (or extension-provided MCP
+        #     tool) can't be invoked - the Gemini analogue of Claude's empty
+        #     --mcp-config.
+        # Still backed by the shared throwaway-cwd + scrubbed-env backstops (read-only
+        # built-in tools may remain registered; the cwd/env bound their blast radius.
+        # A user wanting zero tools can add a .gemini/settings.json with tools.core: []).
+        argv = [self.bin, "-p", prompt, "--approval-mode", "default", "-e", "none"]
         if model:
             argv += ["-m", model]
         return argv
@@ -173,6 +196,13 @@ _PROVIDER_LIST: list[Provider] = [
     OllamaProvider(),
 ]
 PROVIDERS: dict[str, Provider] = {p.name: p for p in _PROVIDER_LIST}
+
+
+def default_scoring_model(name: str) -> Optional[str]:
+    """The provider's built-in lighter tier for baseline (bulk) scoring, or ``None``
+    when the CLI has no cheaper default we can name (e.g. Codex, local Ollama)."""
+    provider = PROVIDERS.get(name)
+    return provider.scoring_model if provider is not None else None
 
 
 @dataclass(frozen=True)

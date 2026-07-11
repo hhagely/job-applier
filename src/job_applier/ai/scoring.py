@@ -15,11 +15,21 @@ from typing import Callable, Optional
 from pydantic import BaseModel, Field
 
 from job_applier import services
-from job_applier.ai import providers
+from job_applier.ai import prompt_safety, providers
+from job_applier.config import settings
 from job_applier.models.db import ApplicationStatus, JobPosting, Session, engine
 
 # Below this score a job is auto-archived after scoring (60 itself survives).
 ARCHIVE_BELOW = 60
+
+# Batch scoring: pack several jobs into one CLI call so the resume + rubric prefix
+# (the bulk of each call, and identical across jobs) is sent once instead of once
+# per job. Sizing is adaptive — short JDs pack many per call, long JDs pack fewer,
+# so full descriptions are never truncated and one call's output can't balloon.
+BATCH_MAX_JOBS = 8
+# Total JD characters allowed in one batch. A single JD larger than this lands in a
+# batch of one (i.e. the single-job path), losing no content.
+BATCH_JD_CHAR_BUDGET = 24_000
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -46,30 +56,94 @@ def html_to_text(s: str) -> str:
 
 # ---- prompt template ------------------------------------------------------
 
-_template_cache: Optional[str] = None
+_template_cache: dict[str, str] = {}
 
 
-def _template() -> str:
-    global _template_cache
-    if _template_cache is None:
-        _template_cache = (
+def _template(name: str = "score.md") -> str:
+    cached = _template_cache.get(name)
+    if cached is None:
+        cached = (
             resources.files("job_applier.ai")
-            .joinpath("prompts/score.md")
+            .joinpath(f"prompts/{name}")
             .read_text(encoding="utf-8")
         )
-    return _template_cache
+        _template_cache[name] = cached
+    return cached
 
 
 def build_score_prompt(resume_text: str, job: JobPosting) -> str:
-    """Render the score prompt for one job. Description HTML is flattened first."""
+    """Render the score prompt for one job. Description HTML is flattened, then fenced
+    as untrusted data with a per-call nonce so an injected instruction in the posting
+    can't escape its block (see :mod:`prompt_safety`)."""
+    nonce = prompt_safety.new_nonce()
+    description = prompt_safety.clean_untrusted(html_to_text(job.description or ""), nonce)
     return (
         _template()
         .replace("{{RESUME_TEXT}}", resume_text.strip())
         .replace("{{TITLE}}", job.title or "")
         .replace("{{COMPANY}}", job.company.name if job.company else "Unknown")
         .replace("{{LOCATION}}", job.location or "Not specified")
-        .replace("{{DESCRIPTION}}", html_to_text(job.description or ""))
+        .replace("{{NONCE}}", nonce)
+        .replace("{{DESCRIPTION}}", description)
     )
+
+
+def _job_block(job: JobPosting, nonce: str) -> str:
+    """One delimited, id-tagged job block for the batch prompt. The full JD is fenced
+    (with the shared per-call nonce and its markers scrubbed from the JD text) so a
+    long/messy or hostile description can't bleed into the next job or be read as
+    instructions."""
+    company = job.company.name if job.company else "Unknown"
+    description = prompt_safety.clean_untrusted(html_to_text(job.description or ""), nonce)
+    return (
+        f"=== JOB id={job.id} nonce={nonce} ===\n"
+        f"Title: {job.title or ''}\n"
+        f"Company: {company}\n"
+        f"Location: {job.location or 'Not specified'}\n"
+        "Description:\n"
+        "<<<\n"
+        f"{description}\n"
+        ">>>\n"
+        f"=== END JOB id={job.id} nonce={nonce} ==="
+    )
+
+
+def build_batch_score_prompt(resume_text: str, jobs: list[JobPosting]) -> str:
+    """Render the batch score prompt for several jobs (resume + rubric sent once).
+
+    All job blocks share one per-call nonce; the guard text tells the model the block
+    ends only at the END line carrying it, so no job's description can forge a close."""
+    nonce = prompt_safety.new_nonce()
+    jobs_block = "\n\n".join(_job_block(j, nonce) for j in jobs)
+    return (
+        _template("score_batch.md")
+        .replace("{{RESUME_TEXT}}", resume_text.strip())
+        .replace("{{NONCE}}", nonce)
+        .replace("{{JOBS_BLOCK}}", jobs_block)
+    )
+
+
+def chunk_jobs(jobs: list[JobPosting]) -> list[list[JobPosting]]:
+    """Greedily pack jobs into batches bounded by BATCH_MAX_JOBS and a JD-character
+    budget. Short descriptions pack up to the count cap; long ones split earlier so
+    each call stays bounded. A single over-budget JD gets its own batch of one."""
+    batches: list[list[JobPosting]] = []
+    current: list[JobPosting] = []
+    current_chars = 0
+    for job in jobs:
+        jd_chars = len(job.description or "")
+        would_overflow = current and (
+            len(current) >= BATCH_MAX_JOBS
+            or current_chars + jd_chars > BATCH_JD_CHAR_BUDGET
+        )
+        if would_overflow:
+            batches.append(current)
+            current, current_chars = [], 0
+        current.append(job)
+        current_chars += jd_chars
+    if current:
+        batches.append(current)
+    return batches
 
 
 # ---- payload validation ---------------------------------------------------
@@ -79,6 +153,22 @@ class ScoredPayload(BaseModel):
     score: int = Field(ge=0, le=100)
     rubric: dict = {}
     reasoning: str = ""
+
+
+class BatchJobScore(BaseModel):
+    """One job's result inside a batch. ``score`` is optional/loosely typed so a
+    single malformed entry doesn't fail validation of the whole batch — the caller
+    accepts only entries with an in-range score and re-queues the rest single-job."""
+
+    id: int
+    score: Optional[int] = None
+    rubric: dict = {}
+    reasoning: str = ""
+    error: Optional[str] = None
+
+
+class BatchScoredPayload(BaseModel):
+    results: list[BatchJobScore] = []
 
 
 _BUCKETS = (
@@ -139,6 +229,28 @@ def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> ScoredPa
         raise ScoringError(f"invalid JSON after retry: {exc}") from exc
 
 
+def _persist_score(
+    session: Session,
+    provider: str,
+    job_id: int,
+    payload: ScoredPayload,
+    *,
+    score_kind: str = "baseline",
+) -> int:
+    """Reconcile + upsert one scored payload. Shared by the single-job and batch paths."""
+    final_score = _reconcile_score(payload)
+    services.upsert_score(
+        session,
+        job_id,
+        score=final_score,
+        rubric=payload.rubric,
+        reasoning=payload.reasoning,
+        scored_by=f"{provider}-cli",
+        score_kind=score_kind,
+    )
+    return final_score
+
+
 def score_one(
     session: Session,
     provider: str,
@@ -154,17 +266,46 @@ def score_one(
     flow); the same rubric template powers both so baseline/tailored can't drift.
     """
     payload = _run_and_parse(provider, build_score_prompt(resume_text, job), model)
-    final_score = _reconcile_score(payload)
-    services.upsert_score(
-        session,
-        job.id,
-        score=final_score,
-        rubric=payload.rubric,
-        reasoning=payload.reasoning,
-        scored_by=f"{provider}-cli",
-        score_kind=score_kind,
-    )
+    final_score = _persist_score(session, provider, job.id, payload, score_kind=score_kind)
     return ScoreResult(job.id, final_score, payload.reasoning)
+
+
+def _score_batch_call(
+    provider: str,
+    resume_text: str,
+    jobs: list[JobPosting],
+    model: Optional[str],
+) -> dict[int, ScoredPayload]:
+    """One batch invocation. Returns ``{job_id: payload}`` for the jobs the model
+    scored cleanly (id echoed, no ``error``, score in range). Jobs the model dropped
+    or botched are simply absent, so the caller re-queues them single-job. Raises the
+    underlying ``ProviderError`` / ``ScoringError`` on a total failure (provider error
+    or unparseable JSON after retry) so the caller can fall the *whole* batch back."""
+    prompt = build_batch_score_prompt(resume_text, jobs)
+    try:
+        payload = providers.run_json(
+            provider,
+            prompt,
+            BatchScoredPayload,
+            model=model,
+            timeout=settings.ai_score_batch_timeout,
+            nudge=(
+                "IMPORTANT: return ONLY the JSON object with a `results` array, one "
+                "entry per job id, each with its `id` and `score`."
+            ),
+        )
+    except providers.ProviderJSONError as exc:
+        raise ScoringError(f"invalid batch JSON after retry: {exc}") from exc
+
+    wanted = {j.id for j in jobs}
+    out: dict[int, ScoredPayload] = {}
+    for r in payload.results:
+        if r.id not in wanted or r.error is not None or r.score is None:
+            continue
+        if not 0 <= r.score <= 100:
+            continue
+        out[r.id] = ScoredPayload(score=r.score, rubric=r.rubric, reasoning=r.reasoning)
+    return out
 
 
 def score_pending(
@@ -183,9 +324,12 @@ def score_pending(
     auto-archived — a job manually marked ``applied``/``interviewing``/etc. keeps its
     status even if a re-score drops it below the threshold (see ``_is_untriaged``).
 
-    A single job's failure is recorded as a per-job error and does not abort the
-    batch. When ``job_ids`` is given those exact jobs are scored; otherwise the
-    live pending-match queue is used.
+    Jobs are scored in adaptive batches — one CLI call per batch, resume + rubric
+    sent once — with a per-job single-job fallback: any job the model drops or botches
+    (and any whole batch whose call fails) is re-scored one at a time so batching never
+    loses a job. A single job's failure is recorded as a per-job error and does not abort
+    the run. When ``job_ids`` is given those exact jobs are scored; otherwise the live
+    pending-match queue is used.
     """
     resume = services.active_resume(session)
     if resume is None:
@@ -200,17 +344,40 @@ def score_pending(
 
     outcomes: list[JobScoreOutcome] = []
     low_scorers: list[int] = []
-    for job in jobs:
-        try:
-            result = score_one(session, provider, resume.extracted_text, job, model=model)
-            outcome = JobScoreOutcome(job.id, job.title, result.score, None)
-            if result.score < ARCHIVE_BELOW and _is_untriaged(job):
-                low_scorers.append(job.id)
-        except Exception as exc:  # noqa: BLE001 - one job's failure can't kill the batch
-            outcome = JobScoreOutcome(job.id, job.title, None, str(exc))
+
+    def _record(job: JobPosting, score: Optional[int], error: Optional[str]) -> None:
+        if score is not None and score < ARCHIVE_BELOW and _is_untriaged(job):
+            low_scorers.append(job.id)
+        outcome = JobScoreOutcome(job.id, job.title, score, error)
         outcomes.append(outcome)
         if progress_cb is not None:
             progress_cb(outcome)
+
+    for batch in chunk_jobs(jobs):
+        # A batch of one has nothing to amortize; skip the array contract and score it
+        # directly. For 2+ jobs, one call scores them all; gaps fall back below.
+        batch_scores: dict[int, ScoredPayload] = {}
+        if len(batch) > 1:
+            try:
+                batch_scores = _score_batch_call(
+                    provider, resume.extracted_text, batch, model
+                )
+            except Exception:  # noqa: BLE001 - a failed batch degrades to single-job, never lost
+                batch_scores = {}
+
+        for job in batch:
+            try:
+                payload = batch_scores.get(job.id)
+                if payload is not None:
+                    final = _persist_score(session, provider, job.id, payload)
+                    _record(job, final, None)
+                else:
+                    result = score_one(
+                        session, provider, resume.extracted_text, job, model=model
+                    )
+                    _record(job, result.score, None)
+            except Exception as exc:  # noqa: BLE001 - one job's failure can't kill the run
+                _record(job, None, str(exc))
 
     if low_scorers:
         services.bulk_set_status(session, low_scorers, ApplicationStatus.archived)

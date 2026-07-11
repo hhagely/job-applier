@@ -13,9 +13,12 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '');
 		const model = (form.get('model') as string | null)?.trim() || undefined;
+		// Present-but-blank ("") clears the override; absent (null) leaves it untouched.
+		const scoringRaw = form.get('scoring_model');
+		const scoringModel = scoringRaw === null ? undefined : String(scoringRaw).trim();
 		if (!name) return fail(400, { error: 'pick a provider' });
 		try {
-			const ai = await api.selectProvider(fetch, serverApiBase(), name, model);
+			const ai = await api.selectProvider(fetch, serverApiBase(), name, model, scoringModel);
 			return { ok: true, ai, message: `Selected ${name}.` };
 		} catch (e) {
 			return fail(422, { error: (e as Error).message });
