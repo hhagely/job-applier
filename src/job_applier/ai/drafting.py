@@ -16,7 +16,7 @@ from typing import Callable, Optional
 from pydantic import BaseModel, model_validator
 
 from job_applier import services
-from job_applier.ai import bans, providers, scoring
+from job_applier.ai import bans, prompt_safety, providers, scoring
 from job_applier.config import settings
 from job_applier.models.db import ApplicationStatus, JobPosting, Session
 
@@ -71,13 +71,18 @@ def _template() -> str:
 
 
 def build_draft_prompt(resume_text: str, job: JobPosting) -> str:
+    nonce = prompt_safety.new_nonce()
+    description = prompt_safety.clean_untrusted(
+        scoring.html_to_text(job.description or ""), nonce
+    )
     return (
         _template()
         .replace("{{RESUME_TEXT}}", resume_text.strip())
         .replace("{{TITLE}}", job.title or "")
         .replace("{{COMPANY}}", job.company.name if job.company else "Unknown")
         .replace("{{LOCATION}}", job.location or "Not specified")
-        .replace("{{DESCRIPTION}}", scoring.html_to_text(job.description or ""))
+        .replace("{{NONCE}}", nonce)
+        .replace("{{DESCRIPTION}}", description)
     )
 
 
@@ -140,8 +145,11 @@ def generate_draft(
         provider, build_draft_prompt(resume.extracted_text, job), model
     )
 
-    resume_md = bans.sanitize(envelope.resume_md)
-    cover_md = bans.sanitize(envelope.cover_letter_md)
+    # Char bans + exfil-vector strip (drop injected tracking images / links). Applied
+    # in-memory so the rendered PDF uses the cleaned text, and again at save_markdown
+    # so the disk copy is clean too (idempotent). See ai/bans.py for the rationale.
+    resume_md = bans.strip_exfil_vectors(bans.sanitize(envelope.resume_md))
+    cover_md = bans.strip_exfil_vectors(bans.sanitize(envelope.cover_letter_md))
     sanitized = resume_md != envelope.resume_md or cover_md != envelope.cover_letter_md
     leftover = bans.find_banned(resume_md) + bans.find_banned(cover_md)
     if leftover:

@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # JOB_APPLIER_AI_DRAFT_TIMEOUT (seconds) if your provider/model is slower.
     ai_draft_timeout: float = 300
 
+    # Per-call ceiling for a *batch* scoring invocation (the bulk pending-scorer packs
+    # several jobs into one call to amortize the resume + rubric prefix). One call does
+    # N jobs' worth of work, so it needs more headroom than the 120s single-job default.
+    # Tune via JOB_APPLIER_AI_SCORE_BATCH_TIMEOUT (seconds).
+    ai_score_batch_timeout: float = 300
+
     @model_validator(mode="after")
     def _derive_data_paths(self) -> "Settings":
         # Derive per-artifact paths from data_dir unless the caller pinned them

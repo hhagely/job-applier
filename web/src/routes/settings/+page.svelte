@@ -278,6 +278,26 @@
 							</div>
 						{/if}
 
+						{#if chosen}
+							<div class="field scoring-field">
+								<span>Scoring model <span class="opt">baseline / bulk</span></span>
+								<input
+									class="input"
+									type="text"
+									name="scoring_model"
+									value={ai.scoring_model ?? ''}
+									placeholder={ai.scoring_model_default ?? 'provider default'}
+								/>
+								<small class="fieldhelp">
+									Scoring a whole ingest is many calls at once, so it uses a lighter, cheaper model
+									than drafting to spare your usage limits. Tailored re-scores still use your main
+									model. Leave blank for the default{ai.scoring_model_default
+										? ` (${ai.scoring_model_default})`
+										: ''}.
+								</small>
+							</div>
+						{/if}
+
 						<button type="submit" class="btn primary" disabled={!chosen}>Save selection</button>
 					</form>
 
@@ -452,6 +472,31 @@
 	.ok {
 		color: var(--strong);
 		font-size: 0.85rem;
+	}
+	.scoring-field {
+		max-width: 340px;
+		margin-bottom: 14px;
+	}
+	.scoring-field > span {
+		display: block;
+		font-size: 13px;
+		font-weight: 600;
+		margin-bottom: 5px;
+	}
+	.scoring-field .opt {
+		font-weight: 500;
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--faint);
+		margin-left: 4px;
+	}
+	.fieldhelp {
+		display: block;
+		margin-top: 6px;
+		font-size: 12px;
+		line-height: 1.5;
+		color: var(--faint);
 	}
 	.test-form {
 		display: flex;

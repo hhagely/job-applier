@@ -198,11 +198,16 @@ class ProvidersOut(BaseModel):
     providers: list[ProviderOut]
     selected: Optional[str] = None
     model: Optional[str] = None
+    # Baseline (bulk) scoring model: the persisted override (may be None) and the
+    # selected provider's built-in default, shown as the input placeholder.
+    scoring_model: Optional[str] = None
+    scoring_model_default: Optional[str] = None
 
 
 class SelectProviderIn(BaseModel):
     name: str
     model: Optional[str] = None
+    scoring_model: Optional[str] = None
 
 
 class AiTestIn(BaseModel):
