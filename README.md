@@ -104,7 +104,9 @@ features works with no provider installed.
    titles, seniority terms, required tech, and excluded tech. These drive the
    hard filter at ingest. Click **Suggest roles from resume** on `/search` (needs
    an AI provider selected in Settings) to have the model propose a profile from
-   your resume; you accept or edit it before it applies.
+   your resume; you accept or edit it before it applies. The same page holds a
+   **company blacklist** — employers you never want surfaced; their postings are
+   dropped at ingest before they reach your queue.
 4. **Ingest** new postings:
    ```sh
    make ingest
@@ -149,7 +151,7 @@ web/           # SvelteKit app
   src/lib/draftCart.svelte.ts                          # cross-route draft cart (Svelte rune-based store)
   src/routes/+page.{svelte,server.ts}                  # queue (persisted filters, source/status/ease chips)
   src/routes/jobs/[id]/+page.{svelte,server.ts}        # detail, status form actions, rubric popover, drafts
-  src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft)
+  src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft) + company blacklist
   src/routes/followups/+page.{svelte,server.ts}        # applied jobs past their follow-up date
   src/routes/resume/+page.{svelte,server.ts}           # resume upload + view
 .claude/commands/    # legacy Claude-Code slash commands (mirror src/job_applier/ai/prompts/)
@@ -167,6 +169,14 @@ data/resumes/        # uploaded PDFs (gitignored)
 Applied at ingest time. Jobs that fail the role criteria are dropped before
 persistence (cheap to re-evaluate on every ingest). Jobs that fail the location
 or remote checks are still written to the DB so they're auditable.
+
+**Company blacklist (checked first).** Before any rule runs, a job whose employer
+is on your company blacklist is dropped outright — no row is written, even the
+first time that company is seen. The list is edited at
+http://localhost:5174/search alongside the profile. Matching normalizes the
+company name (casing, punctuation, and one trailing legal suffix), so `Meta`,
+`Meta Inc`, and `Meta, Inc.` all match however a source spells it. Editing the
+list only affects future ingests, not rows already saved.
 
 The role-specific criteria — seniority terms, required tech, excluded tech — live
 on the `SearchProfile` row and are edited at http://localhost:5174/search. The
