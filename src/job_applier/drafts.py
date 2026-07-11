@@ -64,8 +64,13 @@ a { color: #2257a5; text-decoration: none; }
 strong { font-weight: 600; }
 """
 
-_md = MarkdownIt("commonmark", {"linkify": True, "html": False}).enable("table")
-# Soft newlines become <br> so the salutation/signature lines don't collapse.
+# Soft newlines become <br> so single-line-break constructs keep their layout:
+# on the resume, each Skills category and the three-line per-role header sit on their
+# own source line with no blank line between them, and would otherwise collapse into
+# one run-on paragraph; on the letter, the salutation/signature lines.
+_md = MarkdownIt(
+    "commonmark", {"linkify": True, "html": False, "breaks": True}
+).enable("table")
 _md_letter = MarkdownIt(
     "commonmark", {"linkify": True, "html": False, "breaks": True}
 )

@@ -62,6 +62,14 @@ export interface Company {
 	notes?: string | null;
 }
 
+export interface BlacklistedCompany {
+	id: number;
+	name: string;
+	normalized_name: string;
+	reason?: string | null;
+	created_at: string;
+}
+
 export interface Score {
 	score: number;
 	rubric: Record<string, unknown>;
@@ -455,5 +463,21 @@ export const api = {
 	suggestRoles: (fetchFn: FetchFn, base: string) =>
 		call<SearchProfile>(fetchFn, base, '/api/ai/suggest-roles', { method: 'POST' }),
 
-	getUpdate: (fetchFn: FetchFn, base: string) => call<UpdateInfo>(fetchFn, base, '/api/update')
+	getUpdate: (fetchFn: FetchFn, base: string) => call<UpdateInfo>(fetchFn, base, '/api/update'),
+
+	listBlacklist: (fetchFn: FetchFn, base: string) =>
+		call<BlacklistedCompany[]>(fetchFn, base, '/api/blacklist'),
+
+	addBlacklist: (fetchFn: FetchFn, base: string, name: string, reason?: string) =>
+		call<BlacklistedCompany>(fetchFn, base, '/api/blacklist', {
+			method: 'POST',
+			body: JSON.stringify({ name, reason })
+		}),
+
+	removeBlacklist: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
+		const res = await fetchWithRetry(fetchFn, `${base}/api/blacklist/${id}`, { method: 'DELETE' });
+		if (!res.ok && res.status !== 404) {
+			throw new Error(`API /api/blacklist/${id} -> ${res.status}: ${await res.text()}`);
+		}
+	}
 };

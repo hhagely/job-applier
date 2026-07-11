@@ -20,9 +20,11 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
 from job_applier.config import settings
+from job_applier.ingest import normalize_company
 from job_applier.models.db import (
     Application,
     ApplicationStatus,
+    BlacklistedCompany,
     FilterStatus,
     JobPosting,
     MatchScore,
@@ -227,3 +229,63 @@ def save_recommendations(session: Session, recommendations: dict) -> SearchProfi
     session.commit()
     session.refresh(p)
     return p
+
+
+# ---- company blacklist ----------------------------------------------------
+
+
+class BlacklistNameTooShort(ValueError):
+    """A company name that normalizes to fewer than 2 alphanumeric chars — too
+    thin to match on reliably at ingest, so we refuse to store it."""
+
+
+def list_blacklisted_companies(session: Session) -> list[BlacklistedCompany]:
+    """Every blacklisted company, ordered case-insensitively by name."""
+    return list(
+        session.exec(
+            select(BlacklistedCompany).order_by(BlacklistedCompany.normalized_name)
+        ).all()
+    )
+
+
+def add_blacklisted_company(
+    session: Session, name: str, reason: Optional[str] = None
+) -> BlacklistedCompany:
+    """Add a company to the ingest blacklist. Idempotent on the normalized name.
+
+    Returns the existing row if the company is already blacklisted (under any
+    naming variant) so re-adding is a no-op rather than a unique-constraint
+    error. Raises ``BlacklistNameTooShort`` when the name is too thin to match.
+    """
+    display = (name or "").strip()
+    normalized = normalize_company(display)
+    if len(normalized) < 2:
+        raise BlacklistNameTooShort(
+            "enter a company name with at least two letters or digits"
+        )
+    existing = session.exec(
+        select(BlacklistedCompany).where(
+            BlacklistedCompany.normalized_name == normalized
+        )
+    ).first()
+    if existing is not None:
+        return existing
+    row = BlacklistedCompany(
+        name=display,
+        normalized_name=normalized,
+        reason=(reason or "").strip() or None,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def remove_blacklisted_company(session: Session, blacklist_id: int) -> bool:
+    """Remove a blacklist entry by id. Returns True if a row was deleted."""
+    row = session.get(BlacklistedCompany, blacklist_id)
+    if row is None:
+        return False
+    session.delete(row)
+    session.commit()
+    return True

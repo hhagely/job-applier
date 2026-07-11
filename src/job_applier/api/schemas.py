@@ -14,6 +14,19 @@ class CompanyOut(BaseModel):
     notes: Optional[str] = None
 
 
+class BlacklistedCompanyOut(BaseModel):
+    id: int
+    name: str
+    normalized_name: str
+    reason: Optional[str] = None
+    created_at: datetime
+
+
+class BlacklistAddIn(BaseModel):
+    name: str
+    reason: Optional[str] = None
+
+
 class ScoreOut(BaseModel):
     score: int
     rubric: dict

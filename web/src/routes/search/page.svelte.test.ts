@@ -30,6 +30,7 @@ function data(overrides = {}) {
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		update: null,
+		blacklist: [],
 		...overrides
 	};
 }
@@ -68,5 +69,31 @@ describe('search page Suggest-roles button', () => {
 		expect(screen.getByText('Recommendations')).toBeInTheDocument();
 		expect(screen.getByText(/Staff Backend Engineer/)).toBeInTheDocument();
 		expect(screen.getByRole('button', { name: /Replace with these/ })).toBeInTheDocument();
+	});
+});
+
+describe('search page company blacklist', () => {
+	it('shows the blacklist card with an empty state', () => {
+		render(Page, { props: { data: data(), form: null } });
+
+		expect(screen.getByText('Company blacklist')).toBeInTheDocument();
+		expect(screen.getByPlaceholderText('Company name')).toBeInTheDocument();
+		expect(screen.getByText(/No companies blacklisted yet/i)).toBeInTheDocument();
+	});
+
+	it('lists blacklisted companies with their reason and a remove control', () => {
+		const props = data({
+			blacklist: [
+				{ id: 1, name: 'Evil Corp', normalized_name: 'evil', reason: 'no remote', created_at: '' },
+				{ id: 2, name: 'Globex', normalized_name: 'globex', reason: null, created_at: '' }
+			]
+		});
+		render(Page, { props: { data: props, form: null } });
+
+		expect(screen.getByText('Evil Corp')).toBeInTheDocument();
+		expect(screen.getByText('no remote')).toBeInTheDocument();
+		expect(screen.getByText('Globex')).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: /Remove Evil Corp/ })).toBeInTheDocument();
+		expect(screen.queryByText(/No companies blacklisted yet/i)).not.toBeInTheDocument();
 	});
 });

@@ -65,6 +65,21 @@ def test_render_print_html_resume_uses_resume_css():
     assert "<strong>TypeScript</strong>" in html
 
 
+def test_render_print_html_resume_keeps_skill_groups_on_own_lines():
+    # Each Skills category sits on its own source line with no blank line between
+    # them; without soft-break -> <br> they collapse into one run-on paragraph
+    # (the scattered, unprofessional Skills block). Same fix keeps the three-line
+    # per-role header from collapsing.
+    skills_md = (
+        "## Skills\n"
+        "**Frontend:** React, TypeScript\n"
+        "**Backend:** Node.js, GraphQL\n"
+        "**Cloud:** AWS, GCP\n"
+    )
+    html = drafts.render_print_html(skills_md, "resume")
+    assert html.count("<br") >= 2  # one break after each of the first two groups
+
+
 def test_render_print_html_cover_letter_uses_cover_css_and_soft_breaks():
     html = drafts.render_print_html(COVER_MD, "cover_letter")
     assert "margin: 1in 1in" in html  # _COVER_LETTER_CSS @page marker

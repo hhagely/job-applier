@@ -64,6 +64,33 @@ describe('api PDF url helpers', () => {
 	});
 });
 
+describe('api blacklist', () => {
+	it('posts name and reason to /api/blacklist', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(
+			jsonResponse({ id: 1, name: 'Evil Corp', normalized_name: 'evil', reason: 'x', created_at: '' })
+		);
+		await api.addBlacklist(fetchFn, TEST_BASE, 'Evil Corp', 'x');
+
+		const [url, init] = fetchFn.mock.calls[0];
+		expect(url).toBe(`${TEST_BASE}/api/blacklist`);
+		expect(init.method).toBe('POST');
+		expect(JSON.parse(init.body)).toEqual({ name: 'Evil Corp', reason: 'x' });
+	});
+
+	it('deletes by id and tolerates a 404', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(new Response('', { status: 404 }));
+		await expect(api.removeBlacklist(fetchFn, TEST_BASE, 7)).resolves.toBeUndefined();
+		const [url, init] = fetchFn.mock.calls[0];
+		expect(url).toBe(`${TEST_BASE}/api/blacklist/7`);
+		expect(init.method).toBe('DELETE');
+	});
+
+	it('throws on a non-404 delete error', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(new Response('boom', { status: 500 }));
+		await expect(api.removeBlacklist(fetchFn, TEST_BASE, 7)).rejects.toThrow(/500.*boom/);
+	});
+});
+
 describe('getApiBase', () => {
 	afterEach(() => {
 		delete (window as unknown as { __API_BASE__?: string }).__API_BASE__;
