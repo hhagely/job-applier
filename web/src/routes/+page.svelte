@@ -402,6 +402,19 @@
 				</button>
 			</form>
 		{/if}
+		<!-- Escape hatch for a draft list holding jobs not shown in the current view
+		     (archived / other tab / hidden duplicate) — otherwise the count is stuck,
+		     since the only other way to empty the cart is a successful draft batch. -->
+		{#if draftCart.ids.length > 0}
+			<button
+				class="btn"
+				onclick={() => draftCart.clear()}
+				disabled={draftBatch.busy}
+				title={`Empty the draft list (${draftCart.ids.length} job${draftCart.ids.length === 1 ? '' : 's'})`}
+			>
+				Clear draft list
+			</button>
+		{/if}
 	</div>
 </div>
 
