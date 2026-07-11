@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { theme, type ThemePref } from '$lib/theme.svelte';
+	import {
+		appearance,
+		type Accent,
+		type ReadingFont,
+		type ReadingSize,
+		type ReadingSpacing,
+		type ReadingWidth
+	} from '$lib/appearance.svelte';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -21,6 +29,34 @@
 		{ key: 'system', label: 'System' },
 		{ key: 'light', label: 'Light' },
 		{ key: 'dark', label: 'Dark' }
+	];
+
+	// Accent swatches carry their own hue so the palette renders in true colors
+	// regardless of the active accent; keep hues in sync with app.css.
+	const ACCENTS: { key: Accent; label: string; hue: number }[] = [
+		{ key: 'blue', label: 'Blue', hue: 258 },
+		{ key: 'violet', label: 'Violet', hue: 300 },
+		{ key: 'teal', label: 'Teal', hue: 200 },
+		{ key: 'amber', label: 'Amber', hue: 75 },
+		{ key: 'rose', label: 'Rose', hue: 12 }
+	];
+	const SIZES: { key: ReadingSize; label: string }[] = [
+		{ key: 'sm', label: 'Small' },
+		{ key: 'md', label: 'Default' },
+		{ key: 'lg', label: 'Large' },
+		{ key: 'xl', label: 'X-Large' }
+	];
+	const FONTS: { key: ReadingFont; label: string }[] = [
+		{ key: 'sans', label: 'Sans' },
+		{ key: 'serif', label: 'Serif' }
+	];
+	const SPACINGS: { key: ReadingSpacing; label: string }[] = [
+		{ key: 'normal', label: 'Normal' },
+		{ key: 'relaxed', label: 'Relaxed' }
+	];
+	const WIDTHS: { key: ReadingWidth; label: string }[] = [
+		{ key: 'comfortable', label: 'Comfortable' },
+		{ key: 'full', label: 'Full width' }
 	];
 </script>
 
@@ -45,6 +81,93 @@
 						{#each THEMES as t (t.key)}
 							<button type="button" aria-pressed={theme.pref === t.key} onclick={() => theme.set(t.key)}>{t.label}</button>
 						{/each}
+					</div>
+				</div>
+				<div class="set-row">
+					<div class="sr-main">
+						<div class="sr-t">Accent color</div>
+						<div class="sr-d">Tints buttons, links, focus rings, and the active nav item.</div>
+					</div>
+					<div class="accent-swatches" role="radiogroup" aria-label="Accent color">
+						{#each ACCENTS as a (a.key)}
+							<button
+								type="button"
+								class="sw"
+								class:on={appearance.accent === a.key}
+								style="--sw:oklch(66% 0.15 {a.hue})"
+								role="radio"
+								aria-checked={appearance.accent === a.key}
+								aria-label={a.label}
+								title={a.label}
+								onclick={() => appearance.set({ accent: a.key })}
+							></button>
+						{/each}
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="card">
+			<div class="card-h"><h2>Reading</h2></div>
+			<div class="card-b">
+				<div class="set-row">
+					<div class="sr-main">
+						<div class="sr-t">Text size</div>
+						<div class="sr-d">Scales job-description text (and the draft preview).</div>
+					</div>
+					<div class="theme-seg">
+						{#each SIZES as s (s.key)}
+							<button type="button" aria-pressed={appearance.readingSize === s.key} onclick={() => appearance.set({ readingSize: s.key })}>{s.label}</button>
+						{/each}
+					</div>
+				</div>
+				<div class="set-row">
+					<div class="sr-main">
+						<div class="sr-t">Reading font</div>
+						<div class="sr-d">Serif can be easier for long-form reading.</div>
+					</div>
+					<div class="theme-seg">
+						{#each FONTS as f (f.key)}
+							<button type="button" aria-pressed={appearance.readingFont === f.key} onclick={() => appearance.set({ readingFont: f.key })}>{f.label}</button>
+						{/each}
+					</div>
+				</div>
+				<div class="set-row">
+					<div class="sr-main">
+						<div class="sr-t">Line spacing</div>
+						<div class="sr-d">Extra spacing between lines of text.</div>
+					</div>
+					<div class="theme-seg">
+						{#each SPACINGS as sp (sp.key)}
+							<button type="button" aria-pressed={appearance.readingSpacing === sp.key} onclick={() => appearance.set({ readingSpacing: sp.key })}>{sp.label}</button>
+						{/each}
+					</div>
+				</div>
+				<div class="set-row">
+					<div class="sr-main">
+						<div class="sr-t">Line width</div>
+						<div class="sr-d">Comfortable caps line length for easier reading on wide windows.</div>
+					</div>
+					<div class="theme-seg">
+						{#each WIDTHS as w (w.key)}
+							<button type="button" aria-pressed={appearance.readingWidth === w.key} onclick={() => appearance.set({ readingWidth: w.key })}>{w.label}</button>
+						{/each}
+					</div>
+				</div>
+
+				<div class="reading-preview">
+					<div class="rp-label">Preview</div>
+					<div class="jd-prose">
+						<h3>Senior Software Engineer</h3>
+						<p>
+							We are looking for an experienced engineer to help design and build the next
+							generation of our platform. You will work across the stack, shipping features that
+							thousands of users rely on every day.
+						</p>
+						<ul>
+							<li>Design, build, and maintain services and user-facing features.</li>
+							<li>Collaborate with product and design on scope and trade-offs.</li>
+						</ul>
 					</div>
 				</div>
 			</div>
@@ -192,6 +315,43 @@
 	.theme-seg button[aria-pressed='true'] {
 		background: var(--accent-soft);
 		color: var(--accent);
+	}
+	.accent-swatches {
+		display: inline-flex;
+		gap: 9px;
+	}
+	.sw {
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: var(--sw);
+		border: 2px solid var(--surface);
+		box-shadow: 0 0 0 1px var(--border-2);
+		padding: 0;
+	}
+	.sw:hover {
+		box-shadow: 0 0 0 1px var(--faint);
+	}
+	.sw.on {
+		box-shadow: 0 0 0 2px var(--fg);
+	}
+	.reading-preview {
+		margin-top: 16px;
+		padding: 14px 16px;
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		background: var(--bg);
+	}
+	.rp-label {
+		font-size: 10.5px;
+		font-weight: 640;
+		letter-spacing: 0.09em;
+		text-transform: uppercase;
+		color: var(--faint);
+		margin-bottom: 10px;
+	}
+	.reading-preview .jd-prose :last-child {
+		margin-bottom: 0;
 	}
 	.providers {
 		list-style: none;

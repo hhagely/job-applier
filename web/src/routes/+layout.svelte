@@ -10,6 +10,7 @@
 	import HelpSheet from '$lib/shell/HelpSheet.svelte';
 	import UpdateBanner from '$lib/shell/UpdateBanner.svelte';
 	import { initTheme, theme } from '$lib/theme.svelte';
+	import { initAppearance } from '$lib/appearance.svelte';
 	import { NAV } from '$lib/shell/nav';
 	import type { LayoutData } from './$types';
 
@@ -23,6 +24,7 @@
 
 	onMount(() => {
 		mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
+		initAppearance();
 		return initTheme();
 	});
 
