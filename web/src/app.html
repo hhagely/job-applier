@@ -9,16 +9,27 @@
 			// Mirrors src/lib/theme.svelte.ts: pref = System/Light/Dark, System
 			// follows prefers-color-scheme. Default is dark (the app's heritage).
 			(function () {
+				var de = document.documentElement;
 				try {
 					var pref = localStorage.getItem('ja-theme') || 'system';
 					var light =
 						pref === 'light' ||
 						(pref === 'system' &&
 							window.matchMedia('(prefers-color-scheme: light)').matches);
-					document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+					de.setAttribute('data-theme', light ? 'light' : 'dark');
 				} catch (e) {
-					document.documentElement.setAttribute('data-theme', 'dark');
+					de.setAttribute('data-theme', 'dark');
 				}
+				// Appearance prefs (accent hue + reading typography). Mirrors
+				// src/lib/appearance.svelte.ts so the choice applies before paint.
+				try {
+					var ap = JSON.parse(localStorage.getItem('ja-appearance') || '{}') || {};
+					if (ap.accent) de.setAttribute('data-accent', ap.accent);
+					if (ap.readingSize) de.setAttribute('data-reading-size', ap.readingSize);
+					if (ap.readingFont) de.setAttribute('data-reading-font', ap.readingFont);
+					if (ap.readingSpacing) de.setAttribute('data-reading-spacing', ap.readingSpacing);
+					if (ap.readingWidth) de.setAttribute('data-reading-width', ap.readingWidth);
+				} catch (e) {}
 			})();
 		</script>
 		%sveltekit.head%
