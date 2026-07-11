@@ -105,21 +105,36 @@ def render_print_html(md_text: str, kind: DraftKind) -> str:
     )
 
 
+def _clean_draft(md: str) -> str:
+    """Apply the char bans + exfil-vector strip to draft markdown. This is the single
+    choke point every draft-write passes through (AI generation *and* the manual
+    edit/re-render endpoint), so no draft is ever persisted with a tracking image, a
+    clickable tracking link, or a banned ATS character regardless of its origin."""
+    # Lazy import: bans lives under the ai package; importing it at module load would
+    # couple this low-level storage module to the AI layer's import graph.
+    from job_applier.ai import bans
+
+    return bans.strip_exfil_vectors(bans.sanitize(md))
+
+
 def save_markdown(
     job_id: int, resume_md: str | None, cover_letter_md: str | None
 ) -> DraftStatus:
     """Write any provided markdown to disk (no PDF). Returns the latest status.
 
-    Kept independent of PDF rendering so drafts persist even when no browser
-    engine is available, and so Electron can drive the print separately later.
+    Markdown is sanitized here (char bans + exfil-vector strip) so the guarantee holds
+    for every writer. Kept independent of PDF rendering so drafts persist even when no
+    browser engine is available, and so Electron can drive the print separately later.
     """
     d = draft_dir(job_id)
     d.mkdir(parents=True, exist_ok=True)
 
     if resume_md is not None:
-        (d / _FILES["resume"][0]).write_text(resume_md, encoding="utf-8")
+        (d / _FILES["resume"][0]).write_text(_clean_draft(resume_md), encoding="utf-8")
     if cover_letter_md is not None:
-        (d / _FILES["cover_letter"][0]).write_text(cover_letter_md, encoding="utf-8")
+        (d / _FILES["cover_letter"][0]).write_text(
+            _clean_draft(cover_letter_md), encoding="utf-8"
+        )
 
     return get_status(job_id)
 

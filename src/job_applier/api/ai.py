@@ -41,9 +41,28 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 AI_PROVIDER_KEY = "ai_provider"
 AI_MODEL_KEY = "ai_model"
+# Persisted override for the baseline (bulk) scoring model. When unset, the resolver
+# falls back to the provider's built-in lighter default, then the generation model.
+AI_SCORING_MODEL_KEY = "ai_scoring_model"
 
 # Fixed, side-effect-free prompt for the "Test" round-trip.
 _TEST_PROMPT = "Respond with exactly the word: pong"
+
+
+def resolve_scoring_model(session: Session, provider: str) -> str | None:
+    """The model to use for baseline (bulk) scoring: the user's persisted override,
+    else the provider's lighter built-in default (Sonnet on Claude), else the
+    configured generation model (finally the account default when all are unset).
+
+    Baseline scoring is high-volume triage, so it defaults to a cheaper tier than
+    drafting/tailored re-scoring, which keep the configured generation model."""
+    override = get_setting(session, AI_SCORING_MODEL_KEY)
+    if override:
+        return override
+    default = providers.default_scoring_model(provider)
+    if default:
+        return default
+    return get_setting(session, AI_MODEL_KEY)
 
 
 def _providers_out(session: Session) -> ProvidersOut:
@@ -67,6 +86,10 @@ def _providers_out(session: Session) -> ProvidersOut:
         ],
         selected=selected,
         model=get_setting(session, AI_MODEL_KEY, providers.DEFAULT_OLLAMA_MODEL),
+        scoring_model=get_setting(session, AI_SCORING_MODEL_KEY),
+        scoring_model_default=(
+            providers.default_scoring_model(selected) if selected else None
+        ),
     )
 
 
@@ -92,6 +115,10 @@ def select_provider(
     set_setting(session, AI_PROVIDER_KEY, body.name)
     if body.model:
         set_setting(session, AI_MODEL_KEY, body.model)
+    # ``scoring_model`` present (even as "") means the user submitted the field: store
+    # it, where "" clears the override so the resolver reverts to the provider default.
+    if body.scoring_model is not None:
+        set_setting(session, AI_SCORING_MODEL_KEY, body.scoring_model.strip())
     return _providers_out(session)
 
 
@@ -153,7 +180,9 @@ def start_score_pending(
         pending = [j for j in pending if j.id in wanted]
     ids = [j.id for j in pending]
 
-    model = get_setting(session, AI_MODEL_KEY)
+    # Baseline scoring uses the (cheaper) scoring model, not the generation model that
+    # drafting/tailored re-scoring use.
+    model = resolve_scoring_model(session, provider)
     fn = functools.partial(
         _run_score_pending, provider=provider, model=model, job_ids=ids
     )

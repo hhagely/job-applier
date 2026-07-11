@@ -184,6 +184,10 @@ export interface ProvidersResponse {
 	providers: Provider[];
 	selected?: string | null;
 	model?: string | null;
+	/** Persisted baseline-scoring model override (blank = use the provider default). */
+	scoring_model?: string | null;
+	/** The selected provider's built-in scoring-model default, shown as a placeholder. */
+	scoring_model_default?: string | null;
 }
 
 export interface AiTestResult {
@@ -403,10 +407,16 @@ export const api = {
 	getSelectedProvider: (fetchFn: FetchFn, base: string) =>
 		call<{ selected: string | null }>(fetchFn, base, '/api/ai/selected'),
 
-	selectProvider: (fetchFn: FetchFn, base: string, name: string, model?: string) =>
+	selectProvider: (
+		fetchFn: FetchFn,
+		base: string,
+		name: string,
+		model?: string,
+		scoringModel?: string
+	) =>
 		call<ProvidersResponse>(fetchFn, base, '/api/ai/provider', {
 			method: 'PUT',
-			body: JSON.stringify({ name, model })
+			body: JSON.stringify({ name, model, scoring_model: scoringModel })
 		}),
 
 	testProvider: (fetchFn: FetchFn, base: string, prompt?: string) =>

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import re
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -229,6 +232,149 @@ def test_score_pending_survives_single_job_failure(monkeypatch):
         outcomes = {o.job_id: o for o in scoring.score_pending(s, provider="claude")}
     assert outcomes[ok_id].score == 82 and outcomes[ok_id].error is None
     assert outcomes[broken_id].score is None and outcomes[broken_id].error is not None
+
+
+# ---- batch scoring --------------------------------------------------------
+
+
+def _batch_ids(prompt: str) -> list[int]:
+    """Job ids embedded in a batch prompt's JOBS_BLOCK (each appears twice)."""
+    seen: list[int] = []
+    for m in re.findall(r"JOB id=(\d+)", prompt):
+        i = int(m)
+        if i not in seen:
+            seen.append(i)
+    return seen
+
+
+def _emit_batch_ids(ids: list[int], score: int = 82) -> str:
+    # Empty rubric -> _reconcile_score falls back to the top-level score verbatim.
+    results = [{"id": i, "score": score, "rubric": {}, "reasoning": "ok"} for i in ids]
+    return json.dumps({"results": results})
+
+
+def _emit_batch(prompt: str, score: int = 82) -> str:
+    return _emit_batch_ids(_batch_ids(prompt), score)
+
+
+def _is_batch(prompt: str) -> bool:
+    return "JOB id=" in prompt
+
+
+def test_chunk_jobs_caps_by_count():
+    jobs = [SimpleNamespace(description="x" * 10) for _ in range(10)]
+    chunks = scoring.chunk_jobs(jobs)
+    assert [len(c) for c in chunks] == [scoring.BATCH_MAX_JOBS, 2]
+    assert sum(len(c) for c in chunks) == 10
+
+
+def test_chunk_jobs_isolates_oversized_jd():
+    small = SimpleNamespace(description="x" * 10)
+    big = SimpleNamespace(description="x" * (scoring.BATCH_JD_CHAR_BUDGET + 1))
+    # The over-budget JD lands in a batch of one (its own single-job call), losing
+    # no content; the surrounding small jobs are not merged into it.
+    chunks = scoring.chunk_jobs([small, big, small])
+    assert [len(c) for c in chunks] == [1, 1, 1]
+
+
+def test_score_pending_batches_in_one_call(monkeypatch):
+    """Four jobs are scored in a SINGLE batch invocation (resume+rubric sent once)."""
+    calls = {"n": 0}
+
+    def _run(provider, prompt, **k):
+        calls["n"] += 1
+        assert _is_batch(prompt), "expected the batch prompt, not a single-job call"
+        return _emit_batch(prompt, score=82)
+
+    monkeypatch.setattr(scoring.providers, "run", _run)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        for i in range(4):
+            _seed_job(s, title=f"Senior Engineer {i}")
+        outcomes = scoring.score_pending(s, provider="claude")
+
+    assert calls["n"] == 1  # one call for all four jobs
+    assert len(outcomes) == 4 and {o.score for o in outcomes} == {82}
+    assert all(o.error is None for o in outcomes)
+
+
+def test_score_pending_batch_gap_falls_back_to_single_job(monkeypatch):
+    """A job the batch drops is re-scored one at a time — never lost."""
+    calls = {"batch": 0, "single": 0}
+
+    def _run(provider, prompt, **k):
+        if _is_batch(prompt):
+            calls["batch"] += 1
+            ids = _batch_ids(prompt)
+            return _emit_batch_ids(ids[:-1], score=82)  # omit the last job
+        calls["single"] += 1
+        return CANNED  # single-job fallback
+
+    monkeypatch.setattr(scoring.providers, "run", _run)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        for i in range(4):
+            _seed_job(s, title=f"Senior Engineer {i}")
+        outcomes = scoring.score_pending(s, provider="claude")
+
+    assert calls["batch"] == 1 and calls["single"] == 1  # one gap refilled single-job
+    assert len(outcomes) == 4 and {o.score for o in outcomes} == {82}
+
+
+def test_score_pending_whole_batch_failure_falls_back(monkeypatch):
+    """A batch call that never yields valid JSON degrades to single-job for all of it."""
+
+    def _run(provider, prompt, **k):
+        if _is_batch(prompt):
+            return "not json at all"  # fails both attempts -> batch discarded
+        return CANNED
+
+    monkeypatch.setattr(scoring.providers, "run", _run)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        for i in range(3):
+            _seed_job(s, title=f"Senior Engineer {i}")
+        outcomes = scoring.score_pending(s, provider="claude")
+
+    assert len(outcomes) == 3 and {o.score for o in outcomes} == {82}
+    assert all(o.error is None for o in outcomes)
+
+
+def test_score_pending_batch_low_scores_auto_archive(monkeypatch):
+    """Auto-archive of untriaged sub-60 jobs works on the batch path too."""
+
+    def _run(provider, prompt, **k):
+        assert _is_batch(prompt)
+        return _emit_batch(prompt, score=40)
+
+    monkeypatch.setattr(scoring.providers, "run", _run)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        a = _seed_job(s, title="Senior Engineer A")
+        b = _seed_job(s, title="Senior Engineer B")
+        outcomes = scoring.score_pending(s, provider="claude")
+        assert {o.score for o in outcomes} == {40}
+        for job in (a, b):
+            s.refresh(job)
+            assert job.application is not None
+            assert job.application.status == ApplicationStatus.archived
+
+
+def test_build_batch_score_prompt_tags_each_job_by_id():
+    e = _engine()
+    with Session(e) as s:
+        j1 = _seed_job(s, title="Senior One", desc="<p>TypeScript.</p>")
+        j2 = _seed_job(s, title="Senior Two", desc="<p>React.</p>")
+        prompt = scoring.build_batch_score_prompt("my resume", [j1, j2])
+    assert f"JOB id={j1.id}" in prompt and f"JOB id={j2.id}" in prompt
+    assert "Senior One" in prompt and "Senior Two" in prompt
+    assert "my resume" in prompt
+    # JD HTML is flattened, and the resume appears once (amortized).
+    assert "<p>" not in prompt and prompt.count("my resume") == 1
 
 
 # ---- services parity (guards the refactor) --------------------------------

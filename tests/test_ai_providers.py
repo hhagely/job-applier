@@ -156,12 +156,47 @@ def test_sandbox_flags_present():
     assert "--permission-mode" in argv and "plan" not in argv
 
 
+def test_gemini_pins_safe_non_interactive_posture():
+    # Gemini's non-interactive default drops confirmation-requiring tools; we pin it
+    # explicitly and disable extensions so a prompt-injected JD can't arm a tool.
+    argv = providers.PROVIDERS["gemini"].build_argv("payload")
+    assert argv[argv.index("--approval-mode") + 1] == "default"
+    assert argv[argv.index("-e") + 1] == "none"
+    # Never the auto-approve modes.
+    assert "--yolo" not in argv and "yolo" not in argv and "auto_edit" not in argv
+
+
 def test_claude_honors_selected_model():
     # The Settings-chosen model must reach the CLI (a faster tier for drafting);
     # omitted when unset so the account default applies.
     argv = providers.PROVIDERS["claude"].build_argv("payload", model="claude-sonnet-5")
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
     assert "--model" not in providers.PROVIDERS["claude"].build_argv("payload")
+
+
+def test_default_scoring_model_per_provider():
+    # Baseline (bulk) scoring defaults to a lighter tier where the CLI has one.
+    assert providers.default_scoring_model("claude") == "sonnet"
+    assert providers.default_scoring_model("gemini") == "gemini-2.5-flash"
+    assert providers.default_scoring_model("codex") is None  # no named cheaper default
+    assert providers.default_scoring_model("ollama") is None
+    assert providers.default_scoring_model("nope") is None
+
+
+def test_resolve_scoring_model_fallback_chain():
+    from job_applier.api import ai as ai_mod
+
+    engine = _mem_session()
+    with Session(engine) as s:
+        # No override -> provider's built-in default.
+        assert ai_mod.resolve_scoring_model(s, "claude") == "sonnet"
+        # Explicit override wins over the default.
+        set_setting(s, ai_mod.AI_SCORING_MODEL_KEY, "haiku")
+        assert ai_mod.resolve_scoring_model(s, "claude") == "haiku"
+        # Cleared override + a provider with no default -> the generation model.
+        set_setting(s, ai_mod.AI_SCORING_MODEL_KEY, "")
+        set_setting(s, ai_mod.AI_MODEL_KEY, "llama3.1")
+        assert ai_mod.resolve_scoring_model(s, "ollama") == "llama3.1"
 
 
 def test_run_unknown_provider_raises():
@@ -295,6 +330,24 @@ def test_select_provider_persists_and_rejects_undetected(client, monkeypatch):
 
     # Persisted: the cheap selected endpoint reflects it.
     assert client.get("/api/ai/selected").json()["selected"] == "claude"
+
+
+def test_scoring_model_default_exposed_and_override_roundtrips(client, monkeypatch):
+    monkeypatch.setattr(providers, "detect_all", lambda: _fake_infos("claude"))
+    client.put("/api/ai/provider", json={"name": "claude"})
+
+    # The selected provider's built-in scoring default is surfaced for the placeholder.
+    body = client.get("/api/ai/providers").json()
+    assert body["scoring_model_default"] == "sonnet"
+    assert not body["scoring_model"]  # no override yet
+
+    # Persist an override.
+    client.put("/api/ai/provider", json={"name": "claude", "scoring_model": "haiku"})
+    assert client.get("/api/ai/providers").json()["scoring_model"] == "haiku"
+
+    # Blank clears it back to the default.
+    client.put("/api/ai/provider", json={"name": "claude", "scoring_model": ""})
+    assert not client.get("/api/ai/providers").json()["scoring_model"]
 
 
 def test_selected_cleared_when_provider_disappears(client, monkeypatch):
