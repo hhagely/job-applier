@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 
 from job_applier import __version__, ingest, services
 from job_applier.ai import tasks as ai_tasks
+from job_applier.api import blacklist as blacklist_router
 from job_applier.api import drafts as drafts_router
 from job_applier.api import profile as profile_router
 from job_applier.api import resume as resume_router
@@ -82,6 +83,7 @@ app.include_router(ai_router)
 app.include_router(resume_router.router)
 app.include_router(profile_router.router)
 app.include_router(drafts_router.router)
+app.include_router(blacklist_router.router)
 
 
 def _company_out(c: Optional[Company]) -> Optional[CompanyOut]:

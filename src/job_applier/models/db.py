@@ -213,6 +213,27 @@ class AppSetting(SQLModel, table=True):
     value: str
 
 
+class BlacklistedCompany(SQLModel, table=True):
+    """A company the user never wants surfaced. Matched at ingest against the
+    normalized company name, so a job from a blacklisted employer is dropped
+    before it's persisted — even the first time we see that company (no
+    ``Company`` row needs to exist yet).
+
+    ``normalized_name`` is produced by ``ingest.normalize_company`` — the SAME
+    normalizer used for cross-source dedupe — so user-typed variants like
+    "Meta", "Meta Inc", and "Meta, Inc." all collapse to one key and match
+    however a source spells the employer. ``name`` keeps the original spelling
+    the user entered for display. Brand-new table, so ``create_all`` handles it
+    with no ALTER.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    normalized_name: str = Field(index=True, unique=True)
+    reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 _engine = None
 
 

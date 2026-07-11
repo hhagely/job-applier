@@ -14,7 +14,14 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 from job_applier.filters import FilterConfig, evaluate, load_active_config
-from job_applier.models import Application, ApplicationStatus, Company, JobPosting, engine
+from job_applier.models import (
+    Application,
+    ApplicationStatus,
+    BlacklistedCompany,
+    Company,
+    JobPosting,
+    engine,
+)
 from job_applier.models.db import FilterStatus
 from job_applier.sources import RawJob, SourceAdapter, get_all_sources
 
@@ -33,6 +40,7 @@ class IngestStats:
     skipped_cross_source: int = 0
     passed_filter: int = 0
     dropped_filter: int = 0
+    dropped_blacklist: int = 0
     manual_review: int = 0
     stale: int = 0
     flagged_jd_similar: int = 0
@@ -98,11 +106,20 @@ _TITLE_NOISE = re.compile(
 )
 
 
-def _normalize_company(name: str) -> str:
+def normalize_company(name: str) -> str:
+    """Canonical company-name key: strip a legal suffix (Inc/LLC/GmbH/...) then
+    lowercase and drop every non-alphanumeric char. Shared by cross-source
+    dedupe and the user company blacklist so "Meta", "Meta Inc", and
+    "Meta, Inc." all collapse to one key.
+    """
     s = (name or "").strip()
     s = _COMPANY_SUFFIXES.sub("", s)
     s = _NON_ALNUM.sub("", s.lower())
     return s
+
+
+# Back-compat alias for internal callers that predate the public name.
+_normalize_company = normalize_company
 
 
 def _normalize_title(title: str, location: str | None = None) -> str:
@@ -211,14 +228,34 @@ def _upsert_company(session: Session, name: str) -> Company:
     return company
 
 
+def load_blacklisted_names(session: Session) -> frozenset[str]:
+    """Normalized names of every user-blacklisted company.
+
+    Loaded once per ingest run and handed to ``ingest_one`` so the per-job check
+    is an O(1) set lookup rather than a DB query per posting.
+    """
+    rows = session.exec(select(BlacklistedCompany.normalized_name)).all()
+    return frozenset(rows)
+
+
 def ingest_one(
     session: Session,
     raw: RawJob,
     stats: IngestStats,
     *,
     filter_config: FilterConfig | None = None,
+    blacklist: frozenset[str] | None = None,
 ) -> None:
     stats.fetched += 1
+
+    # User company blacklist: drop before any other work so a blacklisted
+    # employer never lands in the queue, even the first time we see them (no
+    # Company row need exist yet). Matches on the same normalized key as
+    # cross-source dedupe, so naming variants collapse.
+    if blacklist and normalize_company(raw.company_name) in blacklist:
+        stats.dropped_blacklist += 1
+        return
+
     h = dedupe_hash(raw)
 
     existing = session.exec(select(JobPosting).where(JobPosting.dedupe_hash == h)).first()
@@ -331,6 +368,7 @@ def run_ingest(
     stats = IngestStats()
     with Session(engine()) as session:
         filter_config = load_active_config(session)
+        blacklist = load_blacklisted_names(session)
         if sources is None:
             sources = get_all_sources(filter_config=filter_config)
         total = len(sources)
@@ -338,7 +376,13 @@ def run_ingest(
             snapshot = copy.copy(stats)
             try:
                 for raw in source.fetch():
-                    ingest_one(session, raw, stats, filter_config=filter_config)
+                    ingest_one(
+                        session,
+                        raw,
+                        stats,
+                        filter_config=filter_config,
+                        blacklist=blacklist,
+                    )
                 session.commit()
             except Exception as exc:  # noqa: BLE001 - one source can't abort the run
                 session.rollback()

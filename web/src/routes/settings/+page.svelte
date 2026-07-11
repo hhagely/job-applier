@@ -174,6 +174,65 @@
 		</div>
 
 		<div class="card">
+			<div class="card-h"><h2>Company blacklist</h2></div>
+			<div class="card-b">
+				<p class="muted" style="margin-bottom:14px">
+					Jobs from these companies are dropped during ingest, before they ever reach your queue.
+					Matching ignores casing, punctuation, and legal suffixes, so <em>Meta</em>, <em>Meta Inc</em>,
+					and <em>Meta, Inc.</em> all count as the same company. Editing the list only affects future
+					ingests, not jobs already saved.
+				</p>
+
+				<form method="POST" action="?/addBlacklist" class="bl-add" use:enhance>
+					<input
+						class="input"
+						type="text"
+						name="company"
+						placeholder="Company name"
+						autocomplete="off"
+						required
+					/>
+					<input
+						class="input"
+						type="text"
+						name="reason"
+						placeholder="Reason (optional)"
+						autocomplete="off"
+					/>
+					<button type="submit" class="btn primary">Add</button>
+				</form>
+
+				{#if form && 'blacklistError' in form && form.blacklistError}
+					<p class="err-text" style="margin-top:10px">{form.blacklistError}</p>
+				{/if}
+				{#if form?.blacklistOk && 'blacklistMessage' in form && form.blacklistMessage}
+					<p class="banner ok" style="margin-top:10px">{form.blacklistMessage}</p>
+				{/if}
+
+				{#if data.blacklist.length === 0}
+					<p class="muted bl-empty">No companies blacklisted yet.</p>
+				{:else}
+					<ul class="bl-list">
+						{#each data.blacklist as c (c.id)}
+							<li>
+								<div class="bl-main">
+									<span class="bl-name">{c.name}</span>
+									{#if c.reason}<span class="bl-reason">{c.reason}</span>{/if}
+								</div>
+								<form method="POST" action="?/removeBlacklist" use:enhance>
+									<input type="hidden" name="id" value={c.id} />
+									<button type="submit" class="btn ghost sm bl-remove" aria-label="Remove {c.name}"
+										>Remove</button
+									>
+								</form>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
+		</div>
+
+		<div class="card">
 			<div class="card-h"><h2>AI provider</h2></div>
 			<div class="card-b">
 				<p class="muted" style="margin-bottom:12px">
@@ -412,5 +471,54 @@
 		word-break: break-word;
 		font-family: var(--mono);
 		font-size: 12px;
+	}
+	.bl-add {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.bl-add .input {
+		flex: 1;
+		min-width: 140px;
+	}
+	.bl-empty {
+		margin-top: 14px;
+	}
+	.bl-list {
+		list-style: none;
+		padding: 0;
+		margin: 14px 0 0;
+	}
+	.bl-list li {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 0;
+		border-bottom: 1px solid var(--border);
+	}
+	.bl-list li:last-child {
+		border-bottom: 0;
+		padding-bottom: 0;
+	}
+	.bl-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.bl-name {
+		font-weight: 600;
+		font-size: 13px;
+		word-break: break-word;
+	}
+	.bl-reason {
+		font-size: 12px;
+		color: var(--faint);
+		word-break: break-word;
+	}
+	.bl-remove {
+		flex-shrink: 0;
 	}
 </style>

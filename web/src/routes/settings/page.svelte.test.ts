@@ -34,6 +34,7 @@ function makeData(overrides = {}) {
 			selected: 'claude',
 			model: 'llama3.1'
 		},
+		blacklist: [],
 		...overrides
 	};
 }
@@ -77,5 +78,29 @@ describe('settings page', () => {
 
 		expect(screen.getByText(/No AI CLI detected/i)).toBeInTheDocument();
 		expect(screen.queryByText(/Test round-trip/i)).not.toBeInTheDocument();
+	});
+
+	it('shows the company blacklist card with an empty state', () => {
+		render(Page, { props: { data: makeData(), form: null } });
+
+		expect(screen.getByText('Company blacklist')).toBeInTheDocument();
+		expect(screen.getByPlaceholderText('Company name')).toBeInTheDocument();
+		expect(screen.getByText(/No companies blacklisted yet/i)).toBeInTheDocument();
+	});
+
+	it('lists blacklisted companies with their reason and a remove control', () => {
+		const data = makeData({
+			blacklist: [
+				{ id: 1, name: 'Evil Corp', normalized_name: 'evil', reason: 'no remote', created_at: '' },
+				{ id: 2, name: 'Globex', normalized_name: 'globex', reason: null, created_at: '' }
+			]
+		});
+		render(Page, { props: { data, form: null } });
+
+		expect(screen.getByText('Evil Corp')).toBeInTheDocument();
+		expect(screen.getByText('no remote')).toBeInTheDocument();
+		expect(screen.getByText('Globex')).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: /Remove Evil Corp/ })).toBeInTheDocument();
+		expect(screen.queryByText(/No companies blacklisted yet/i)).not.toBeInTheDocument();
 	});
 });
