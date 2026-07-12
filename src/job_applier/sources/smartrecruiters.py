@@ -24,7 +24,7 @@ from typing import Optional
 import httpx
 
 from job_applier.filters import FilterConfig, title_quick_fail
-from job_applier.sources.base import RawJob, parse_iso_date
+from job_applier.sources.base import RawJob, looks_remote, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -134,9 +134,7 @@ def _normalize(company_slug: str, item: dict) -> RawJob | None:
 
     remote_flag = bool(location.get("remote"))
     hybrid_flag = bool(location.get("hybrid"))
-    remote = remote_flag or (
-        "remote" in (location_str or "").lower() and not hybrid_flag
-    )
+    remote = remote_flag or (looks_remote(location_str) and not hybrid_flag)
 
     job_ad = item.get("jobAd") or {}
     sections = job_ad.get("sections") or {}

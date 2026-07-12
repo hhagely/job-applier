@@ -7,7 +7,6 @@ filter fields — same guarantee as the `/suggest-roles` slash command.
 from __future__ import annotations
 
 import json
-from importlib import resources
 from typing import Optional
 
 from pydantic import BaseModel
@@ -16,6 +15,7 @@ from sqlmodel import select
 
 from job_applier import services
 from job_applier.ai import prompt_safety, providers
+from job_applier.ai.templates import load_template
 from job_applier.models.db import SearchProfile, Session
 
 
@@ -39,20 +39,6 @@ class SuggestedProfile(BaseModel):
     rationale: Optional[str] = None
 
 
-_template_cache: Optional[str] = None
-
-
-def _template() -> str:
-    global _template_cache
-    if _template_cache is None:
-        _template_cache = (
-            resources.files("job_applier.ai")
-            .joinpath("prompts/suggest.md")
-            .read_text(encoding="utf-8")
-        )
-    return _template_cache
-
-
 def _current_profile_summary(profile: Optional[SearchProfile]) -> str:
     if profile is None:
         return "(none set)"
@@ -70,7 +56,7 @@ def build_suggest_prompt(resume_text: str, profile: Optional[SearchProfile]) -> 
     nonce = prompt_safety.new_nonce()
     current = prompt_safety.clean_untrusted(_current_profile_summary(profile), nonce)
     return (
-        _template()
+        load_template("suggest.md")
         .replace("{{RESUME_TEXT}}", resume_text.strip())
         .replace("{{NONCE}}", nonce)
         .replace("{{CURRENT_PROFILE}}", current)
@@ -80,16 +66,15 @@ def build_suggest_prompt(resume_text: str, profile: Optional[SearchProfile]) -> 
 def _run_and_parse(
     provider: str, prompt: str, model: Optional[str]
 ) -> SuggestedProfile:
-    try:
-        return providers.run_json(
-            provider,
-            prompt,
-            SuggestedProfile,
-            model=model,
-            nudge="IMPORTANT: return ONLY the JSON object described above.",
-        )
-    except providers.ProviderJSONError as exc:
-        raise SuggestError(f"invalid suggestion JSON after retry: {exc}") from exc
+    return providers.run_json_or(
+        provider,
+        prompt,
+        SuggestedProfile,
+        error_cls=SuggestError,
+        label="suggestion",
+        model=model,
+        nudge="IMPORTANT: return ONLY the JSON object described above.",
+    )
 
 
 def suggest_roles(

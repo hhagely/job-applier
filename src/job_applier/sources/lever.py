@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, looks_remote
 
 log = logging.getLogger(__name__)
 
@@ -59,9 +59,7 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
     team = categories.get("team") or ""
     commitment = categories.get("commitment") or ""
 
-    remote = workplace_type == "remote" or "remote" in location.lower() or any(
-        "remote" in loc.lower() for loc in all_locations
-    )
+    remote = workplace_type == "remote" or looks_remote(location, *all_locations)
 
     description_html = item.get("description") or item.get("descriptionBody") or ""
     description_plain = item.get("descriptionPlain") or ""

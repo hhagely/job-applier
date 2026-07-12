@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from xml.etree import ElementTree as ET
 
+from job_applier.contracts import html_to_text
 from job_applier.sources.ashby import _normalize as ashby_normalize
-from job_applier.sources.base import parse_date_multi, parse_iso_date
+from job_applier.sources.base import looks_remote, parse_date_multi, parse_iso_date
 from job_applier.sources.greenhouse import _normalize as greenhouse_normalize
 from job_applier.sources.hackernews import (
     _html_to_text,
@@ -40,6 +41,24 @@ from job_applier.sources.ycombinator import (
     _extract_jobposting_ld,
     _split_hn_title,
 )
+
+
+class TestSharedHelpers:
+    def test_looks_remote_matches_any_fragment_case_insensitively(self):
+        assert looks_remote("San Francisco, CA", "US Remote") is True
+        assert looks_remote("REMOTE") is True
+        assert looks_remote("Austin, TX", None) is False
+        assert looks_remote() is False
+
+    def test_html_to_text_flattens_blocks_and_unescapes(self):
+        out = html_to_text("<p>Hello &amp; <a href='x'>world</a></p><div>Line 2</div>")
+        assert "Hello & world" in out
+        assert "Line 2" in out
+        assert "<" not in out
+
+    def test_html_to_text_empty_input(self):
+        assert html_to_text("") == ""
+        assert html_to_text(None) == ""
 
 
 class TestSharedDateParsing:

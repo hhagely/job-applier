@@ -35,7 +35,7 @@ from collections.abc import Iterable
 
 import httpx
 
-from job_applier.sources.base import RawJob, parse_iso_date
+from job_applier.sources.base import RawJob, looks_remote, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def _normalize(tenant: str, item: dict) -> RawJob | None:
         or item.get("full_location")
         or item.get("short_location")
     )
-    remote = "remote" in (location or "").lower()
+    remote = looks_remote(location)
 
     description_parts = [
         item.get("description") or "",
