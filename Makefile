@@ -40,9 +40,8 @@ check-no-personal-data: ## Fail if the packaged app tree contains personal data 
 stamp-version: ## Stamp desktop/package.json version from src/job_applier/__init__.py __version__
 	uv run python desktop/scripts/stamp_version.py
 
-release: ## Cut a release: bump version + commit + tag + push (triggers release.yml). Usage: make release VERSION=X.Y.Z
-	@test -n "$(VERSION)" || { echo "Usage: make release VERSION=X.Y.Z"; exit 1; }
-	uv run python desktop/scripts/release.py $(VERSION)
+release: ## Cut a release: bump version + commit + tag + push (triggers release.yml). Usage: make release VERSION=X.Y.Z (add DRY_RUN=1 to preview)
+	uv run python desktop/scripts/release.py $(VERSION) $(if $(DRY_RUN),--dry-run)
 
 app-dev: build-web ## Boot API + built web server on free ports and open the browser (no make api/web dance)
 	uv run job-applier app-dev

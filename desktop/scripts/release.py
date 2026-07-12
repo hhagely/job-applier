@@ -8,6 +8,9 @@ thing:
 
     make release VERSION=0.2.0
 
+Pass ``DRY_RUN=1`` (``--dry-run``) to run every precondition check and print the
+plan without editing, committing, tagging, or pushing anything.
+
 Steps:
   1. validate the version and that the working tree is clean,
   2. rewrite __version__ (src/job_applier/__init__.py) + version (pyproject.toml),
@@ -62,14 +65,17 @@ def _replace_once(path: Path, pattern: str, repl: str, what: str) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        _die("usage: release.py X.Y.Z  (or: make release VERSION=X.Y.Z)")
-    version = argv[1].lstrip("vV")
+    args = argv[1:]
+    dry_run = "--dry-run" in args
+    args = [a for a in args if a != "--dry-run"]
+    if len(args) != 1:
+        _die("usage: release.py X.Y.Z [--dry-run]  (or: make release VERSION=X.Y.Z [DRY_RUN=1])")
+    version = args[0].lstrip("vV")
     if not _VERSION_RE.match(version):
         _die(f"'{version}' is not a valid version (expected X.Y.Z[-suffix])")
     tag = f"v{version}"
 
-    # --- preconditions ------------------------------------------------------
+    # --- preconditions (all read-only; run in dry-run too) ------------------
     if _git("status", "--porcelain", capture=True):
         _die("working tree is not clean; commit or stash first, then re-run")
     if _git("tag", "--list", tag, capture=True):
@@ -78,6 +84,14 @@ def main(argv: list[str]) -> int:
         _die(f"version is already {version}; bump to a new version")
 
     branch = _git("rev-parse", "--abbrev-ref", "HEAD", capture=True)
+
+    if dry_run:
+        print(f"[dry-run] preconditions pass for {tag} on {branch}. Would:")
+        print(f"  1. bump to {version} in __init__.py, pyproject.toml, desktop/package.json")
+        print(f"  2. commit 'Release {tag}' and create tag {tag}")
+        print(f"  3. push {branch} + {tag} to origin (triggers release.yml)")
+        print("nothing was changed.")
+        return 0
 
     # --- bump ---------------------------------------------------------------
     _replace_once(
