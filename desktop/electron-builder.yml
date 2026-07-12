@@ -41,6 +41,10 @@ linux:
     - deb
   category: Utility
   icon: build/icon.png
+  # The fpm/deb target aborts without a maintainer + project homepage
+  # ("specify author email / deb maintainer"). homepage comes from
+  # package.json; the maintainer is set explicitly here.
+  maintainer: Herb Hagely <herb.hagely@gmail.com>
 
 nsis:
   oneClick: false
