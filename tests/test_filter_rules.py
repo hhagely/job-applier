@@ -34,6 +34,25 @@ def test_keeps_non_us_city_with_us_hint(make_raw):
     assert result.status is FilterStatus.passed
 
 
+@pytest.mark.parametrize(
+    "location",
+    ["Austin, TX", "San Francisco, CA", "New York, NY", "Remote - Austin, TX"],
+)
+def test_keeps_us_city_state_without_country_token(location: str, make_raw):
+    # A bare "City, ST" US location (no explicit country) must not be dropped as
+    # non-US — the 2-letter state code is a US hint.
+    result = evaluate(make_raw(location=location))
+    assert result.status is FilterStatus.passed
+
+
+@pytest.mark.parametrize("location", ["Toronto, ON", "Vancouver, BC", "London, UK"])
+def test_drops_non_us_city_with_non_us_region_code(location: str, make_raw):
+    # Canadian province / UK codes are not US-state codes, so these stay dropped.
+    result = evaluate(make_raw(location=location))
+    assert result.status is FilterStatus.dropped
+    assert "non-US" in (result.reason or "")
+
+
 def test_drops_non_senior_title(make_raw):
     result = evaluate(make_raw(title="Software Engineer"))
     assert result.status is FilterStatus.dropped
