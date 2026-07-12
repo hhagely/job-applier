@@ -603,7 +603,8 @@ class TestDedupeJdBackfill:
 class TestCrossSourceHashBackfill:
     """`backfill_cross_source_hash` opens its own session via ``engine()``, so we
     point that at a throwaway in-memory DB rather than using the ``session``
-    fixture directly."""
+    fixture directly. It lives in ``maintenance`` (re-exported from ``ingest``),
+    so patch the engine there."""
 
     def _fresh_engine(self, monkeypatch):
         engine = create_engine(
@@ -612,7 +613,7 @@ class TestCrossSourceHashBackfill:
             poolclass=StaticPool,
         )
         SQLModel.metadata.create_all(engine)
-        monkeypatch.setattr("job_applier.ingest.engine", lambda: engine)
+        monkeypatch.setattr("job_applier.maintenance.engine", lambda: engine)
         return engine
 
     def _add(self, session, company_id, *, source, source_id, title):

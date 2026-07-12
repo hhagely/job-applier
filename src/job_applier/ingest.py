@@ -1,19 +1,39 @@
-"""Ingestion pipeline: pull raw jobs from sources, dedupe, persist, filter."""
+"""Ingestion pipeline: pull raw jobs from sources, dedupe, filter, persist.
+
+The fingerprint/normalization primitives live in :mod:`job_applier.dedupe` and the
+offline batch jobs (prune, backfills) in :mod:`job_applier.maintenance`; both are
+re-exported here so existing ``from job_applier.ingest import ...`` call sites keep
+working. This module owns only the live pipeline — ``ingest_one`` / ``run_ingest``
+— plus the post-ingest ``archive_existing_duplicates`` reconciliation.
+"""
 
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
+from job_applier.dedupe import (
+    JD_HAMMING_THRESHOLD,
+    cross_source_hash,
+    dedupe_hash,
+    jd_hamming_distance,
+    jd_simhash,
+    normalize_company,
+    normalize_title,
+)
 from job_applier.filters import FilterConfig, evaluate, load_active_config
+from job_applier.maintenance import (
+    PRUNE_INGESTED_AFTER_DAYS,
+    PRUNE_POSTED_AFTER_DAYS,
+    backfill_cross_source_hash,
+    dedupe_jd_backfill,
+    prune_old_postings,
+)
 from job_applier.models import (
     Application,
     ApplicationStatus,
@@ -27,9 +47,36 @@ from job_applier.sources import RawJob, SourceAdapter, get_all_sources
 
 log = logging.getLogger(__name__)
 
+# Re-exported for backward compatibility with `from job_applier.ingest import X`.
+__all__ = [
+    "JD_HAMMING_THRESHOLD",
+    "JD_LOOKBACK_DAYS",
+    "PRUNE_INGESTED_AFTER_DAYS",
+    "PRUNE_POSTED_AFTER_DAYS",
+    "STALE_AFTER_DAYS",
+    "IngestStats",
+    "archive_existing_duplicates",
+    "backfill_cross_source_hash",
+    "cross_source_hash",
+    "dedupe_hash",
+    "dedupe_jd_backfill",
+    "ingest_one",
+    "jd_hamming_distance",
+    "jd_simhash",
+    "load_blacklisted_names",
+    "normalize_company",
+    "normalize_title",
+    "prune_old_postings",
+    "run_ingest",
+]
+
 # Postings older than this are skipped — stale listings are rarely still open,
 # and a re-post will come through on the next ingest if the role is real.
 STALE_AFTER_DAYS = 30
+
+# How far back to look for near-duplicates at ingest. Reposts arrive within a
+# few weeks; older matches add cost without catching much.
+JD_LOOKBACK_DAYS = 14
 
 
 @dataclass
@@ -52,171 +99,6 @@ def _is_stale(posted_at: datetime | None, now: datetime) -> bool:
     if posted_at.tzinfo is None:
         posted_at = posted_at.replace(tzinfo=timezone.utc)
     return (now - posted_at) > timedelta(days=STALE_AFTER_DAYS)
-
-
-def dedupe_hash(raw: RawJob) -> str:
-    h = hashlib.sha256()
-    h.update(raw.source.encode())
-    h.update(b"|")
-    h.update(raw.source_id.encode())
-    return h.hexdigest()
-
-
-_LOCATION_SUFFIX_FALLBACK = re.compile(
-    r"\s*[\-–—]\s*"
-    r"[^,\-–—]{1,40},\s*[^,\-–—]{1,40}"
-    r"(?:,\s*[^,\-–—]{1,40})?"
-    r"\s*$"
-)
-
-
-def _strip_location_suffix(title: str, location: str | None) -> str:
-    """Remove a trailing " - {location}" from a title.
-
-    Speechify and other Greenhouse posters fan a single role out into one
-    posting per city; the title gets " - {City}, {State}, {Country}" appended
-    and the `location` field carries that same suffix verbatim. Stripping it
-    lets dedupe see the underlying role.
-    """
-    if location:
-        pattern = re.compile(
-            r"\s*[\-–—]\s*" + re.escape(location.strip()) + r"\s*$",
-            re.IGNORECASE,
-        )
-        stripped = pattern.sub("", title)
-        if stripped != title:
-            return stripped
-    return _LOCATION_SUFFIX_FALLBACK.sub("", title)
-
-
-def normalize_title(title: str, location: str | None = None) -> str:
-    return " ".join(_strip_location_suffix(title, location).lower().split())
-
-
-_COMPANY_SUFFIXES = re.compile(
-    r"[,\s]+(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|"
-    r"plc|gmbh|s\.?a\.?|s\.?l\.?|pty|ag|nv|bv)\.?$",
-    re.IGNORECASE,
-)
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
-_TITLE_NOISE = re.compile(
-    r"\b(remote|us|usa|united\s+states|anywhere|global|emea|apac|americas|"
-    r"\(remote\)|\(us\)|\(usa\)|m/?f/?d|f/?m/?d|h/?f|m/?w/?d)\b",
-    re.IGNORECASE,
-)
-
-
-def normalize_company(name: str) -> str:
-    """Canonical company-name key: strip a legal suffix (Inc/LLC/GmbH/...) then
-    lowercase and drop every non-alphanumeric char. Shared by cross-source
-    dedupe and the user company blacklist so "Meta", "Meta Inc", and
-    "Meta, Inc." all collapse to one key.
-    """
-    s = (name or "").strip()
-    s = _COMPANY_SUFFIXES.sub("", s)
-    s = _NON_ALNUM.sub("", s.lower())
-    return s
-
-
-# Back-compat alias for internal callers that predate the public name.
-_normalize_company = normalize_company
-
-
-def _normalize_title(title: str, location: str | None = None) -> str:
-    s = _strip_location_suffix(title or "", location).lower()
-    s = re.sub(r"\bsr\.?\b", "senior", s)
-    s = re.sub(r"\bjr\.?\b", "junior", s)
-    s = re.sub(r"\beng\.?\b", "engineer", s)
-    s = re.sub(r"\bdev\.?\b", "developer", s)
-    s = _TITLE_NOISE.sub("", s)
-    s = _NON_ALNUM.sub("", s)
-    return s
-
-
-_HTML_TAG = re.compile(r"<[^>]+>")
-_TOKEN = re.compile(r"[a-z0-9]+")
-
-# Pre-fingerprint floor: SimHash on a few dozen tokens collides too readily.
-# 200 chars of cleaned text is roughly the shortest "real" JD we see.
-JD_MIN_CHARS = 200
-
-# Shingle size: 3-grams of tokens. Smaller catches more boilerplate as a match,
-# larger needs more verbatim overlap. 3 is a common starting point.
-JD_SHINGLE_K = 3
-
-# Hamming-distance threshold (out of 64 bits). 0-3 is "near-identical" for
-# SimHash on text; revisit after sweeping real data.
-JD_HAMMING_THRESHOLD = 3
-
-# How far back to look for near-duplicates at ingest. Reposts arrive within a
-# few weeks; older matches add cost without catching much.
-JD_LOOKBACK_DAYS = 14
-
-
-def _jd_clean_text(description: str) -> str:
-    stripped = _HTML_TAG.sub(" ", description or "")
-    return stripped.lower()
-
-
-def _jd_shingles(text: str) -> list[str]:
-    tokens = _TOKEN.findall(text)
-    if len(tokens) < JD_SHINGLE_K:
-        return []
-    return [
-        " ".join(tokens[i : i + JD_SHINGLE_K])
-        for i in range(len(tokens) - JD_SHINGLE_K + 1)
-    ]
-
-
-def jd_simhash(description: str) -> str | None:
-    """64-bit SimHash of a JD as a 16-char hex string.
-
-    Returns None when the cleaned text is too thin to fingerprint without
-    risking false collisions.
-    """
-    text = _jd_clean_text(description)
-    if len(text) < JD_MIN_CHARS:
-        return None
-    shingles = _jd_shingles(text)
-    if not shingles:
-        return None
-
-    bits = [0] * 64
-    for shingle in shingles:
-        h = int.from_bytes(
-            hashlib.blake2b(shingle.encode(), digest_size=8).digest(),
-            "big",
-        )
-        for i in range(64):
-            if (h >> i) & 1:
-                bits[i] += 1
-            else:
-                bits[i] -= 1
-
-    fingerprint = 0
-    for i, v in enumerate(bits):
-        if v > 0:
-            fingerprint |= 1 << i
-    return f"{fingerprint:016x}"
-
-
-def jd_hamming_distance(a: str, b: str) -> int:
-    return bin(int(a, 16) ^ int(b, 16)).count("1")
-
-
-def cross_source_hash(raw: RawJob) -> str | None:
-    """Hash a normalized (company, title) so the same role from different
-    sources collapses to one row. Returns None if either field is too thin
-    to fingerprint reliably (avoids false-positive collisions)."""
-    company = _normalize_company(raw.company_name)
-    title = _normalize_title(raw.title, raw.location)
-    if len(company) < 2 or len(title) < 4:
-        return None
-    h = hashlib.sha256()
-    h.update(company.encode())
-    h.update(b"|")
-    h.update(title.encode())
-    return h.hexdigest()
 
 
 def _upsert_company(session: Session, name: str) -> Company:
@@ -430,206 +312,3 @@ def archive_existing_duplicates(session: Session) -> int:
             archived += 1
     session.commit()
     return archived
-
-
-# Postings that match prune criteria have their description + raw blob cleared
-# to keep the DB small. The dedupe columns (source/source_id/dedupe_hash/
-# cross_source_hash) and the normalized-title inputs (title/location/company)
-# stay intact so future ingests still see these as duplicates.
-PRUNE_POSTED_AFTER_DAYS = 30
-PRUNE_INGESTED_AFTER_DAYS = 14
-
-
-@dataclass
-class PruneStats:
-    scanned: int = 0
-    lightened: int = 0
-    bytes_freed: int = 0
-
-
-def prune_old_postings(session: Session, now: datetime | None = None) -> PruneStats:
-    """Null out heavy fields (description, raw) on postings we no longer need
-    in full. Targets:
-
-    - archived or rejected applications
-    - postings whose posted_at is over PRUNE_POSTED_AFTER_DAYS old
-    - postings ingested over PRUNE_INGESTED_AFTER_DAYS ago that haven't been
-      applied to
-
-    Dedupe still works against these rows because the hash columns and the
-    normalized-title inputs are untouched.
-    """
-    now = now or datetime.now(timezone.utc)
-    posted_cutoff = now - timedelta(days=PRUNE_POSTED_AFTER_DAYS)
-    ingested_cutoff = now - timedelta(days=PRUNE_INGESTED_AFTER_DAYS)
-
-    app_status_by_job: dict[int, ApplicationStatus] = {
-        a.job_id: a.status for a in session.exec(select(Application)).all()
-    }
-
-    stats = PruneStats()
-    postings = session.exec(select(JobPosting)).all()
-    for p in postings:
-        stats.scanned += 1
-        if not p.description and not p.raw:
-            continue
-
-        status = app_status_by_job.get(p.id) if p.id is not None else None
-        prune = False
-        if status in (ApplicationStatus.archived, ApplicationStatus.rejected):
-            prune = True
-        else:
-            posted = p.posted_at
-            if posted is not None and posted.tzinfo is None:
-                posted = posted.replace(tzinfo=timezone.utc)
-            if posted is not None and posted < posted_cutoff:
-                prune = True
-            else:
-                ingested = p.ingested_at
-                if ingested is not None and ingested.tzinfo is None:
-                    ingested = ingested.replace(tzinfo=timezone.utc)
-                if (
-                    ingested is not None
-                    and ingested < ingested_cutoff
-                    and status != ApplicationStatus.applied
-                ):
-                    prune = True
-
-        if not prune:
-            continue
-
-        stats.bytes_freed += len(p.description or "")
-        if p.raw:
-            try:
-                stats.bytes_freed += len(json.dumps(p.raw))
-            except (TypeError, ValueError):
-                pass
-        p.description = ""
-        p.raw = {}
-        session.add(p)
-        stats.lightened += 1
-
-    if stats.lightened:
-        session.commit()
-    return stats
-
-
-@dataclass
-class JdDedupeStats:
-    fingerprinted: int = 0
-    flagged: int = 0
-
-
-# Clustering window for the backfill CLI. Wider than the per-ingest lookback
-# because we're sweeping historical data, not making latency-sensitive
-# decisions.
-JD_CLUSTER_WINDOW_DAYS = 30
-
-
-def dedupe_jd_backfill(session: Session | None = None) -> JdDedupeStats:
-    """Populate jd_fingerprint on legacy rows and soft-link near-duplicates.
-
-    Clustering rule: for each row missing duplicate_of, find earlier rows
-    within JD_CLUSTER_WINDOW_DAYS whose fingerprint is within
-    JD_HAMMING_THRESHOLD bits. First match wins; the later row gets the link.
-
-    Passing an explicit ``session`` makes the helper unit-testable; otherwise
-    it opens its own session against the global engine.
-    """
-    if session is None:
-        with Session(engine()) as s:
-            return _dedupe_jd_backfill(s)
-    return _dedupe_jd_backfill(session)
-
-
-def _dedupe_jd_backfill(session: Session) -> JdDedupeStats:
-    stats = JdDedupeStats()
-    rows = session.exec(select(JobPosting).order_by(JobPosting.ingested_at)).all()
-
-    for row in rows:
-        if row.jd_fingerprint is not None:
-            continue
-        fp = jd_simhash(row.description or "")
-        if fp is None:
-            continue
-        row.jd_fingerprint = fp
-        session.add(row)
-        stats.fingerprinted += 1
-    if stats.fingerprinted:
-        session.commit()
-
-    rows = session.exec(
-        select(JobPosting)
-        .where(JobPosting.jd_fingerprint.is_not(None))  # type: ignore[union-attr]
-        .order_by(JobPosting.ingested_at)
-    ).all()
-
-    window = timedelta(days=JD_CLUSTER_WINDOW_DAYS)
-    for i, later in enumerate(rows):
-        if later.duplicate_of is not None:
-            continue
-        later_ingested = later.ingested_at
-        if later_ingested is not None and later_ingested.tzinfo is None:
-            later_ingested = later_ingested.replace(tzinfo=timezone.utc)
-        for earlier in rows[:i]:
-            if earlier.id == later.id:
-                continue
-            earlier_ingested = earlier.ingested_at
-            if earlier_ingested is not None and earlier_ingested.tzinfo is None:
-                earlier_ingested = earlier_ingested.replace(tzinfo=timezone.utc)
-            if (
-                later_ingested is not None
-                and earlier_ingested is not None
-                and (later_ingested - earlier_ingested) > window
-            ):
-                continue
-            if (
-                jd_hamming_distance(
-                    later.jd_fingerprint,  # type: ignore[arg-type]
-                    earlier.jd_fingerprint,  # type: ignore[arg-type]
-                )
-                <= JD_HAMMING_THRESHOLD
-            ):
-                later.duplicate_of = earlier.duplicate_of or earlier.id
-                session.add(later)
-                stats.flagged += 1
-                break
-    if stats.flagged:
-        session.commit()
-    return stats
-
-
-def backfill_cross_source_hash() -> int:
-    """Populate cross_source_hash on existing rows that pre-date the column.
-
-    Rows with the same fingerprint as an earlier row are left with NULL hash
-    (so we don't punish the original ingest by retroactively flagging it as a
-    dup). Returns the number of rows updated.
-    """
-    updated = 0
-    seen: set[str] = set()
-    with Session(engine()) as session:
-        rows = session.exec(
-            select(JobPosting).where(JobPosting.cross_source_hash.is_(None))  # type: ignore[union-attr]
-        ).all()
-        for row in rows:
-            company = row.company.name if row.company else ""
-            fake = RawJob(
-                source=row.source,
-                source_id=row.source_id,
-                url=row.url,
-                title=row.title,
-                company_name=company,
-                description="",
-                location=row.location,
-            )
-            h = cross_source_hash(fake)
-            if h is None or h in seen:
-                continue
-            seen.add(h)
-            row.cross_source_hash = h
-            session.add(row)
-            updated += 1
-        if updated:
-            session.commit()
-    return updated
