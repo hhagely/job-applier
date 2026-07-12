@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { untrack } from 'svelte';
+	import { US_STATES } from '$lib/usStates';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -31,20 +32,6 @@
 	function joinList(items: string[]): string {
 		return items.join('\n');
 	}
-
-	// Static list — the 50 states + DC. Values are the canonical full names the
-	// backend stores and matches on.
-	const US_STATES = [
-		'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
-		'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
-		'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine',
-		'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi',
-		'Missouri', 'Montana', 'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey',
-		'New Mexico', 'New York', 'North Carolina', 'North Dakota', 'Ohio',
-		'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island', 'South Carolina',
-		'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia',
-		'Washington', 'West Virginia', 'Wisconsin', 'Wyoming', 'District of Columbia'
-	];
 
 	let draft = $derived(profile.recommendations_draft);
 	const hasProvider = $derived(Boolean(data.aiProvider));

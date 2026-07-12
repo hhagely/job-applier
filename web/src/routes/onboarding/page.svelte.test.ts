@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProvidersResponse } from '$lib/api';
 
@@ -24,6 +24,7 @@ function makeData(overrides = {}) {
 			model: null
 		} as ProvidersResponse,
 		resume: null,
+		searchProfile: null,
 		...overrides
 	};
 }
@@ -56,5 +57,25 @@ describe('onboarding wizard', () => {
 	it('always offers a skip-setup escape hatch (not a hard gate)', () => {
 		render(Page, { props: { data: makeData() } });
 		expect(screen.getByRole('button', { name: /Skip setup for now/i })).toBeInTheDocument();
+	});
+
+	it('offers the optional state-of-residence selector on the fetch-jobs step', async () => {
+		render(Page, { props: { data: makeData() } });
+		// Advance to step 3 (AI provider -> Resume -> Fetch jobs).
+		await fireEvent.click(screen.getByRole('button', { name: /Skip this step/i }));
+		await fireEvent.click(screen.getByRole('button', { name: /Skip this step/i }));
+
+		expect(screen.getByRole('combobox', { name: /State of residence/i })).toBeInTheDocument();
+		expect(screen.getByRole('option', { name: 'Missouri' })).toBeInTheDocument();
+		expect(screen.getByText(/stored locally, never sent anywhere/i)).toBeInTheDocument();
+	});
+
+	it('preselects a home state already saved on the profile', async () => {
+		render(Page, { props: { data: makeData({ searchProfile: { home_state: 'California' } }) } });
+		await fireEvent.click(screen.getByRole('button', { name: /Skip this step/i }));
+		await fireEvent.click(screen.getByRole('button', { name: /Skip this step/i }));
+
+		const select = screen.getByRole('combobox', { name: /State of residence/i }) as HTMLSelectElement;
+		expect(select.value).toBe('California');
 	});
 });
