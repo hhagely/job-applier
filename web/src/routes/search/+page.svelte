@@ -13,6 +13,7 @@
 	let required_tech = $state(untrack(() => joinList(data.profile.required_tech)));
 	let excluded_tech = $state(untrack(() => joinList(data.profile.excluded_tech)));
 	let extracted_skills = $state(untrack(() => joinList(data.profile.extracted_skills)));
+	let home_state = $state(untrack(() => data.profile.home_state ?? ''));
 
 	let lastSeen = $state(untrack(() => data.profile.updated_at));
 	$effect(() => {
@@ -22,6 +23,7 @@
 			required_tech = joinList(profile.required_tech);
 			excluded_tech = joinList(profile.excluded_tech);
 			extracted_skills = joinList(profile.extracted_skills);
+			home_state = profile.home_state ?? '';
 			lastSeen = profile.updated_at;
 		}
 	});
@@ -29,6 +31,20 @@
 	function joinList(items: string[]): string {
 		return items.join('\n');
 	}
+
+	// Static list — the 50 states + DC. Values are the canonical full names the
+	// backend stores and matches on.
+	const US_STATES = [
+		'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
+		'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
+		'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine',
+		'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi',
+		'Missouri', 'Montana', 'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey',
+		'New Mexico', 'New York', 'North Carolina', 'North Dakota', 'Ohio',
+		'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island', 'South Carolina',
+		'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia',
+		'Washington', 'West Virginia', 'Wisconsin', 'Wyoming', 'District of Columbia'
+	];
 
 	let draft = $derived(profile.recommendations_draft);
 	const hasProvider = $derived(Boolean(data.aiProvider));
@@ -126,7 +142,23 @@
 			<div class="card">
 				<div class="card-h"><h2>Active criteria</h2></div>
 				<div class="card-b">
-					<div class="grid-2">
+					<div class="field state-field">
+						<span>State of residence <span style="color:var(--faint);font-weight:500">(optional)</span></span>
+						<select class="input state-select" name="home_state" aria-label="State of residence" bind:value={home_state}>
+							<option value="">— Not set (don't filter by state) —</option>
+							{#each US_STATES as st (st)}
+								<option value={st}>{st}</option>
+							{/each}
+						</select>
+						<small class="state-disclaimer">
+							Some employers can only hire in certain states. When you pick yours, ingest
+							drops postings whose "we can only hire in X, Y, Z" list leaves your state out.
+							This is used <strong>only</strong> to filter jobs during ingest — it is stored
+							locally in your own database, never sent anywhere, and never used for any other
+							purpose. Leave it unset to skip state filtering entirely.
+						</small>
+					</div>
+					<div class="grid-2" style="margin-top:14px">
 						<div class="field">
 							<span>Role titles</span>
 							<textarea class="input" name="role_titles" rows="5" bind:value={role_titles}></textarea>
@@ -224,6 +256,13 @@
 </div>
 
 <style>
+	.state-select {
+		max-width: 320px;
+	}
+	.state-disclaimer {
+		line-height: 1.5;
+		max-width: 60ch;
+	}
 	.rec-actions {
 		display: flex;
 		gap: 8px;

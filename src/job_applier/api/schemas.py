@@ -147,6 +147,10 @@ class SearchProfileBody(BaseModel):
     required_tech: list[str] = []
     excluded_tech: list[str] = []
     extracted_skills: list[str] = []
+    # Canonical full name of the user's state of residence (e.g. "Missouri"), or
+    # None/"" to leave the state-allow-list rule off. Validated + normalized on the
+    # PUT path. Used only for ingest filtering.
+    home_state: Optional[str] = None
 
 
 class SearchProfileOut(SearchProfileBody):

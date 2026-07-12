@@ -189,6 +189,12 @@ class SearchProfile(SQLModel, table=True):
     required_tech: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Tech that disqualifies a posting when it's the primary stack (e.g. "angular").
     excluded_tech: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Canonical full name of the user's state of residence (e.g. "Missouri"), or
+    # None. Drives the state-allow-list rule: a posting that can "only hire in
+    # X, Y, Z" is dropped when the home state isn't in that list. Null skips the
+    # rule entirely (no state assumption). Used ONLY for ingest filtering — never
+    # for any other purpose. Edited at /search.
+    home_state: Optional[str] = None
     # Reference: skills extracted from the user's resume by the LLM. Not used by
     # the filter directly — surfaced in the UI so the user can see what informed
     # the recommendations.
@@ -284,6 +290,7 @@ def create_db_and_tables() -> None:
     _ensure_application_followup_columns()
     _ensure_application_unemployment_columns()
     _ensure_jd_dedupe_columns()
+    _ensure_searchprofile_columns()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -338,6 +345,19 @@ def _ensure_jd_dedupe_columns() -> None:
                 "ON jobposting (duplicate_of)"
             )
         conn.commit()
+
+
+def _ensure_searchprofile_columns() -> None:
+    """Add SearchProfile.home_state on existing DBs that pre-date the column.
+
+    Nullable with no default: existing profiles migrate to "no home state set",
+    which skips the state-allow-list rule until the user picks a state at /search.
+    """
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(searchprofile)")}
+        if "home_state" not in cols:
+            conn.exec_driver_sql("ALTER TABLE searchprofile ADD COLUMN home_state VARCHAR")
+            conn.commit()
 
 
 def _ensure_score_kind_columns() -> None:

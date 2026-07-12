@@ -185,9 +185,12 @@ fixed rules, always applied, are:
 - **Remote only** — drops `hybrid`, `on-site`, anything mentioning relocation.
 - **US-locatable** — if the posting names a non-US country/region and has no US
   marker, drop. Specific "City, Region" locations without a US hint also drop.
-- **State allow-list must include Missouri** — postings that say "we can only
-  hire in X, Y, Z" and don't list MO drop. Phrased as "any US state" or
-  "nationwide" overrides.
+- **State allow-list must include your home state** — postings that say "we can
+  only hire in X, Y, Z" and don't list your state drop. Phrased as "any US state"
+  or "nationwide" overrides. Set your state of residence at
+  http://localhost:5174/search; **when it's left unset this rule is skipped
+  entirely** (no state is assumed). Your state is used only for this ingest filter,
+  stored locally, and never sent anywhere.
 - **Not a sales / pre-sales / biz-dev title** — `Senior Solutions Engineer`,
   `Head of Partnerships`, etc. are dropped even when they pass seniority.
 

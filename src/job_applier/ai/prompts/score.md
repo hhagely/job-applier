@@ -51,8 +51,7 @@ The total `score` must equal the sum of the five bucket points and lie in `[0, 1
   score `0`, reasoning explains.
 - The role is below Senior (e.g. "Senior" in the title but the body says 2-4 years
   total): score `<= 30` and explain.
-- The posting names a US-state allow-list that omits Missouri: score `0`, reasoning
-  `"state allow-list excludes Missouri"`.
+{{STATE_RULE}}
 
 ## Reasoning
 

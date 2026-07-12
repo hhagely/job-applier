@@ -147,6 +147,8 @@ export interface SearchProfile {
 	required_tech: string[];
 	excluded_tech: string[];
 	extracted_skills: string[];
+	/** Canonical full name of the user's state of residence, or null. Ingest-filter only. */
+	home_state: string | null;
 	recommendations_draft: SearchProfileRecommendation | null;
 	updated_at: string | null;
 	using_defaults: boolean;
@@ -167,6 +169,8 @@ export interface SearchProfileBody {
 	required_tech: string[];
 	excluded_tech: string[];
 	extracted_skills: string[];
+	/** Full state name (e.g. "Missouri") or null/"" to leave the rule off. */
+	home_state?: string | null;
 }
 
 export interface Resume {

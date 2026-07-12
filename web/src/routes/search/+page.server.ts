@@ -30,12 +30,14 @@ function splitList(raw: FormDataEntryValue | null): string[] {
 }
 
 function readProfile(form: FormData): SearchProfileBody {
+	const homeState = form.get('home_state');
 	return {
 		role_titles: splitList(form.get('role_titles')),
 		seniority_terms: splitList(form.get('seniority_terms')),
 		required_tech: splitList(form.get('required_tech')),
 		excluded_tech: splitList(form.get('excluded_tech')),
-		extracted_skills: splitList(form.get('extracted_skills'))
+		extracted_skills: splitList(form.get('extracted_skills')),
+		home_state: typeof homeState === 'string' && homeState.trim() ? homeState.trim() : null
 	};
 }
 
@@ -46,7 +48,7 @@ export const actions: Actions = {
 			const profile = await api.saveSearchProfile(fetch, serverApiBase(), readProfile(form));
 			return { ok: true, profile, message: 'Saved.' };
 		} catch (e) {
-			return fail(422, { error: (e as Error).message });
+			return fail(422, { error: cleanError(e) });
 		}
 	},
 

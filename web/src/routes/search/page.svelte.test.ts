@@ -15,6 +15,7 @@ function profile(overrides: Partial<SearchProfile> = {}): SearchProfile {
 		required_tech: [],
 		excluded_tech: [],
 		extracted_skills: [],
+		home_state: null,
 		recommendations_draft: null,
 		updated_at: null,
 		using_defaults: true,
@@ -69,6 +70,24 @@ describe('search page Suggest-roles button', () => {
 		expect(screen.getByText('Recommendations')).toBeInTheDocument();
 		expect(screen.getByText(/Staff Backend Engineer/)).toBeInTheDocument();
 		expect(screen.getByRole('button', { name: /Replace with these/ })).toBeInTheDocument();
+	});
+});
+
+describe('search page state-of-residence field', () => {
+	it('renders the state dropdown with the privacy disclaimer', () => {
+		render(Page, { props: { data: data(), form: null } });
+
+		const select = screen.getByRole('combobox', { name: /State of residence/i });
+		expect(select).toBeInTheDocument();
+		expect(screen.getByRole('option', { name: 'Missouri' })).toBeInTheDocument();
+		expect(screen.getByText(/only.*to filter jobs during ingest/i)).toBeInTheDocument();
+	});
+
+	it('preselects the saved home state', () => {
+		render(Page, { props: { data: data({ profile: profile({ home_state: 'California' }) }), form: null } });
+
+		const select = screen.getByRole('combobox', { name: /State of residence/i }) as HTMLSelectElement;
+		expect(select.value).toBe('California');
 	});
 });
 

@@ -2,8 +2,22 @@ from __future__ import annotations
 
 import pytest
 
-from job_applier.filters.rules import evaluate, title_quick_fail
+from job_applier.filters.rules import (
+    build_config,
+    evaluate,
+    normalize_home_state,
+    title_quick_fail,
+)
 from job_applier.models.db import FilterStatus
+
+# A filter config that only sets a home state (other lists empty, so the seniority
+# and tech rules are skipped) — lets the state-allow-list tests below isolate rule 3.
+MO_CONFIG = build_config(
+    role_titles=[], seniority_terms=[], required_tech=[], excluded_tech=[], home_state="Missouri"
+)
+CA_CONFIG = build_config(
+    role_titles=[], seniority_terms=[], required_tech=[], excluded_tech=[], home_state="California"
+)
 
 
 def test_passes_senior_remote_typescript_us(make_raw):
@@ -162,42 +176,60 @@ def test_marks_manual_when_excluded_tech_only_in_description(make_raw):
     assert "verify primary stack" in (result.reason or "")
 
 
-# ---- State allow-list (Missouri eligibility) ----
+# ---- State allow-list (configurable home-state eligibility) ----
+#
+# The home state lives on the SearchProfile and is passed via the FilterConfig, so
+# these tests hand `evaluate` an explicit config. With NO home state configured the
+# rule is skipped entirely (see test_state_rule_skipped_when_no_home_state).
 
 
 def test_keeps_when_no_state_list_present(make_raw):
     # No state restriction language at all — assume open anywhere.
-    result = evaluate(make_raw(description="We use TypeScript and React. Remote-first team."))
+    result = evaluate(
+        make_raw(description="We use TypeScript and React. Remote-first team."), MO_CONFIG
+    )
     assert result.status is FilterStatus.passed
 
 
-def test_drops_when_state_list_excludes_missouri(make_raw):
+def test_drops_when_state_list_excludes_home_state(make_raw):
     result = evaluate(
         make_raw(
             description=(
                 "We use TypeScript and React. We are currently hiring employees in "
                 "California, New York, Texas, and Washington."
             )
-        )
+        ),
+        MO_CONFIG,
     )
     assert result.status is FilterStatus.dropped
     assert "Missouri" in (result.reason or "")
 
 
-def test_keeps_when_state_list_includes_missouri(make_raw):
+def test_keeps_when_state_list_includes_home_state(make_raw):
     result = evaluate(
         make_raw(
             description=(
                 "TypeScript / React role. We hire employees in California, Missouri, and Texas."
             )
-        )
+        ),
+        MO_CONFIG,
+    )
+    assert result.status is FilterStatus.passed
+
+
+def test_keeps_when_state_list_includes_home_state_abbrev(make_raw):
+    # The home state's two-letter code counts as present, so "MO" satisfies the list.
+    result = evaluate(
+        make_raw(description="React role. We can only hire in CA, NY, MO, and TX."),
+        MO_CONFIG,
     )
     assert result.status is FilterStatus.passed
 
 
 def test_drops_single_state_must_reside(make_raw):
     result = evaluate(
-        make_raw(description="TypeScript / React role. Candidates must reside in California.")
+        make_raw(description="TypeScript / React role. Candidates must reside in California."),
+        MO_CONFIG,
     )
     assert result.status is FilterStatus.dropped
 
@@ -210,7 +242,8 @@ def test_keeps_when_nationwide_override_present(make_raw):
                 "TypeScript / React role. We hire in any US state. Offices in California "
                 "and New York for those who want them."
             )
-        )
+        ),
+        MO_CONFIG,
     )
     assert result.status is FilterStatus.passed
 
@@ -223,9 +256,53 @@ def test_keeps_when_states_named_without_restriction_phrase(make_raw):
                 "TypeScript / React role. Our offices are in California and New York, "
                 "but the team is fully remote across the US."
             )
+        ),
+        MO_CONFIG,
+    )
+    assert result.status is FilterStatus.passed
+
+
+def test_state_rule_skipped_when_no_home_state(make_raw):
+    # With no home state configured (the built-in default), a state allow-list that
+    # would exclude Missouri no longer drops the posting — the rule is off.
+    result = evaluate(
+        make_raw(
+            description=(
+                "We use TypeScript and React. We are currently hiring employees in "
+                "California, New York, Texas, and Washington."
+            )
         )
     )
     assert result.status is FilterStatus.passed
+
+
+def test_state_rule_is_dynamic_per_home_state(make_raw):
+    # The SAME posting that excludes Missouri also excludes California, but a list
+    # that includes California passes for a California resident.
+    excludes_ca = make_raw(
+        description="React role. We are hiring employees in Missouri, New York, and Texas."
+    )
+    assert evaluate(excludes_ca, CA_CONFIG).status is FilterStatus.dropped
+    assert "California" in (evaluate(excludes_ca, CA_CONFIG).reason or "")
+
+    includes_ca = make_raw(
+        description="React role. We are hiring employees in California, New York, and Texas."
+    )
+    assert evaluate(includes_ca, CA_CONFIG).status is FilterStatus.passed
+
+
+def test_home_state_normalization():
+    # Full names and two-letter codes both normalize to the canonical proper name;
+    # blank/None means "no home state"; garbage is rejected.
+    assert normalize_home_state("Missouri") == "Missouri"
+    assert normalize_home_state("missouri") == "Missouri"
+    assert normalize_home_state("MO") == "Missouri"
+    assert normalize_home_state("mo") == "Missouri"
+    assert normalize_home_state("  New York  ") == "New York"
+    assert normalize_home_state("") is None
+    assert normalize_home_state(None) is None
+    with pytest.raises(ValueError):
+        normalize_home_state("Ontario")
 
 
 class TestTitleQuickFail:
