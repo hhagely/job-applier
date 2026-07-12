@@ -18,13 +18,12 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterable
-from datetime import datetime
 from typing import Optional
 
 import httpx
 
 from job_applier.filters import FilterConfig, title_quick_fail
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -233,16 +232,7 @@ def _normalize(company_slug: str, item: dict) -> RawJob | None:
         location=location_str,
         remote=remote,
         employment_type=(item.get("type") or None),
-        posted_at=_parse_date(item.get("published") or item.get("created")),
+        posted_at=parse_iso_date(item.get("published") or item.get("created")),
         tags=tags,
         raw=item,
     )
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None

@@ -54,44 +54,19 @@ subscription instead of paying for API tokens.
 7. **Report**: print a one-line summary per job (`<id>  <score>/100  <title>`),
    mark which ones were archived, and a final count (scored / archived).
 
-## Rubric (sums to 100)
+## Rubric + output contract
 
-| Bucket             | Weight | What to look for                                                                 |
-| ------------------ | ------ | -------------------------------------------------------------------------------- |
-| `skills_overlap`   | 30     | Required skills/tech the resume actually demonstrates (not just mentions).       |
-| `experience_match` | 25     | Years and seniority. Senior/Staff/Principal alignment with resume's career arc.  |
-| `role_fit`         | 20     | Day-to-day work matches what the resume shows the user *actually does well*.     |
-| `domain_fit`       | 15     | Industry/domain familiarity. Adjacent counts partially.                          |
-| `hard_requirements`| 10     | Hard gates: location, work auth, degrees, certs. All-or-nothing per requirement. |
+The rubric (five buckets summing to 100), the hard rules, and the strict-JSON output
+shape are defined **once** in [`src/job_applier/ai/prompts/score.md`](../../src/job_applier/ai/prompts/score.md)
+so this command and the in-app "Score pending" button can't drift. Read that file and
+apply it verbatim: it carries the bucket weights, the hard rules (fake-remote,
+below-Senior, Missouri state allow-list), the two-to-three-sentence
+reasoning guidance, and the exact JSON object shape you POST as `rubric` + `score` +
+`reasoning`. The `{{RESUME_TEXT}}` / `{{TITLE}}` / `{{COMPANY}}` / `{{LOCATION}}` /
+`{{DESCRIPTION}}` placeholders map to the resume text and each queue item's fields.
 
-For each bucket, return both a number and a one-line note in `rubric` JSON, e.g.:
-```json
-{
-  "skills_overlap":   {"points": 24, "note": "TS/React strong; Rust mentioned but light"},
-  "experience_match": {"points": 22, "note": "Staff-level scope matches"},
-  "role_fit":         {"points": 16, "note": "platform work aligns; less infra than role asks"},
-  "domain_fit":       {"points":  8, "note": "fintech adjacent — payments experience"},
-  "hard_requirements":{"points": 10, "note": "remote US-OK"}
-}
-```
-
-## Reasoning text
-
-Two or three sentences total — what's strong, what's a stretch, and the single most
-important honest caveat. The user reads this to decide whether to spend time tailoring
-an application. Don't sandbag and don't oversell.
-
-## Hard rules — drop the score (or skip + note) when:
-
-- The job is clearly Angular-primary despite passing the regex filter — POST score 0
-  with `reasoning: "Angular-primary stack — disqualified per user's filter"`.
-- The job requires on-site presence in a single location despite being tagged remote —
-  same: score 0, reasoning explains.
-- The role is below Senior (e.g. "Senior" in title but body says 2-4 years total) —
-  score ≤ 30 and explain.
-- The posting names a US-state allow-list that omits Missouri (the regex filter
-  catches the obvious cases, but if you spot one that slipped through) —
-  score 0, reasoning: "state allow-list excludes Missouri".
+When invoked in Claude Code, use `scored_by: "claude-code"` in the POST body (the
+in-app path uses `"<provider>-cli"`).
 
 ## Notes
 

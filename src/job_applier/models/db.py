@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Column, UniqueConstraint
+from sqlalchemy import JSON, Column, UniqueConstraint, event
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
 from job_applier.config import settings
@@ -202,7 +202,53 @@ class SearchProfile(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class AppSetting(SQLModel, table=True):
+    """Tiny key/value store for app-level settings (e.g. selected AI provider).
+
+    A dedicated table rather than overloading SearchProfile. Brand-new table, so
+    ``create_all`` handles it with no ALTER — additive and safe for `main`.
+    """
+
+    key: str = Field(primary_key=True)
+    value: str
+
+
+class BlacklistedCompany(SQLModel, table=True):
+    """A company the user never wants surfaced. Matched at ingest against the
+    normalized company name, so a job from a blacklisted employer is dropped
+    before it's persisted — even the first time we see that company (no
+    ``Company`` row needs to exist yet).
+
+    ``normalized_name`` is produced by ``ingest.normalize_company`` — the SAME
+    normalizer used for cross-source dedupe — so user-typed variants like
+    "Meta", "Meta Inc", and "Meta, Inc." all collapse to one key and match
+    however a source spells the employer. ``name`` keeps the original spelling
+    the user entered for display. Brand-new table, so ``create_all`` handles it
+    with no ALTER.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    normalized_name: str = Field(index=True, unique=True)
+    reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 _engine = None
+
+
+def get_setting(session: "Session", key: str, default: Optional[str] = None) -> Optional[str]:
+    row = session.get(AppSetting, key)
+    return row.value if row is not None else default
+
+
+def set_setting(session: "Session", key: str, value: str) -> None:
+    row = session.get(AppSetting, key)
+    if row is None:
+        session.add(AppSetting(key=key, value=value))
+    else:
+        row.value = value
+    session.commit()
 
 
 def engine():
@@ -210,6 +256,23 @@ def engine():
     if _engine is None:
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
         _engine = create_engine(f"sqlite:///{settings.db_path}", echo=False)
+
+        # SQLite defaults to busy_timeout=0 and a rollback journal, so the moment
+        # two connections contend for the write lock the loser raises
+        # "database is locked" — which surfaced as an opaque HTTP 500. Two flows
+        # make this easy to hit: the background scorer/ingest tasks write from
+        # their own thread/session, and the synchronous suggest-roles endpoint
+        # holds its read transaction open for the ~45s of the LLM call before it
+        # commits. WAL lets readers and the single writer coexist, and a busy
+        # timeout makes a contending writer wait for the lock instead of erroring.
+        @event.listens_for(_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=30000")  # ms; wait up to 30s for the lock
+            cur.execute("PRAGMA synchronous=NORMAL")  # safe + faster under WAL
+            cur.close()
+
     return _engine
 
 
@@ -246,7 +309,11 @@ def _ensure_matchscore_resume_id_column() -> None:
     with engine().connect() as conn:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(matchscore)")}
         if "resume_id" not in cols:
-            conn.exec_driver_sql("ALTER TABLE matchscore ADD COLUMN resume_id INTEGER")
+            # Carry the FK so migrated DBs match the fresh-install shape
+            # (model declares foreign_key="resume.id") and duplicate_of's pattern.
+            conn.exec_driver_sql(
+                "ALTER TABLE matchscore ADD COLUMN resume_id INTEGER REFERENCES resume(id)"
+            )
             conn.commit()
 
 
@@ -278,9 +345,12 @@ def _ensure_score_kind_columns() -> None:
         for table in ("matchscore", "matchscorehistory"):
             cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
             if "score_kind" not in cols:
+                # NOT NULL to match the model's non-Optional `score_kind: str`
+                # (fresh installs build it NOT NULL); the DEFAULT backfills the
+                # existing rows so the NOT NULL is satisfied on migrated DBs.
                 conn.exec_driver_sql(
                     f"ALTER TABLE {table} ADD COLUMN score_kind VARCHAR "
-                    "DEFAULT 'baseline'"
+                    "NOT NULL DEFAULT 'baseline'"
                 )
                 conn.exec_driver_sql(
                     f"CREATE INDEX IF NOT EXISTS ix_{table}_score_kind "

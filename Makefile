@@ -1,7 +1,8 @@
-.PHONY: setup api web dev ingest prune dedupe-jd diagnose-filter clean lint test test-api test-web help
+.PHONY: setup api web dev build-web app-dev desktop-setup sidecar electron electron-dev dist check-no-personal-data stamp-version release ingest refresh-slugs refresh-slugs-full prune dedupe-jd diagnose-filter clean lint test test-api test-web help
 
-setup: ## Install backend + frontend dependencies
+setup: ## Install backend + frontend dependencies (+ Chromium for PDF rendering)
 	uv sync
+	uv run playwright install chromium
 	cd web && npm install
 
 api: ## Run FastAPI backend on :8000
@@ -13,6 +14,38 @@ web: ## Run SvelteKit dev server on :5174
 dev: ## Run backend + frontend together (requires GNU parallel or two terminals)
 	@echo "Run 'make api' in one terminal and 'make web' in another."
 	@echo "Or: (make api &) && make web"
+
+build-web: ## Build the SvelteKit frontend (adapter-node -> web/build/index.js)
+	cd web && npm run build
+
+desktop-setup: ## Install the Electron shell's dependencies
+	cd desktop && npm install
+
+electron: build-web ## Run the Electron desktop shell from source (dev version-testing loop)
+	cd desktop && npm start
+
+electron-dev: ## Hot-reload dev shell: backend (--reload) + Vite HMR renderer + auto-restart Electron on main-process edits
+	cd desktop && npm run dev
+
+sidecar: ## Freeze the Python backend into a standalone binary (dist/job-applier-backend/)
+	uv run pyinstaller --noconfirm --clean desktop/sidecar/job-applier-backend.spec
+
+dist: stamp-version build-web sidecar ## Build the unsigned installable desktop app (desktop/dist/)
+	cd desktop && npm run dist
+	$(MAKE) check-no-personal-data
+
+check-no-personal-data: ## Fail if the packaged app tree contains personal data (data/resumes/applications)
+	uv run python desktop/scripts/check_no_personal_data.py desktop/dist
+
+stamp-version: ## Stamp desktop/package.json version from src/job_applier/__init__.py __version__
+	uv run python desktop/scripts/stamp_version.py
+
+release: ## Cut a release: bump version + commit + tag + push (triggers release.yml). Usage: make release VERSION=X.Y.Z
+	@test -n "$(VERSION)" || { echo "Usage: make release VERSION=X.Y.Z"; exit 1; }
+	uv run python desktop/scripts/release.py $(VERSION)
+
+app-dev: build-web ## Boot API + built web server on free ports and open the browser (no make api/web dance)
+	uv run job-applier app-dev
 
 ingest: ## Pull jobs from configured sources
 	uv run job-applier ingest

@@ -1,4 +1,4 @@
-"""Tailored-resume + cover-letter drafts: storage and PDF rendering.
+"""Tailored-resume + cover-letter drafts: storage and print-HTML rendering.
 
 Drafts live on disk under ``settings.applications_dir/<job_id>/``:
 
@@ -7,9 +7,13 @@ Drafts live on disk under ``settings.applications_dir/<job_id>/``:
     cover_letter.md
     cover_letter.pdf
 
-Markdown is the master format the slash command writes; PDFs are rendered
-server-side via markdown-it-py + weasyprint so we keep all LLM work in the
-user's Claude Code session.
+Markdown is the master format the slash command / in-app drafting writes.
+PDFs are produced by a browser engine (headless Chromium in dev, Electron's
+WebView in the packaged app) that prints the standalone HTML this module builds
+from the markdown. This module no longer renders PDFs itself — markdown
+persistence (`save_markdown`) and PDF writing (`render_pdf`) are separate so the
+caller that owns a browser engine drives the actual print. See
+``src/job_applier/pdf.py`` for the dev/standalone print driver.
 """
 
 from __future__ import annotations
@@ -20,7 +24,6 @@ from pathlib import Path
 from typing import Literal
 
 from markdown_it import MarkdownIt
-from weasyprint import CSS, HTML
 
 from job_applier.config import settings
 
@@ -61,8 +64,13 @@ a { color: #2257a5; text-decoration: none; }
 strong { font-weight: 600; }
 """
 
-_md = MarkdownIt("commonmark", {"linkify": True, "html": False}).enable("table")
-# Soft newlines become <br> so the salutation/signature lines don't collapse.
+# Soft newlines become <br> so single-line-break constructs keep their layout:
+# on the resume, each Skills category and the three-line per-role header sit on their
+# own source line with no blank line between them, and would otherwise collapse into
+# one run-on paragraph; on the letter, the salutation/signature lines.
+_md = MarkdownIt(
+    "commonmark", {"linkify": True, "html": False, "breaks": True}
+).enable("table")
 _md_letter = MarkdownIt(
     "commonmark", {"linkify": True, "html": False, "breaks": True}
 )
@@ -87,37 +95,70 @@ def draft_dir(job_id: int) -> Path:
     return settings.applications_dir / str(job_id)
 
 
-def _markdown_to_pdf_bytes(md_text: str, kind: DraftKind) -> bytes:
+def render_print_html(md_text: str, kind: DraftKind) -> str:
+    """Assemble the standalone, print-ready HTML document for a draft.
+
+    Pure function: markdown -> HTML body with the kind's CSS profile inlined in a
+    ``<style>`` tag and the ``@page`` rules driving size/margins. A browser engine
+    prints this to PDF (headless Chromium in dev, Electron in the packaged app).
+    """
     renderer, css = _RENDER[kind]
     html_body = renderer.render(md_text)
-    full = f"<!doctype html><html><head><meta charset='utf-8'></head><body>{html_body}</body></html>"
-    return HTML(string=full).write_pdf(stylesheets=[CSS(string=css)])
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<style>{css}</style></head><body>{html_body}</body></html>"
+    )
 
 
-def save_and_render(
+def _clean_draft(md: str) -> str:
+    """Apply the char bans + exfil-vector strip to draft markdown. This is the single
+    choke point every draft-write passes through (AI generation *and* the manual
+    edit/re-render endpoint), so no draft is ever persisted with a tracking image, a
+    clickable tracking link, or a banned ATS character regardless of its origin."""
+    # Lazy import: bans lives under the ai package; importing it at module load would
+    # couple this low-level storage module to the AI layer's import graph.
+    from job_applier.ai import bans
+
+    return bans.strip_exfil_vectors(bans.sanitize(md))
+
+
+def save_markdown(
     job_id: int, resume_md: str | None, cover_letter_md: str | None
 ) -> DraftStatus:
-    """Write any provided markdown to disk and render its PDF. Returns latest status."""
+    """Write any provided markdown to disk (no PDF). Returns the latest status.
+
+    Markdown is sanitized here (char bans + exfil-vector strip) so the guarantee holds
+    for every writer. Kept independent of PDF rendering so drafts persist even when no
+    browser engine is available, and so Electron can drive the print separately later.
+    """
     d = draft_dir(job_id)
     d.mkdir(parents=True, exist_ok=True)
 
     if resume_md is not None:
-        _write_pair(d, "resume", resume_md)
+        (d / _FILES["resume"][0]).write_text(_clean_draft(resume_md), encoding="utf-8")
     if cover_letter_md is not None:
-        _write_pair(d, "cover_letter", cover_letter_md)
+        (d / _FILES["cover_letter"][0]).write_text(
+            _clean_draft(cover_letter_md), encoding="utf-8"
+        )
 
     return get_status(job_id)
 
 
-def render_existing(job_id: int) -> DraftStatus:
-    """Re-render PDFs from whichever .md files exist on disk."""
+def render_pdf(job_id: int, kind: DraftKind, pdf_bytes: bytes) -> None:
+    """Persist caller-produced PDF bytes for a draft kind."""
     d = draft_dir(job_id)
-    for kind, (md_name, pdf_name) in _FILES.items():
-        md_path = d / md_name
-        if md_path.exists():
-            pdf_bytes = _markdown_to_pdf_bytes(md_path.read_text(encoding="utf-8"), kind)
-            (d / pdf_name).write_bytes(pdf_bytes)
-    return get_status(job_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / _FILES[kind][1]).write_bytes(pdf_bytes)
+
+
+def existing_markdown_kinds(job_id: int) -> list[DraftKind]:
+    """Draft kinds that currently have a saved ``.md`` on disk."""
+    d = draft_dir(job_id)
+    kinds: list[DraftKind] = []
+    for kind, (md_name, _pdf_name) in _FILES.items():
+        if (d / md_name).exists():
+            kinds.append(kind)
+    return kinds
 
 
 def get_status(job_id: int) -> DraftStatus:
@@ -149,9 +190,3 @@ def read_markdown(job_id: int, kind: DraftKind) -> str | None:
 
 def pdf_path(job_id: int, kind: DraftKind) -> Path:
     return draft_dir(job_id) / _FILES[kind][1]
-
-
-def _write_pair(d: Path, kind: DraftKind, md_text: str) -> None:
-    md_name, pdf_name = _FILES[kind]
-    (d / md_name).write_text(md_text, encoding="utf-8")
-    (d / pdf_name).write_bytes(_markdown_to_pdf_bytes(md_text, kind))

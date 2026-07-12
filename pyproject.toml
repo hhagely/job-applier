@@ -10,12 +10,16 @@ dependencies = [
     "httpx>=0.28",
     "pydantic-settings>=2.6",
     "typer>=0.13",
-    "apscheduler>=3.10",
-    "weasyprint>=63.0",
     "markdown-it-py>=3.0",
     "pypdf>=5.1",
     "python-multipart>=0.0.20",
 ]
+
+[project.optional-dependencies]
+# Non-Electron PDF renderer. The packaged app uses Electron's WebView instead,
+# so this is only needed for the standalone CLI / dev print path. Requires a
+# one-time `uv run playwright install chromium` to fetch the browser binary.
+pdf = ["playwright>=1.40"]
 
 [project.scripts]
 job-applier = "job_applier.cli:app"
@@ -31,8 +35,20 @@ packages = ["src/job_applier"]
 dev = [
     "ruff>=0.7",
     "pytest>=8.3",
+    # Dev PDF renderer so `make test` can exercise the print path end-to-end.
+    # After `uv sync`, run `uv run playwright install chromium` once.
+    "playwright>=1.40",
+    # Freezes the backend into the standalone sidecar bundled by the Electron app
+    # (Phase 6). Not shipped in the sidecar itself — a build-time tool.
+    "pyinstaller>=6.10",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    # gate the browser-backed PDF test so CI without Chromium skips cleanly
+    "browser: end-to-end test that needs Playwright + a Chromium binary",
+    # gate tests that shell out to a real installed AI CLI
+    "ai_cli: end-to-end test that needs a real AI CLI (e.g. claude) on PATH",
+]

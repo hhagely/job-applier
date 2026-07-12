@@ -18,15 +18,13 @@ needed to construct the URL into the existing schema without a migration.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import TITLE_GATE, RawJob, looks_remote, parse_date_multi
 
 log = logging.getLogger(__name__)
 
@@ -38,15 +36,6 @@ SEARCH_TERMS = ["software engineer", "typescript", "javascript", "node"]
 # postings we'll page through for a single search.
 MAX_PER_SEARCH = 100
 PAGE_SIZE = 20
-
-# Senior + engineering title gate, applied before the detail fetch. Cheap regex
-# match — anything that gets through still goes through the full filter pipeline.
-TITLE_GATE = re.compile(
-    r"\b(senior|sr\.?|staff|principal|lead|architect|distinguished|head\s+of)\b.*?"
-    r"\b(engineer|developer|architect|sde|swe)\b",
-    re.IGNORECASE,
-)
-
 
 @dataclass(frozen=True)
 class WorkdayBoard:
@@ -134,6 +123,9 @@ def _fetch_board(client: httpx.Client, board: WorkdayBoard) -> Iterable[RawJob]:
             except ValueError:
                 break
 
+            if not isinstance(data, dict):
+                break
+
             postings = data.get("jobPostings") or []
             if not postings:
                 break
@@ -186,6 +178,9 @@ def _fetch_detail(
         )
         return None
 
+    if not isinstance(data, dict):
+        return None
+
     info = data.get("jobPostingInfo") or {}
     title = (info.get("title") or posting.get("title") or "").strip()
     if not title:
@@ -194,7 +189,7 @@ def _fetch_detail(
     description = info.get("jobDescription") or ""
     location = info.get("location") or posting.get("locationsText") or ""
     remote_type = (info.get("remoteType") or "").lower()
-    remote = "remote" in remote_type or "remote" in location.lower()
+    remote = looks_remote(remote_type, location)
 
     job_req_id = info.get("jobReqId") or info.get("id") or external_path
     public_url = info.get("externalUrl") or board.public_url(external_path)
@@ -209,27 +204,9 @@ def _fetch_detail(
         location=location or None,
         remote=remote,
         employment_type=info.get("timeType"),
-        posted_at=_parse_date(info.get("startDate") or info.get("postedOn")),
+        posted_at=parse_date_multi(info.get("startDate") or info.get("postedOn")),
         tags=[t for t in [info.get("timeType"), remote_type] if t],
         raw={"list": posting, "detail": info},
     )
 
 
-_DATE_FORMATS = ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S")
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    # Try ISO first
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        pass
-    for fmt in _DATE_FORMATS:
-        try:
-            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    # Strings like "Posted Today" / "Posted 5 Days Ago" — give up rather than guess
-    return None

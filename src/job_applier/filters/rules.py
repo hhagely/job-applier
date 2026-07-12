@@ -24,17 +24,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from sqlmodel import Session, select
 
+from job_applier.contracts import RawJob
 from job_applier.models.db import FilterStatus, SearchProfile, engine
-
-if TYPE_CHECKING:
-    # Annotation-only — importing ``RawJob`` at runtime forms a cycle
-    # (sources -> filters -> sources). ``from __future__ import annotations``
-    # keeps the references string-evaluated at runtime.
-    from job_applier.sources.base import RawJob
 
 
 def _alt_pattern(terms: list[str]) -> str:
@@ -293,9 +288,27 @@ _US_HINT_CI = re.compile(
 )
 _US_HINT_CS = re.compile(r"\bUS\b|\bUS[-\s]")
 
+# A comma-preceded 2-letter US-state code ("Austin, TX") is a strong US signal in
+# a location field, so it shouldn't be dropped just because the string omits an
+# explicit country. Case-sensitive (uppercase) + comma-anchored so it can't fire
+# on lowercase English words ("in"/"or"/"me") the way a bare \bST\b would. The set
+# is disjoint from Canadian province codes (ON/BC/AB/...), so "Toronto, ON" is
+# still correctly treated as non-US. Full state *names* are handled separately by
+# the state allow-list rule below.
+_US_STATE_ABBREVS = (
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS "
+    "MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV "
+    "WI WY DC"
+).split()
+_US_STATE_ABBREV = re.compile(r",\s*(" + "|".join(_US_STATE_ABBREVS) + r")\b")
+
 
 def _has_us_hint(location: str) -> bool:
-    return bool(_US_HINT_CI.search(location) or _US_HINT_CS.search(location))
+    return bool(
+        _US_HINT_CI.search(location)
+        or _US_HINT_CS.search(location)
+        or _US_STATE_ABBREV.search(location)
+    )
 
 
 # A "City, X[, Y]" pattern. Used as a fallback signal: any specific-place

@@ -19,13 +19,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime
 from typing import Optional
 
 import httpx
 
 from job_applier.filters import FilterConfig, title_quick_fail
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, looks_remote, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +96,9 @@ class SmartRecruitersSource:
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("smartrecruiters[%s] list fetch failed: %s", slug, e)
                 return
+            if not isinstance(payload, dict):
+                log.warning("smartrecruiters[%s] returned non-object payload, skipping", slug)
+                return
             content = payload.get("content") or []
             if not content:
                 return
@@ -112,6 +114,8 @@ class SmartRecruitersSource:
 
 
 def _normalize(company_slug: str, item: dict) -> RawJob | None:
+    if not isinstance(item, dict):
+        return None
     name = (item.get("name") or "").strip()
     posting_id = item.get("id")
     if not name or not posting_id:
@@ -130,9 +134,7 @@ def _normalize(company_slug: str, item: dict) -> RawJob | None:
 
     remote_flag = bool(location.get("remote"))
     hybrid_flag = bool(location.get("hybrid"))
-    remote = remote_flag or (
-        "remote" in (location_str or "").lower() and not hybrid_flag
-    )
+    remote = remote_flag or (looks_remote(location_str) and not hybrid_flag)
 
     job_ad = item.get("jobAd") or {}
     sections = job_ad.get("sections") or {}
@@ -178,16 +180,7 @@ def _normalize(company_slug: str, item: dict) -> RawJob | None:
         location=location_str,
         remote=remote,
         employment_type=((item.get("typeOfEmployment") or {}).get("label")),
-        posted_at=_parse_date(item.get("releasedDate")),
+        posted_at=parse_iso_date(item.get("releasedDate")),
         tags=tags,
         raw=item,
     )
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None

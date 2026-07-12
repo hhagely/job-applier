@@ -10,6 +10,7 @@ from "lots of jobs are being fetched but the filter drops them all".
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -18,6 +19,8 @@ from sqlmodel import Session
 from job_applier.filters import FilterConfig, evaluate, load_active_config
 from job_applier.models import engine
 from job_applier.sources import SourceAdapter, get_all_sources
+
+log = logging.getLogger(__name__)
 
 SAMPLE_PER_BUCKET = 5
 
@@ -46,23 +49,30 @@ def diagnose_filter(
     filter_config: FilterConfig | None = None,
 ) -> FilterDiagnostic:
     """Fetch from each source and bucket the filter outcome of every RawJob."""
-    if sources is None:
-        sources = get_all_sources()
     if filter_config is None:
         with Session(engine()) as session:
             filter_config = load_active_config(session)
+    if sources is None:
+        sources = get_all_sources(filter_config=filter_config)
 
     result = FilterDiagnostic()
     for source in sources:
-        for raw in source.fetch():
-            result.fetched_by_source[source.name] += 1
-            decision = evaluate(raw, filter_config)
-            bucket = f"{decision.status.value}:{decision.reason or 'ok'}"
-            result.by_source[source.name][bucket] += 1
-            if len(result.samples[bucket]) < SAMPLE_PER_BUCKET:
-                result.samples[bucket].append(
-                    (source.name, raw.company_name, raw.title)
-                )
+        # Isolate each source: one failing adapter shouldn't abort the whole
+        # report — the diagnostic is exactly the tool you'd reach for to find
+        # out *which* source is failing.
+        try:
+            for raw in source.fetch():
+                result.fetched_by_source[source.name] += 1
+                decision = evaluate(raw, filter_config)
+                bucket = f"{decision.status.value}:{decision.reason or 'ok'}"
+                result.by_source[source.name][bucket] += 1
+                if len(result.samples[bucket]) < SAMPLE_PER_BUCKET:
+                    result.samples[bucket].append(
+                        (source.name, raw.company_name, raw.title)
+                    )
+        except Exception as exc:  # noqa: BLE001 - report-and-continue, never abort
+            log.warning("diagnose[%s] fetch failed: %s", source.name, exc)
+            continue
     return result
 
 

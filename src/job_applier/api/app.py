@@ -1,30 +1,39 @@
-from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from job_applier import drafts, resume_io
+from job_applier import __version__, ingest, services
+from job_applier.ai import tasks as ai_tasks
+from job_applier.api import blacklist as blacklist_router
+from job_applier.api import drafts as drafts_router
+from job_applier.api import profile as profile_router
+from job_applier.api import resume as resume_router
+from job_applier.api.ai import router as ai_router
+from job_applier.api.deps import require_job
+from job_applier.api.serializers import active_resume_id as _active_resume_id
+from job_applier.api.serializers import application_out as _application_out
+from job_applier.api.serializers import company_out as _company_out
+from job_applier.api.serializers import job_summary as _job_summary
+from job_applier.api.serializers import resume_filename_map as _resume_filename_map
+from job_applier.api.serializers import score_out as _score_out
 from job_applier.api.schemas import (
     ApplicationOut,
     BulkStatusUpdate,
     BulkUnemploymentUpdate,
     CompanyOut,
-    DraftIn,
-    DraftOut,
     FollowupUpdate,
     JobDetail,
     JobOut,
     NotesUpdate,
     PendingMatchJob,
-    ResumeOut,
     ScoreIn,
     ScoreOut,
-    SearchProfileBody,
-    SearchProfileOut,
-    SearchProfileRecommendationIn,
+    StartTaskOut,
     StatusUpdate,
     UnemploymentUpdate,
 )
@@ -37,114 +46,49 @@ from job_applier.models.db import (
     JobPosting,
     MatchScore,
     MatchScoreHistory,
-    Resume,
-    SearchProfile,
     create_db_and_tables,
     get_session,
 )
+from job_applier.sources.refresh import seed_if_empty
+from job_applier.updates import check_for_update
 
-app = FastAPI(title="job-applier API")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    create_db_and_tables()
+    # Seed the per-company source slugs on first boot. The desktop app and
+    # `make api` only ever run the server (never `job-applier init`), so without
+    # this a fresh DB — e.g. the packaged app's userData dir — starts with an
+    # empty SourceSlug table and ingest silently runs only the config-free
+    # aggregators (no Greenhouse/Lever/Oracle/...). Idempotent + per-source, so
+    # it's a no-op on an already-populated DB and cheap to run every boot.
+    seed_if_empty()
+    yield
+    # Tear the background worker down on shutdown (e.g. Electron closing the app),
+    # cancelling any queued task instead of leaking the thread / subprocess.
+    ai_tasks.shutdown()
+
+
+app = FastAPI(title="job-applier API", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_origin],
+    # The dev launcher / packaged shell picks free loopback ports at boot, so the
+    # SvelteKit server's origin is not known ahead of time. Allow any localhost /
+    # 127.0.0.1 port in addition to the statically configured web_origin.
+    allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-@app.on_event("startup")
-def _startup() -> None:
-    create_db_and_tables()
-
-
-def _company_out(c: Optional[Company]) -> Optional[CompanyOut]:
-    if c is None:
-        return None
-    return CompanyOut(id=c.id, name=c.name, domain=c.domain, is_blocked=c.is_blocked, notes=c.notes)
-
-
-def _score_out(
-    s: Optional[MatchScore | MatchScoreHistory],
-    *,
-    resume_filename: Optional[str] = None,
-    active_resume_id: Optional[int] = None,
-) -> Optional[ScoreOut]:
-    if s is None:
-        return None
-    # Tailored scores carry no resume_id by design — never stale.
-    is_stale = (
-        s.resume_id is not None
-        and active_resume_id is not None
-        and s.resume_id != active_resume_id
-    )
-    return ScoreOut(
-        score=s.score, rubric=s.rubric, reasoning=s.reasoning,
-        scored_by=s.scored_by, scored_at=s.scored_at,
-        resume_id=s.resume_id, resume_filename=resume_filename,
-        score_kind=s.score_kind, is_stale=is_stale,
-    )
-
-
-def _application_out(a: Optional[Application]) -> Optional[ApplicationOut]:
-    if a is None:
-        return None
-    return ApplicationOut(
-        status=a.status,
-        notes=a.notes,
-        applied_at=a.applied_at,
-        updated_at=a.updated_at,
-        next_followup_at=a.next_followup_at,
-        last_contact_at=a.last_contact_at,
-        outcome=a.outcome,
-        used_for_unemployment=a.used_for_unemployment,
-        used_for_unemployment_at=a.used_for_unemployment_at,
-    )
-
-
-def _resume_filename_map(session: Session) -> dict[int, str]:
-    rows = session.exec(select(Resume.id, Resume.original_filename)).all()
-    return {rid: name for rid, name in rows}
-
-
-def _active_resume_id(session: Session) -> Optional[int]:
-    return session.exec(
-        select(Resume.id).where(Resume.is_active == True)  # noqa: E712
-    ).first()
-
-
-def _job_summary(
-    j: JobPosting,
-    resume_names: dict[int, str],
-    active_resume_id: Optional[int],
-) -> JobOut:
-    score_filename = (
-        resume_names.get(j.score.resume_id)
-        if j.score and j.score.resume_id is not None
-        else None
-    )
-    return JobOut(
-        id=j.id,
-        source=j.source,
-        url=j.url,
-        title=j.title,
-        location=j.location,
-        remote=j.remote,
-        employment_type=j.employment_type,
-        posted_at=j.posted_at,
-        ingested_at=j.ingested_at,
-        filter_status=j.filter_status,
-        filter_reason=j.filter_reason,
-        company=_company_out(j.company),
-        score=_score_out(
-            j.score,
-            resume_filename=score_filename,
-            active_resume_id=active_resume_id,
-        ),
-        application=_application_out(j.application),
-        duplicate_of=j.duplicate_of,
-    )
+# AI provider + task endpoints, and the per-concern routers split out of this
+# module (resume upload, search profile, tailored drafts).
+app.include_router(ai_router)
+app.include_router(resume_router.router)
+app.include_router(profile_router.router)
+app.include_router(drafts_router.router)
+app.include_router(blacklist_router.router)
 
 
 @app.get("/api/jobs", response_model=list[JobOut])
@@ -158,21 +102,30 @@ def list_jobs(
     offset: int = 0,
     session: Session = Depends(get_session),
 ):
-    stmt = select(JobPosting)
+    # Eager-load the 1:1/n:1 relationships _job_summary reads, so rendering N rows
+    # is a constant handful of queries instead of ~3 lazy loads per row (N+1).
+    stmt = select(JobPosting).options(
+        selectinload(JobPosting.company),
+        selectinload(JobPosting.score),
+        selectinload(JobPosting.application),
+    )
     if filter_status is not None:
         stmt = stmt.where(JobPosting.filter_status == filter_status)
     if not include_duplicates:
         stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
-    stmt = stmt.order_by(JobPosting.ingested_at.desc()).offset(offset).limit(limit)
+    stmt = stmt.order_by(JobPosting.ingested_at.desc())
     jobs = list(session.exec(stmt).all())
 
-    # In-Python post-filters that need joined data:
+    # In-Python post-filters that need joined data — applied BEFORE pagination so
+    # limit/offset count matching rows, not the raw ingest order (e.g.
+    # ?status=applied&limit=100 returns 100 applied jobs, not applied-among-newest-100).
     if status is not None:
         jobs = [j for j in jobs if j.application and j.application.status == status]
     if min_score is not None:
         jobs = [j for j in jobs if j.score and j.score.score >= min_score]
     if unscored_only:
         jobs = [j for j in jobs if j.score is None]
+    jobs = jobs[offset : offset + limit]
 
     resume_names = _resume_filename_map(session)
     active_id = _active_resume_id(session)
@@ -180,57 +133,27 @@ def list_jobs(
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobDetail)
-def get_job(job_id: int, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
+def get_job(
+    job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
+):
     summary = _job_summary(
         job, _resume_filename_map(session), _active_resume_id(session)
     )
     return JobDetail(**summary.model_dump(), description=job.description)
 
 
-def _apply_status_transition(
-    app_row: Application,
-    *,
-    new_status: ApplicationStatus,
-    now: datetime,
-    next_followup_at: Optional[datetime],
-    last_contact_at: Optional[datetime],
-    outcome: Optional[str],
-) -> None:
-    """Mutate ``app_row`` for a status change, defaulting the follow-up date.
-
-    When transitioning into ``applied`` and the client didn't supply a
-    ``next_followup_at``, fall back to ``applied_at + followup_default_days``.
-    """
-    app_row.status = new_status
-    if new_status == ApplicationStatus.applied and app_row.applied_at is None:
-        app_row.applied_at = now
-    if next_followup_at is not None:
-        app_row.next_followup_at = next_followup_at
-    elif (
-        new_status == ApplicationStatus.applied
-        and app_row.next_followup_at is None
-        and app_row.applied_at is not None
-    ):
-        app_row.next_followup_at = app_row.applied_at + timedelta(
-            days=settings.followup_default_days
-        )
-    if last_contact_at is not None:
-        app_row.last_contact_at = last_contact_at
-    if outcome is not None:
-        app_row.outcome = outcome
-    app_row.updated_at = now
+# Status-transition logic lives in services (shared with the background scorer's
+# auto-archive). Thin wrapper keeps the single-status endpoint's call site tidy.
+_apply_status_transition = services.apply_status_transition
 
 
 @app.patch("/api/jobs/{job_id}/status", response_model=ApplicationOut)
-def set_status(job_id: int, body: StatusUpdate, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-
-    app_row = job.application or Application(job_id=job_id)
+def set_status(
+    body: StatusUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
+):
+    app_row = job.application or Application(job_id=job.id)
     if body.notes is not None:
         app_row.notes = body.notes
     _apply_status_transition(
@@ -251,24 +174,17 @@ def set_status(job_id: int, body: StatusUpdate, session: Session = Depends(get_s
 def set_status_bulk(body: BulkStatusUpdate, session: Session = Depends(get_session)):
     if not body.job_ids:
         raise HTTPException(422, "job_ids must not be empty")
-    now = datetime.now(timezone.utc)
-    results: list[ApplicationOut] = []
-    for job_id in body.job_ids:
-        job = session.get(JobPosting, job_id)
-        if job is None:
-            raise HTTPException(404, f"job {job_id} not found")
-        app_row = job.application or Application(job_id=job_id)
-        _apply_status_transition(
-            app_row,
-            new_status=body.status,
-            now=now,
+    try:
+        results = services.bulk_set_status(
+            session,
+            body.job_ids,
+            body.status,
             next_followup_at=body.next_followup_at,
             last_contact_at=body.last_contact_at,
             outcome=body.outcome,
         )
-        session.add(app_row)
-        results.append(app_row)
-    session.commit()
+    except services.JobNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
     return [_application_out(a) for a in results]
 
 
@@ -304,11 +220,10 @@ def list_followups(session: Session = Depends(get_session)):
 
 @app.post("/api/jobs/{job_id}/followup", response_model=ApplicationOut)
 def set_followup(
-    job_id: int, body: FollowupUpdate, session: Session = Depends(get_session)
+    body: FollowupUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
 ):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
     app_row = job.application
     if app_row is None:
         raise HTTPException(
@@ -328,11 +243,12 @@ def set_followup(
 
 
 @app.post("/api/jobs/{job_id}/notes", response_model=ApplicationOut)
-def set_notes(job_id: int, body: NotesUpdate, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    app_row = job.application or Application(job_id=job_id, status=ApplicationStatus.new)
+def set_notes(
+    body: NotesUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
+):
+    app_row = job.application or Application(job_id=job.id, status=ApplicationStatus.new)
     app_row.notes = body.notes
     app_row.updated_at = datetime.now(timezone.utc)
     session.add(app_row)
@@ -359,12 +275,11 @@ def _mark_unemployment(job: JobPosting, *, used: bool, now: datetime) -> Applica
 
 @app.post("/api/jobs/{job_id}/unemployment", response_model=ApplicationOut)
 def set_unemployment(
-    job_id: int, body: UnemploymentUpdate, session: Session = Depends(get_session)
+    body: UnemploymentUpdate,
+    job: JobPosting = Depends(require_job),
+    session: Session = Depends(get_session),
 ):
     """Mark (or unmark) an application as reported for an unemployment claim."""
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
     app_row = _mark_unemployment(
         job, used=body.used, now=datetime.now(timezone.utc)
     )
@@ -402,26 +317,12 @@ def pending_match(
     """Jobs that passed the hard filter and need scoring.
 
     Always includes unscored jobs. With ``include_stale=true``, also includes
-    jobs whose only score is against a non-active resume — the queue that
-    Claude Code reads when refreshing scores after a resume change.
+    jobs whose only score is against a non-active resume — the queue the
+    background scorer reads when refreshing scores after a resume change.
     """
-    stmt = (
-        select(JobPosting)
-        .where(JobPosting.filter_status == FilterStatus.passed)
-        .order_by(JobPosting.ingested_at.desc())
+    pending = services.select_pending_jobs(
+        session, limit=limit, include_stale=include_stale
     )
-    jobs = list(session.exec(stmt).all())
-    active_id = _active_resume_id(session) if include_stale else None
-
-    def _needs_scoring(j: JobPosting) -> bool:
-        if j.score is None:
-            return True
-        if include_stale and active_id is not None:
-            sid = j.score.resume_id
-            return sid is not None and sid != active_id
-        return False
-
-    pending = [j for j in jobs if _needs_scoring(j)][:limit]
     return [
         PendingMatchJob(
             id=j.id,
@@ -458,45 +359,22 @@ def stale_score_count(session: Session = Depends(get_session)) -> dict:
 
 @app.post("/api/jobs/{job_id}/score", response_model=ScoreOut)
 def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_session)):
-    job = session.get(JobPosting, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    if not 0 <= body.score <= 100:
-        raise HTTPException(422, "score must be 0-100")
-
-    existing = job.score
-    if existing is not None:
-        session.add(
-            MatchScoreHistory(
-                job_id=existing.job_id,
-                score=existing.score,
-                rubric=existing.rubric,
-                reasoning=existing.reasoning,
-                scored_by=existing.scored_by,
-                scored_at=existing.scored_at,
-                resume_id=existing.resume_id,
-                score_kind=existing.score_kind,
-            )
+    try:
+        score = services.upsert_score(
+            session,
+            job_id,
+            score=body.score,
+            rubric=body.rubric,
+            reasoning=body.reasoning,
+            scored_by=body.scored_by,
+            score_kind=body.score_kind,
         )
+    except services.JobNotFound:
+        raise HTTPException(404, "job not found")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
-    active_resume = session.exec(
-        select(Resume).where(Resume.is_active == True)  # noqa: E712
-    ).first()
-
-    score = existing or MatchScore(job_id=job_id)
-    score.score = body.score
-    score.rubric = body.rubric
-    score.reasoning = body.reasoning
-    score.scored_by = body.scored_by
-    score.scored_at = datetime.now(timezone.utc)
-    score.score_kind = body.score_kind
-    # Tailored scores are scored against a per-job draft, not a Resume row.
-    score.resume_id = (
-        active_resume.id if active_resume and body.score_kind == "baseline" else None
-    )
-    session.add(score)
-    session.commit()
-    session.refresh(score)
+    active_resume = services.active_resume(session)
     resume_filename = (
         active_resume.original_filename
         if active_resume and score.resume_id is not None
@@ -510,12 +388,12 @@ def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_sess
 
 
 @app.get("/api/jobs/{job_id}/score-history", response_model=list[ScoreOut])
-def list_score_history(job_id: int, session: Session = Depends(get_session)):
-    if session.get(JobPosting, job_id) is None:
-        raise HTTPException(404, "job not found")
+def list_score_history(
+    job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
+):
     rows = session.exec(
         select(MatchScoreHistory)
-        .where(MatchScoreHistory.job_id == job_id)
+        .where(MatchScoreHistory.job_id == job.id)
         .order_by(MatchScoreHistory.scored_at.desc())
     ).all()
     resume_names = _resume_filename_map(session)
@@ -548,243 +426,49 @@ def block_company(company_id: int, blocked: bool = True, session: Session = Depe
     return _company_out(c)
 
 
-def _resume_out(r: Resume) -> ResumeOut:
-    return ResumeOut(
-        id=r.id,
-        original_filename=r.original_filename,
-        page_count=r.page_count,
-        is_active=r.is_active,
-        uploaded_at=r.uploaded_at,
-        extracted_text=r.extracted_text,
-    )
+def _run_ingest_task(state: "ai_tasks.TaskState") -> None:
+    """Worker body: pull jobs from every source, reporting per-source progress."""
 
-
-def _active_resume(session: Session) -> Resume:
-    r = session.exec(select(Resume).where(Resume.is_active == True)).first()  # noqa: E712
-    if r is None:
-        raise HTTPException(404, "no active resume — POST /api/resume to upload")
-    return r
-
-
-@app.post("/api/resume", response_model=ResumeOut, status_code=201)
-async def upload_resume(
-    file: UploadFile = File(...),
-    session: Session = Depends(get_session),
-):
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(415, "PDF required (.pdf extension)")
-    pdf_bytes = await file.read()
-    if len(pdf_bytes) == 0:
-        raise HTTPException(400, "empty file")
-    if len(pdf_bytes) > settings.max_resume_bytes:
-        raise HTTPException(
-            413,
-            f"file too large (max {settings.max_resume_bytes // (1024 * 1024)} MiB)",
+    def _cb(done: int, total: int, name: str, stats: ingest.IngestStats) -> None:
+        state.total = total
+        state.done = done
+        state.results.append(
+            f"{name}: {stats.inserted} new / {stats.passed_filter} passed (running total)"
         )
+        state.publish()
 
-    try:
-        text, page_count = resume_io.extract_text(pdf_bytes)
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from e
-
-    if not text.strip():
-        raise HTTPException(422, "no text extracted — is the PDF image-only?")
-
-    pdf_path = resume_io.save_pdf(pdf_bytes, file.filename)
-
-    # Demote any previously-active resumes (history is preserved).
-    for r in session.exec(select(Resume).where(Resume.is_active == True)).all():  # noqa: E712
-        r.is_active = False
-        session.add(r)
-
-    resume = Resume(
-        original_filename=file.filename,
-        pdf_path=str(pdf_path),
-        extracted_text=text,
-        page_count=page_count,
-        is_active=True,
-    )
-    session.add(resume)
-    session.commit()
-    session.refresh(resume)
-    return _resume_out(resume)
-
-
-@app.get("/api/resume/current", response_model=ResumeOut)
-def get_current_resume(session: Session = Depends(get_session)):
-    return _resume_out(_active_resume(session))
-
-
-@app.get("/api/resume/current/pdf")
-def download_current_resume(session: Session = Depends(get_session)):
-    r = _active_resume(session)
-    return FileResponse(
-        r.pdf_path,
-        media_type="application/pdf",
-        filename=r.original_filename,
+    stats = ingest.run_ingest(progress_cb=_cb)
+    state.results.append(
+        f"done: {stats.inserted} new, {stats.passed_filter} passed, {stats.fetched} fetched"
     )
 
 
-@app.get("/api/resume/current/markdown", response_class=PlainTextResponse)
-def get_current_resume_markdown(session: Session = Depends(get_session)):
-    r = _active_resume(session)
-    return resume_io.to_markdown(r.extracted_text)
+@app.post("/api/ingest", response_model=StartTaskOut)
+def start_ingest(session: Session = Depends(get_session)):
+    """Kick off a background scrape of every source. Poll GET /api/ai/tasks/{id}
+    for per-source progress. Needs no AI provider — just network access."""
+    from job_applier.sources import get_all_sources
 
-
-def _profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
-    if p is None:
-        return SearchProfileOut(using_defaults=True)
-    using_defaults = not p.required_tech or not p.seniority_terms
-    return SearchProfileOut(
-        id=p.id,
-        role_titles=list(p.role_titles or []),
-        seniority_terms=list(p.seniority_terms or []),
-        required_tech=list(p.required_tech or []),
-        excluded_tech=list(p.excluded_tech or []),
-        extracted_skills=list(p.extracted_skills or []),
-        recommendations_draft=p.recommendations_draft,
-        updated_at=p.updated_at,
-        using_defaults=using_defaults,
-    )
-
-
-def _load_or_create_profile(session: Session) -> SearchProfile:
-    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
-    if p is None:
-        p = SearchProfile()
-        session.add(p)
-        session.flush()
-    return p
-
-
-@app.get("/api/search-profile", response_model=SearchProfileOut)
-def get_search_profile(session: Session = Depends(get_session)):
-    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
-    return _profile_out(p)
-
-
-@app.put("/api/search-profile", response_model=SearchProfileOut)
-def put_search_profile(
-    body: SearchProfileBody, session: Session = Depends(get_session)
-):
-    p = _load_or_create_profile(session)
-    p.role_titles = body.role_titles
-    p.seniority_terms = body.seniority_terms
-    p.required_tech = body.required_tech
-    p.excluded_tech = body.excluded_tech
-    p.extracted_skills = body.extracted_skills
-    p.updated_at = datetime.now(timezone.utc)
-    session.add(p)
-    session.commit()
-    session.refresh(p)
-    return _profile_out(p)
-
-
-@app.post("/api/search-profile/recommendations", response_model=SearchProfileOut)
-def post_recommendations(
-    body: SearchProfileRecommendationIn, session: Session = Depends(get_session)
-):
-    """Save an LLM-generated proposal as a draft on the profile.
-
-    Does NOT mutate the active fields — the user reviews + accepts via PUT to
-    apply. Overwrites any prior draft.
-    """
-    p = _load_or_create_profile(session)
-    p.recommendations_draft = body.model_dump()
-    p.updated_at = datetime.now(timezone.utc)
-    session.add(p)
-    session.commit()
-    session.refresh(p)
-    return _profile_out(p)
-
-
-@app.delete("/api/search-profile/recommendations", response_model=SearchProfileOut)
-def clear_recommendations(session: Session = Depends(get_session)):
-    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
-    if p is None:
-        return _profile_out(None)
-    p.recommendations_draft = None
-    p.updated_at = datetime.now(timezone.utc)
-    session.add(p)
-    session.commit()
-    session.refresh(p)
-    return _profile_out(p)
-
-
-def _draft_out(
-    job_id: int, *, include_markdown: bool = False
-) -> DraftOut:
-    s = drafts.get_status(job_id)
-    return DraftOut(
-        job_id=s.job_id,
-        has_resume_md=s.has_resume_md,
-        has_resume_pdf=s.has_resume_pdf,
-        has_cover_letter_md=s.has_cover_letter_md,
-        has_cover_letter_pdf=s.has_cover_letter_pdf,
-        updated_at=s.updated_at,
-        resume_md=drafts.read_markdown(job_id, "resume") if include_markdown else None,
-        cover_letter_md=(
-            drafts.read_markdown(job_id, "cover_letter") if include_markdown else None
-        ),
-    )
-
-
-@app.get("/api/jobs/{job_id}/draft", response_model=DraftOut)
-def get_draft(
-    job_id: int,
-    include_markdown: bool = False,
-    session: Session = Depends(get_session),
-):
-    if session.get(JobPosting, job_id) is None:
-        raise HTTPException(404, "job not found")
-    return _draft_out(job_id, include_markdown=include_markdown)
-
-
-@app.post("/api/jobs/{job_id}/draft", response_model=DraftOut)
-def save_draft(
-    job_id: int, body: DraftIn, session: Session = Depends(get_session)
-):
-    if session.get(JobPosting, job_id) is None:
-        raise HTTPException(404, "job not found")
-    if body.resume_md is None and body.cover_letter_md is None:
-        raise HTTPException(422, "provide at least one of resume_md, cover_letter_md")
-    drafts.save_and_render(job_id, body.resume_md, body.cover_letter_md)
-    return _draft_out(job_id)
-
-
-@app.post("/api/jobs/{job_id}/draft/render", response_model=DraftOut)
-def render_draft(job_id: int, session: Session = Depends(get_session)):
-    if session.get(JobPosting, job_id) is None:
-        raise HTTPException(404, "job not found")
-    s = drafts.get_status(job_id)
-    if not (s.has_resume_md or s.has_cover_letter_md):
-        raise HTTPException(404, "no draft markdown to render")
-    drafts.render_existing(job_id)
-    return _draft_out(job_id)
-
-
-@app.get("/api/jobs/{job_id}/draft/resume.pdf")
-def download_draft_resume(job_id: int, session: Session = Depends(get_session)):
-    if session.get(JobPosting, job_id) is None:
-        raise HTTPException(404, "job not found")
-    path = drafts.pdf_path(job_id, "resume")
-    if not path.exists():
-        raise HTTPException(404, "tailored resume PDF not found — run /draft first")
-    return FileResponse(path, media_type="application/pdf", filename=f"resume-{job_id}.pdf")
-
-
-@app.get("/api/jobs/{job_id}/draft/cover-letter.pdf")
-def download_draft_cover_letter(job_id: int, session: Session = Depends(get_session)):
-    if session.get(JobPosting, job_id) is None:
-        raise HTTPException(404, "job not found")
-    path = drafts.pdf_path(job_id, "cover_letter")
-    if not path.exists():
-        raise HTTPException(404, "cover letter PDF not found — run /draft first")
-    return FileResponse(
-        path, media_type="application/pdf", filename=f"cover-letter-{job_id}.pdf"
-    )
+    total = len(get_all_sources())
+    task_id = ai_tasks.start_task("ingest", total, _run_ingest_task)
+    return StartTaskOut(task_id=task_id)
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "version": __version__}
+
+
+@app.get("/api/version")
+def version() -> dict:
+    """The single source of truth for the app version (Workstream B): the backend
+    ``__version__``. The installer filename and the desktop bridge are stamped from
+    this same value at build time so all three agree."""
+    return {"version": __version__}
+
+
+@app.get("/api/update")
+def update() -> dict:
+    """Compare the running version to the latest GitHub Release. Cached + fail-soft;
+    returns ``update_available: False`` offline / rate-limited (Workstream E)."""
+    return check_for_update()

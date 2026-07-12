@@ -45,3 +45,13 @@ web/.env
 .claude/scheduled_tasks.lock
 
 plans/
+
+# Electron desktop shell — build outputs only; desktop/ source is tracked
+desktop/node_modules/
+desktop/dist/
+
+# App icons live under desktop/build/ (electron-builder buildResources). The
+# global `build/` ignore above would drop them, so track them explicitly.
+!desktop/build/
+!desktop/build/icon.ico
+!desktop/build/icon.png

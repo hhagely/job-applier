@@ -8,8 +8,8 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from job_applier.api.app import app
-from job_applier.models import Application, JobPosting
-from job_applier.models.db import ApplicationStatus, FilterStatus, get_session
+from job_applier.models import JobPosting
+from job_applier.models.db import FilterStatus, get_session
 
 
 @pytest.fixture

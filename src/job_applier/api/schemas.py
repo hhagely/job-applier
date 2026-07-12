@@ -14,6 +14,19 @@ class CompanyOut(BaseModel):
     notes: Optional[str] = None
 
 
+class BlacklistedCompanyOut(BaseModel):
+    id: int
+    name: str
+    normalized_name: str
+    reason: Optional[str] = None
+    created_at: datetime
+
+
+class BlacklistAddIn(BaseModel):
+    name: str
+    reason: Optional[str] = None
+
+
 class ScoreOut(BaseModel):
     score: int
     rubric: dict
@@ -22,7 +35,7 @@ class ScoreOut(BaseModel):
     scored_at: datetime
     resume_id: Optional[int] = None
     resume_filename: Optional[str] = None
-    score_kind: str = "baseline"
+    score_kind: Literal["baseline", "tailored"] = "baseline"
     is_stale: bool = False
 
 
@@ -171,3 +184,61 @@ class DraftOut(BaseModel):
     updated_at: Optional[datetime]
     resume_md: Optional[str] = None
     cover_letter_md: Optional[str] = None
+
+
+class ProviderOut(BaseModel):
+    name: str
+    display_name: str
+    tier: Literal["recommended", "best-effort"]
+    available: bool
+    version: Optional[str] = None
+
+
+class ProvidersOut(BaseModel):
+    providers: list[ProviderOut]
+    selected: Optional[str] = None
+    model: Optional[str] = None
+    # Baseline (bulk) scoring model: the persisted override (may be None) and the
+    # selected provider's built-in default, shown as the input placeholder.
+    scoring_model: Optional[str] = None
+    scoring_model_default: Optional[str] = None
+
+
+class SelectProviderIn(BaseModel):
+    name: str
+    model: Optional[str] = None
+    scoring_model: Optional[str] = None
+
+
+class AiTestIn(BaseModel):
+    prompt: Optional[str] = None
+
+
+class AiTestOut(BaseModel):
+    ok: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ScorePendingIn(BaseModel):
+    job_ids: Optional[list[int]] = None
+    include_stale: bool = True
+
+
+class DraftBatchIn(BaseModel):
+    job_ids: list[int]
+
+
+class StartTaskOut(BaseModel):
+    task_id: str
+
+
+class TaskOut(BaseModel):
+    id: str
+    kind: str
+    total: int
+    done: int
+    status: Literal["running", "done", "error"]
+    errors: list[str] = []
+    results: list[str] = []
+    ref: str | None = None

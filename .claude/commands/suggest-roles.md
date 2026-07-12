@@ -27,41 +27,16 @@ current" to apply.
 3. **Fetch the current profile** so you don't duplicate what's already there:
    `curl -sS http://127.0.0.1:8000/api/search-profile`
 
-4. **Analyze the resume**. From `extracted_text`, identify:
-   - **Concrete technical skills** the resume *demonstrates* (not just lists in
-     a "skills" section with no project context). Be conservative — a one-line
-     mention with no project beats nothing, but rate it lower in your rationale.
-   - **Seniority signals**: years of experience, scope of roles, titles held.
-     Translate to which seniority terms apply (`senior`, `staff`, `principal`,
-     `lead`, `architect`, etc).
-   - **Disciplines / role shapes** the resume is strongest at — generate 3-6
-     plausible *role titles* the user could realistically target.
-   - **Tech the user has clearly avoided** based on the resume (e.g. if every
-     project is React/Vue, Angular is a fair "exclude"). Ask before assuming
-     — when in doubt, leave it out; user can add their own.
+4. **Analyze the resume and build the payload** using the spec defined once in
+   [`src/job_applier/ai/prompts/suggest.md`](../../src/job_applier/ai/prompts/suggest.md)
+   — the same template the in-app "Suggest roles" button uses, so the two can't
+   drift. Read that file and apply it verbatim: it covers which skills/seniority
+   signals/role-shapes/excluded-tech to extract, the lowercase-required-tech
+   rule, the never-include-location/work-auth rule, and the exact recommendation
+   JSON shape. Its `{{RESUME_TEXT}}` / `{{CURRENT_PROFILE}}` placeholders map to
+   the resume text and the current profile you fetched in steps 2-3.
 
-5. **Generate the payload**:
-   ```json
-   {
-     "role_titles":      ["Senior Full-Stack Engineer", "Staff Backend Engineer", ...],
-     "seniority_terms":  ["senior", "staff", "principal", "lead"],
-     "required_tech":    ["typescript", "react", "node", "postgres", ...],
-     "excluded_tech":    ["angular"],
-     "extracted_skills": ["TypeScript", "React", "Node.js", "PostgreSQL", ...],
-     "rationale":        "1-3 sentence summary of what drove these picks."
-   }
-   ```
-
-   - Required-tech should be lowercase, common forms (e.g. `node`, `nextjs`,
-     `postgres` not `PostgreSQL`). Short tokens like `js` / `ts` are allowed
-     but only mark a posting as "manual" (never "passed") on their own — that's
-     handled by the filter.
-   - `extracted_skills` is the longer reference list (any casing) the user sees
-     in the UI; it informs but doesn't gate the filter.
-   - Don't include location, work-auth, or salary preferences — those are
-     handled by separate rules in the filter.
-
-6. **POST the recommendation**:
+5. **POST the recommendation**:
    ```bash
    curl -sS -X POST http://127.0.0.1:8000/api/search-profile/recommendations \
      -H 'content-type: application/json' \

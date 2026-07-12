@@ -34,6 +34,25 @@ def test_keeps_non_us_city_with_us_hint(make_raw):
     assert result.status is FilterStatus.passed
 
 
+@pytest.mark.parametrize(
+    "location",
+    ["Austin, TX", "San Francisco, CA", "New York, NY", "Remote - Austin, TX"],
+)
+def test_keeps_us_city_state_without_country_token(location: str, make_raw):
+    # A bare "City, ST" US location (no explicit country) must not be dropped as
+    # non-US — the 2-letter state code is a US hint.
+    result = evaluate(make_raw(location=location))
+    assert result.status is FilterStatus.passed
+
+
+@pytest.mark.parametrize("location", ["Toronto, ON", "Vancouver, BC", "London, UK"])
+def test_drops_non_us_city_with_non_us_region_code(location: str, make_raw):
+    # Canadian province / UK codes are not US-state codes, so these stay dropped.
+    result = evaluate(make_raw(location=location))
+    assert result.status is FilterStatus.dropped
+    assert "non-US" in (result.reason or "")
+
+
 def test_drops_non_senior_title(make_raw):
     result = evaluate(make_raw(title="Software Engineer"))
     assert result.status is FilterStatus.dropped
@@ -125,6 +144,22 @@ def test_marks_manual_when_only_short_js_ts_hint(make_raw):
         make_raw(description="Backend role; some js work occasionally.")
     )
     assert result.status is FilterStatus.manual
+
+
+def test_marks_manual_when_excluded_tech_only_in_description(make_raw):
+    # Excluded tech (Angular) shows up in the description while the positive
+    # TS/JS signal lives in the tags — so rule 8 passes on the haystack, but the
+    # description alone reads excluded-primary. Surface for manual review rather
+    # than dropping outright (the rule-7 tail).
+    result = evaluate(
+        make_raw(
+            title="Senior Software Engineer",
+            description="Maintain a legacy Angular dashboard plus some backend work.",
+            tags=["typescript"],
+        )
+    )
+    assert result.status is FilterStatus.manual
+    assert "verify primary stack" in (result.reason or "")
 
 
 # ---- State allow-list (Missouri eligibility) ----

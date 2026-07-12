@@ -2,34 +2,72 @@
 
 A personal job board. Pulls remote roles from open job sources, filters them
 against a configurable search profile (role titles, seniority, required and
-excluded tech), scores survivors against your resume via Claude Code, and
-surfaces the results in a SvelteKit review UI so you can decide which ones are
+excluded tech), scores survivors against your resume using an AI CLI you choose
+(Claude Code, Gemini, Codex, or fully-local Ollama), and surfaces the results in
+a SvelteKit review UI so you can decide which ones are
 worth tailoring an application for. Tailored resume + cover-letter drafts and
 follow-up tracking are built in.
 
 No LinkedIn or Indeed scraping — those violate ToS and risk account bans.
-Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday) and
-aggregator feeds (RemoteOK, We Work Remotely, Hacker News "Who is hiring").
+Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday, Workable,
+SmartRecruiters, Jibe, Oracle) and aggregator feeds (RemoteOK, We Work Remotely,
+Hacker News "Who is hiring", Y Combinator).
+
+## Install (desktop app)
+
+Prefer the packaged app — no Python, Node, or dev tools required. Download the
+latest installer for your OS from the
+[**Releases page**](https://github.com/hhagely/job-applier/releases/latest):
+
+- **Windows** — `job-applier-Setup-<version>.exe` (per-user install, no admin).
+  The app is **unsigned**, so on first run Windows SmartScreen shows
+  *"Windows protected your PC / unknown publisher."* Click **More info → Run
+  anyway**. (Expected for an unsigned indie app; there is no paid code-signing
+  certificate.)
+- **Linux** — `job-applier-<version>.AppImage` (`chmod +x` then run) or the
+  `.deb` (`sudo apt install ./job-applier_<version>_amd64.deb`).
+- **macOS** — not built yet (avoids the paid Apple notarization); run from
+  source (**[Setup](#setup)**) if you're on a Mac.
+
+On first launch the app walks you through a short **onboarding** flow: pick an
+AI CLI, upload your resume, and pull the first batch of jobs.
+
+**AI-CLI prerequisite (optional).** Scoring and drafting run through an AI CLI
+you install and log into — install **one** of
+[Claude Code](https://docs.claude.com/en/docs/claude-code) or
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) (recommended), or
+[Ollama](https://ollama.com) (fully local, best-effort). **Everything else
+(ingest, filter, browse, track, PDF export) works with no AI CLI installed** —
+the app just hides the scoring/drafting buttons until you add one at `/settings`.
+
+**Updates.** The app checks GitHub Releases and shows a dismissible banner when a
+newer version is out, linking back to the Releases page — download and install
+over the top. There is no background auto-update (that needs code signing).
 
 ## Architecture
 
 ```
-┌──────────────┐   ingest   ┌──────────┐   filter   ┌──────────┐
-│  Source(s)   │ ─────────► │ SQLite   │ ─────────► │ FastAPI  │
-│ Greenhouse,… │            │ jobs.db  │            │ :8000    │
-└──────────────┘            └──────────┘            └────┬─────┘
-                                  ▲                      │ JSON
-                                  │ POST /score          ▼
-                            ┌─────┴──────┐         ┌──────────┐
-                            │ Claude     │ ◄─────► │ SvelteKit│
-                            │ Code       │         │ :5174    │
-                            │ /match-…   │         └──────────┘
-                            └────────────┘
+┌──────────────┐   ingest   ┌──────────┐   filter   ┌──────────┐   HTTP   ┌──────────┐
+│  Source(s)   │ ─────────► │ SQLite   │ ─────────► │ FastAPI  │ ◄──────► │ SvelteKit│
+│ Greenhouse,… │            │ jobs.db  │            │ :8000    │          │ :5174    │
+└──────────────┘            └──────────┘            └────┬─────┘          └──────────┘
+                                                         │ spawns a sandboxed
+                                                         ▼ subprocess per job
+                                                ┌───────────────────┐
+                                                │ AI CLI you pick:  │
+                                                │ claude / gemini / │
+                                                │ codex / ollama    │
+                                                └───────────────────┘
 ```
 
-The LLM never runs server-side. Scoring, resume tweaks, and cover-letter drafts
-all happen by you running slash commands inside Claude Code on this repo, which
-reads pending items from the API and posts results back.
+The LLM runs server-side, but only by shelling out to an AI CLI you install and
+pick in the app — never through an SDK or a raw API key. Scoring, cover-letter
+drafting, and role suggestions spawn the selected provider (Claude Code, Gemini
+CLI, Codex CLI, or local Ollama) as a **sandboxed** subprocess: no tools, a
+scrubbed environment, a throwaway working directory, and a timeout (job
+descriptions are untrusted scraped text, so model output is treated as data).
+Each CLI authenticates via its own login, so there are no API keys to manage —
+and the app runs fully, minus the AI features, with no provider installed.
 
 ## Setup
 
@@ -37,6 +75,15 @@ reads pending items from the API and posts results back.
 make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
+
+To use the AI features (scoring, drafting, role suggestions), install and log
+into **one** supported AI CLI, then select it at http://localhost:5174/settings:
+
+- **Claude Code** (`claude`) or **Gemini CLI** (`gemini`) — recommended.
+- **Codex CLI** (`codex`) or **Ollama** (`ollama`, fully local, no subscription) — best-effort.
+
+The app detects whichever CLIs are on your `PATH`. Everything except the AI
+features works with no provider installed.
 
 > **This is a single-user local tool.** The FastAPI server binds to `127.0.0.1`
 > and has no authentication. CORS is locked to the local SvelteKit origin. Do
@@ -55,32 +102,31 @@ uv run job-applier init   # create the SQLite DB
    it as the active resume. Older uploads are kept but inactive.
 3. **Configure your search profile** at http://localhost:5174/search — set role
    titles, seniority terms, required tech, and excluded tech. These drive the
-   hard filter at ingest. Run `/suggest-roles` in Claude Code to have it propose
-   a profile based on your resume; you accept or edit before it applies.
+   hard filter at ingest. Click **Suggest roles from resume** on `/search` (needs
+   an AI provider selected in Settings) to have the model propose a profile from
+   your resume; you accept or edit it before it applies. The same page holds a
+   **company blacklist** — employers you never want surfaced; their postings are
+   dropped at ingest before they reach your queue.
 4. **Ingest** new postings:
    ```sh
    make ingest
    ```
-5. **Score the queue** — open Claude Code in this repo and run:
-   ```
-   /match-pending
-   ```
-   It pulls the active resume from `/api/resume/current`, fetches unscored jobs
-   (plus any whose score is stale because the resume changed), and writes scores
-   back. Refresh the UI to see them.
+5. **Score the queue** — on `/dashboard`, click **Score pending (N)**. The
+   backend pulls the active resume, fetches unscored jobs (plus any whose score
+   is stale because the resume changed), and scores each against the JD via your
+   selected AI CLI. It runs as a background task with a live progress bar; the
+   scores appear in the queue as they land.
 6. **Review** in the UI — change a job's status to `interested`, `drafted`,
    `applied`, `screening`, `interviewing`, `rejected`, etc. Status changes use
    SvelteKit form actions, so they round-trip through the backend without
    client-side fetch code. Add jobs to the draft cart from any row; the cart
    persists across `/`, `/jobs/[id]`, and `/followups`.
-7. **Draft tailored applications** for the jobs you want to apply to:
-   ```
-   /draft <job-id> [<job-id> ...]
-   ```
-   Writes a tailored resume + cover-letter markdown per job, renders both PDFs
-   via weasyprint under `applications/<id>/`, and re-scores the tailored draft
-   against the JD so you see a `baseline → tailored` delta. The job's status is
-   moved to `drafted`.
+7. **Draft tailored applications** for the jobs you want to apply to — add them
+   to the draft cart from any row and click **Draft list (N)** on the queue, or
+   draft a single job from its `/jobs/[id]` page. Each run writes a tailored
+   resume + cover-letter markdown, renders both PDFs under `applications/<id>/`,
+   moves the job to `drafted`, and re-scores the tailored draft against the JD so
+   you see a `baseline → tailored` delta.
 8. **Track follow-ups** at http://localhost:5174/followups — applied jobs past
    their follow-up date surface here so nothing goes silent.
 
@@ -88,12 +134,15 @@ uv run job-applier init   # create the SQLite DB
 
 ```
 src/job_applier/
-  api/         # FastAPI app + Pydantic schemas
+  api/         # FastAPI app + Pydantic schemas (includes api/ai.py — the AI router)
+  ai/          # Provider-agnostic AI layer: sandboxed CLI runner (providers.py),
+               #   scoring / drafting / suggest, char-ban enforcement, background
+               #   task runner, and the canonical prompt templates (ai/prompts/)
   filters/     # Hard-rule filter, driven by SearchProfile
   models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
-  sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, RemoteOK, WWR, HN)
+  sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters, Jibe, Oracle, RemoteOK, WWR, HN, YC)
   ingest.py    # Pipeline: fetch → dedupe (per-source, cross-source, JD-SimHash) → filter → persist
-  drafts.py    # Tailored resume / cover-letter markdown + weasyprint PDF rendering
+  drafts.py    # Tailored resume / cover-letter markdown + PDF persistence (rendering in pdf.py)
   resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
   config.py    # Settings (paths, ports, DB location)
@@ -102,10 +151,10 @@ web/           # SvelteKit app
   src/lib/draftCart.svelte.ts                          # cross-route draft cart (Svelte rune-based store)
   src/routes/+page.{svelte,server.ts}                  # queue (persisted filters, source/status/ease chips)
   src/routes/jobs/[id]/+page.{svelte,server.ts}        # detail, status form actions, rubric popover, drafts
-  src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft)
+  src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft) + company blacklist
   src/routes/followups/+page.{svelte,server.ts}        # applied jobs past their follow-up date
   src/routes/resume/+page.{svelte,server.ts}           # resume upload + view
-.claude/commands/
+.claude/commands/    # legacy Claude-Code slash commands (mirror src/job_applier/ai/prompts/)
   match-pending.md   # score the pending queue against the active resume
   draft.md           # /draft <job-id>...  tailored resume + cover letter
   score-draft.md     # /score-draft <job-id>...  re-score a tailored draft for the baseline → tailored delta
@@ -120,6 +169,14 @@ data/resumes/        # uploaded PDFs (gitignored)
 Applied at ingest time. Jobs that fail the role criteria are dropped before
 persistence (cheap to re-evaluate on every ingest). Jobs that fail the location
 or remote checks are still written to the DB so they're auditable.
+
+**Company blacklist (checked first).** Before any rule runs, a job whose employer
+is on your company blacklist is dropped outright — no row is written, even the
+first time that company is seen. The list is edited at
+http://localhost:5174/search alongside the profile. Matching normalizes the
+company name (casing, punctuation, and one trailing legal suffix), so `Meta`,
+`Meta Inc`, and `Meta, Inc.` all match however a source spells it. Editing the
+list only affects future ingests, not rows already saved.
 
 The role-specific criteria — seniority terms, required tech, excluded tech — live
 on the `SearchProfile` row and are edited at http://localhost:5174/search. The
@@ -160,32 +217,40 @@ exists or its required-tech list is empty.
 | Lever            | DB slug list (`SourceSlug`)     | `api.lever.co/v0/postings/{slug}`                                     |
 | Ashby            | DB slug list (`SourceSlug`)     | `api.ashbyhq.com/posting-api/job-board/{slug}`. Slugs are case-sensitive (`Notion`, not `notion`). |
 | Workday          | DB slug list, packed format     | Slug is `{tenant}\|{region}\|{site}` — e.g. `salesforce\|wd12\|External_Career_Site`. List call returns only titles; descriptions need a per-posting detail fetch, so the adapter pre-filters titles before going deep. |
+| Workable         | DB slug list (`SourceSlug`)     | `apply.workable.com/api/v3/accounts/{slug}/jobs` (list) + v1 detail for the full description. |
+| SmartRecruiters  | DB slug list (`SourceSlug`)     | `api.smartrecruiters.com/v1/companies/{slug}/postings`. Slugs are case-sensitive (`Visa` ≠ `visa`). |
+| Jibe (iCIMS)     | DB slug list (`SourceSlug`)     | `{tenant}.jibeapply.com/api/jobs`. Slug is the jibeapply.com subdomain (e.g. `githubinc`). |
+| Oracle (Recruiting Cloud) | DB slug list, packed format | Slug is `{apiHost}\|{siteNumber}\|{publicJobBaseUrl}[\|{company}]`. Served by the candidate-experience `recruitingCEJobRequisitions` JSON API on the underlying Fusion host (the vanity careers domain 302s API calls away); job links use the public base. |
 | RemoteOK         | none                            | Single-endpoint aggregator (`remoteok.com/api`).                      |
 | We Work Remotely | none                            | Per-category RSS feeds; engineering categories only.                  |
 | Hacker News      | none                            | Most recent monthly "Who is hiring" thread, parsed via Algolia HN API. Top-level comments are individual postings. |
+| Y Combinator     | none                            | HN `jobstories` feed + JSON-LD scraped from `ycombinator.com` job pages. |
 
 ### Managing the company slug list
 
-Per-company slugs (Greenhouse / Lever / Ashby / Workday) live in the database
-(`SourceSlug` table), not in code. Initial setup seeds the table from
-`src/job_applier/sources/companies.py` on first `job-applier init` — and the
-seed is per-source, so adding a new source type later picks up its seed on the
-next `init` without disturbing the populated tables.
+Per-company slugs (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters,
+Jibe, Oracle) live in the database (`SourceSlug` table), not in code. Initial
+setup seeds the table from `src/job_applier/sources/companies.py` on first
+`job-applier init` — and the seed is per-source, so adding a new source type
+later picks up its seed on the next `init` without disturbing the populated
+tables.
 
 ```sh
-# Pull new Greenhouse/Lever candidates from the SimplifyJobs feed and verify
+# Pull new Greenhouse/Lever/Workable/SmartRecruiters candidates from the
+# SimplifyJobs feed and verify them.
 make refresh-slugs
 
-# Same, but also re-verify every existing slug across all four per-company
-# sources (Greenhouse, Lever, Ashby, Workday) and auto-disable dead boards.
+# Same, but also re-verify every existing slug and auto-disable dead boards.
 # A Workday tenant returning HTTP 422 is treated as a permanent rejection
 # and disabled, since 422 means the tenant rejects the public CXS body shape.
 make refresh-slugs-full
 ```
 
-Discovery (the candidate-pull) only covers Greenhouse + Lever — the
-SimplifyJobs feed doesn't carry Ashby or Workday URLs, and there's no
-equivalent public list for them. Re-verification covers all four sources.
+Discovery (the candidate-pull) covers the four sources the SimplifyJobs feed
+carries URLs for: Greenhouse, Lever, Workable, and SmartRecruiters. There's no
+equivalent public list for the others. Re-verification is broader — it covers
+those four plus Ashby and Workday, auto-disabling dead boards; Jibe and Oracle
+are seed-only (neither discovered nor re-verified).
 
 The SimplifyJobs feed is heavily new-grad / intern biased — it's only useful
 as a wide net for *valid* slugs, not relevant ones. To add a target company
@@ -218,20 +283,26 @@ Create a file under `src/job_applier/sources/` that implements the
 `sources/__init__.py`. If the source needs per-company config, add a seed list
 to `companies.py` and a key to `_SEEDS` in `sources/refresh.py`.
 
-## Slash commands
+## AI flows
 
-All LLM work runs inside Claude Code on this repo — no Anthropic API calls,
-no API keys to manage. Each command reads from / writes to the local API.
+All LLM work runs server-side by shelling out to the AI CLI you selected at
+`/settings` — no Anthropic/OpenAI SDK, no API keys to manage (each CLI uses its
+own login), and every call is sandboxed as described under Architecture. The
+flows are triggered from the UI; the equivalent **legacy** Claude-Code slash
+command is listed for anyone who prefers to drive it from a Claude Code session
+on this repo.
 
-| Command                       | What it does                                                                                                |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `/match-pending`              | Score every unscored job (and stale-scored jobs) against the active resume. Writes baseline scores.         |
-| `/draft <id> [<id> ...]`      | Generate a tailored resume + cover letter per job (markdown + PDF), set status to `drafted`, score the tailored draft. |
-| `/score-draft <id> [<id> ...]`| Re-score a tailored draft against the JD using the same rubric as `/match-pending`. Writes a `tailored`-kind score. |
-| `/suggest-roles`              | Read the active resume and POST a recommended `SearchProfile` to `recommendations_draft` for review at `/search`. |
+| Flow (UI trigger)                                     | Legacy command             | What it does                                                                                                    |
+| ----------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Score pending** (`/dashboard`)                      | `/match-pending`           | Score every unscored job (and stale-scored jobs) against the active resume. Writes baseline scores.            |
+| **Draft list** (queue cart) or draft one (`/jobs/[id]`)| `/draft <id> ...`          | Generate a tailored resume + cover letter per job (markdown + PDF), set status to `drafted`, re-score the draft.|
+| _(runs automatically after each draft)_               | `/score-draft <id> ...`    | Re-score a tailored draft against the JD using the same rubric as scoring. Writes a `tailored`-kind score.      |
+| **Suggest roles from resume** (`/search`)             | `/suggest-roles`           | Read the active resume and propose a `SearchProfile` to `recommendations_draft` for review at `/search`.        |
 
-Scores are snapshotted to `MatchScoreHistory` whenever they're overwritten, so
-the `baseline → tailored` delta and prior-resume scores remain visible.
+The prompt templates that define the scoring rubric and ATS-format rules live in
+`src/job_applier/ai/prompts/` (canonical); the `.claude/commands/` files mirror
+them. Scores are snapshotted to `MatchScoreHistory` whenever they're overwritten,
+so the `baseline → tailored` delta and prior-resume scores remain visible.
 
 ## Make targets
 
@@ -241,7 +312,7 @@ the `baseline → tailored` delta and prior-resume scores remain visible.
 | `make api`               | Run FastAPI on `:8000` with auto-reload                           |
 | `make web`               | Run SvelteKit dev server on `:5174`                               |
 | `make ingest`            | Pull jobs from configured sources                                 |
-| `make refresh-slugs`     | Discover new Greenhouse/Lever slugs from the SimplifyJobs feed    |
+| `make refresh-slugs`     | Discover new Greenhouse/Lever/Workable/SmartRecruiters slugs from SimplifyJobs |
 | `make refresh-slugs-full`| Discover + re-verify existing slugs (auto-disables dead boards)   |
 | `make prune`             | Clear description/raw on old or archived postings (keeps hashes)  |
 | `make dedupe-jd`         | Backfill JD SimHash fingerprints + soft-link near-duplicate JDs   |

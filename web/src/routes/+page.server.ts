@@ -1,19 +1,11 @@
-import { api, type ApplicationStatus, type FilterStatus } from '$lib/api';
+import { api, APPLICATION_STATUSES, type ApplicationStatus, type FilterStatus } from '$lib/api';
+import { serverApiBase } from '$lib/apiBase.server';
+import { activeJobs } from '$lib/jobFilters';
+import { jobActions, parseFollowup } from '$lib/jobActions.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 const VALID: FilterStatus[] = ['passed', 'manual'];
-
-const VALID_STATUS: ApplicationStatus[] = [
-	'new',
-	'interested',
-	'drafted',
-	'applied',
-	'screening',
-	'interviewing',
-	'rejected',
-	'archived'
-];
 
 export const load: PageServerLoad = async ({ url, fetch }) => {
 	const filterParam = url.searchParams.get('filter');
@@ -22,12 +14,12 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 		: 'passed') as FilterStatus;
 	const include_duplicates = url.searchParams.get('duplicates') === '1';
 
-	const all = await api.listJobs(fetch, {
+	const all = await api.listJobs(fetch, serverApiBase(), {
 		filter_status,
 		include_duplicates,
 		limit: 200
 	});
-	const jobs = all.filter((j) => j.application?.status !== 'archived');
+	const jobs = activeJobs(all);
 	return { jobs, filter_status, include_duplicates };
 };
 
@@ -35,7 +27,7 @@ export const actions: Actions = {
 	bulkStatus: async ({ request, fetch }) => {
 		const form = await request.formData();
 		const status = String(form.get('status') ?? '') as ApplicationStatus;
-		if (!VALID_STATUS.includes(status)) return fail(400, { error: 'invalid status' });
+		if (!APPLICATION_STATUSES.includes(status)) return fail(400, { error: 'invalid status' });
 
 		const ids = form
 			.getAll('ids')
@@ -43,11 +35,15 @@ export const actions: Actions = {
 			.filter((n) => Number.isFinite(n));
 		if (ids.length === 0) return fail(400, { error: 'no jobs selected' });
 
-		const followupRaw = (form.get('next_followup_at') as string | null) || '';
-		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
+		const next_followup_at = parseFollowup(form.get('next_followup_at'));
+		if (next_followup_at === null) return fail(400, { error: 'invalid follow-up date' });
 
-		await api.bulkSetStatus(fetch, ids, status, { next_followup_at });
-		return { ok: true, count: ids.length, status };
+		try {
+			await api.bulkSetStatus(fetch, serverApiBase(), ids, status, { next_followup_at });
+			return { ok: true, count: ids.length, status };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	},
 	bulkUnemployment: async ({ request, fetch }) => {
 		const form = await request.formData();
@@ -59,7 +55,34 @@ export const actions: Actions = {
 			.filter((n) => Number.isFinite(n));
 		if (ids.length === 0) return fail(400, { error: 'no jobs selected' });
 
-		await api.bulkSetUnemployment(fetch, ids, used);
-		return { ok: true, count: ids.length };
-	}
+		try {
+			await api.bulkSetUnemployment(fetch, serverApiBase(), ids, used);
+			return { ok: true, count: ids.length };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
+	},
+
+	// Kick off a background batch-draft of every job in the draft list, via the
+	// configured AI provider. Client polls GET /api/ai/tasks/{id} for progress.
+	draftBatch: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const ids = form
+			.getAll('ids')
+			.map((v) => Number(v))
+			.filter((n) => Number.isFinite(n));
+		if (ids.length === 0) return fail(400, { error: 'draft list is empty' });
+		try {
+			const { task_id } = await api.startDraftBatch(fetch, serverApiBase(), ids);
+			return { ok: true, task_id, kind: 'draft' };
+		} catch (e) {
+			// 409 when no provider selected / no active resume.
+			return fail(409, { error: (e as Error).message });
+		}
+	},
+
+	// The detail-pane status / notes / unemployment / draft mutations mirror the
+	// /jobs/[id] actions so the master-detail pane is fully actionable without
+	// navigating away. They read the target from a hidden `job_id` field.
+	...jobActions('field')
 };

@@ -16,12 +16,16 @@ def extract_text(pdf_bytes: bytes) -> tuple[str, int]:
     """Return (text, page_count). Raises ValueError if the PDF is unreadable."""
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
+        # Iterating reader.pages and page.extract_text() can also raise on a
+        # PDF that constructs but has a malformed content stream, so keep the
+        # whole extraction inside the guard (else the caller gets a 500).
+        pages = [page.extract_text() or "" for page in reader.pages]
+        page_count = len(reader.pages)
     except Exception as exc:  # pypdf raises a variety of types
         raise ValueError(f"could not read PDF: {exc}") from exc
 
-    pages = [page.extract_text() or "" for page in reader.pages]
     text = _normalize("\n\n".join(pages))
-    return text, len(reader.pages)
+    return text, page_count
 
 
 def save_pdf(pdf_bytes: bytes, original_filename: str) -> Path:
@@ -46,9 +50,16 @@ def to_markdown(text: str) -> str:
 
 _MULTI_BLANK = re.compile(r"\n{3,}")
 _TRAILING_WS = re.compile(r"[ \t]+\n")
+# C0 control chars that pypdf sometimes emits from malformed PDFs — NUL in
+# particular is illegal in a subprocess argument (breaks the AI CLI call with
+# "embedded null character") and renders as a broken glyph in the extracted-text
+# panel. Keep tab (\x09) and newline (\x0a); drop the rest (plus DEL) so the stored
+# text is clean at the source.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _normalize(text: str) -> str:
+    text = _CONTROL_CHARS.sub("", text)
     text = _TRAILING_WS.sub("\n", text)
     text = _MULTI_BLANK.sub("\n\n", text)
     return text.strip()

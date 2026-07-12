@@ -1,4 +1,5 @@
 import { api } from '$lib/api';
+import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -9,7 +10,7 @@ function shiftDays(from: Date, days: number): string {
 }
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const jobs = await api.getFollowups(fetch);
+	const jobs = await api.getFollowups(fetch, serverApiBase());
 	return { jobs };
 };
 
@@ -25,8 +26,12 @@ export const actions: Actions = {
 		if (id === null) return fail(400, { error: 'invalid id' });
 		const days = Number(form.get('days') ?? 7) || 7;
 		const next_followup_at = shiftDays(new Date(), days);
-		await api.setFollowup(fetch, id, { next_followup_at });
-		return { ok: true };
+		try {
+			await api.setFollowup(fetch, serverApiBase(), id, { next_followup_at });
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	},
 
 	contacted: async ({ request, fetch }) => {
@@ -34,11 +39,15 @@ export const actions: Actions = {
 		const id = parseId(form);
 		if (id === null) return fail(400, { error: 'invalid id' });
 		const now = new Date();
-		await api.setFollowup(fetch, id, {
-			last_contact_at: now.toISOString(),
-			next_followup_at: shiftDays(now, 7)
-		});
-		return { ok: true };
+		try {
+			await api.setFollowup(fetch, serverApiBase(), id, {
+				last_contact_at: now.toISOString(),
+				next_followup_at: shiftDays(now, 7)
+			});
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	},
 
 	rejected: async ({ request, fetch }) => {
@@ -47,8 +56,12 @@ export const actions: Actions = {
 		if (id === null) return fail(400, { error: 'invalid id' });
 		// Rejection is both a terminal outcome and a status transition — flip both
 		// so the row drops out of /followups AND the main "applied" filter.
-		await api.setStatus(fetch, id, 'rejected', { outcome: 'rejected' });
-		return { ok: true };
+		try {
+			await api.setStatus(fetch, serverApiBase(), id, 'rejected', { outcome: 'rejected' });
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	},
 
 	setOutcome: async ({ request, fetch }) => {
@@ -57,7 +70,11 @@ export const actions: Actions = {
 		if (id === null) return fail(400, { error: 'invalid id' });
 		const outcome = String(form.get('outcome') ?? '').trim();
 		if (!outcome) return fail(400, { error: 'outcome required' });
-		await api.setFollowup(fetch, id, { outcome });
-		return { ok: true };
+		try {
+			await api.setFollowup(fetch, serverApiBase(), id, { outcome });
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: (e as Error).message });
+		}
 	}
 };

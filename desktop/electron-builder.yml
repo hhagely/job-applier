@@ -1,0 +1,57 @@
+# electron-builder config for the job-applier desktop shell (Phase 6 + 7).
+# Unsigned by design (locked decision) — Windows shows a one-time SmartScreen
+# "unknown publisher" the README documents.
+appId: dev.hhagely.job-applier
+productName: job-applier
+directories:
+  output: dist
+  buildResources: build
+
+# GitHub Releases (Phase 7). `electron-builder --publish always` uploads the built
+# installers to the repo's Release for the current tag; `--publish never` (used in
+# the release workflow before the data-isolation guard runs) builds without uploading.
+publish:
+  provider: github
+  owner: hhagely
+  repo: job-applier
+
+# Only the shell code goes into the app bundle; the backend sidecar and the
+# built SvelteKit server ride along as unpacked resources.
+files:
+  - main.js
+  - preload.js
+  - package.json
+
+extraResources:
+  # PyInstaller onedir backend -> resources/backend/
+  - from: ../dist/job-applier-backend
+    to: backend
+  # Built SvelteKit adapter-node server -> resources/web/ (handler.js + chunks)
+  - from: ../web/build
+    to: web
+
+win:
+  target:
+    - nsis
+  icon: build/icon.ico
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
+  icon: build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # Wipe the user's data (jobs.db, resumes/, drafts, settings) on a real uninstall.
+  # The bundled uninstaller RMDir's "$APPDATA\<package.json name>" — i.e.
+  # %APPDATA%\job-applier-desktop, where the backend's JOB_APPLIER_DATA_DIR points
+  # in production (app.getPath('userData'), see desktop/main.js). NOTE: the folder
+  # is named after the app package name (job-applier-desktop), NOT productName
+  # (job-applier), which is why nothing was being cleaned before. The template
+  # guards this with `${ifNot} ${isUpdated}`, so in-place auto-updates keep data;
+  # only an explicit uninstall clears it.
+  deleteAppDataOnUninstall: true

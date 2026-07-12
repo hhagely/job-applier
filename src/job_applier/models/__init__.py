@@ -1,6 +1,7 @@
 from job_applier.models.db import (
     Application,
     ApplicationStatus,
+    BlacklistedCompany,
     Company,
     JobPosting,
     MatchScore,
@@ -15,6 +16,7 @@ from job_applier.models.db import (
 __all__ = [
     "Application",
     "ApplicationStatus",
+    "BlacklistedCompany",
     "Company",
     "JobPosting",
     "MatchScore",

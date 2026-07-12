@@ -14,6 +14,7 @@ from job_applier.ingest import (
     IngestStats,
     _is_stale,
     archive_existing_duplicates,
+    backfill_cross_source_hash,
     cross_source_hash,
     dedupe_jd_backfill,
     ingest_one,
@@ -597,3 +598,69 @@ class TestDedupeJdBackfill:
         # Second pass: fingerprints already populated, links already set.
         assert second.fingerprinted == 0
         assert second.flagged == 0
+
+
+class TestCrossSourceHashBackfill:
+    """`backfill_cross_source_hash` opens its own session via ``engine()``, so we
+    point that at a throwaway in-memory DB rather than using the ``session``
+    fixture directly. It lives in ``maintenance`` (re-exported from ``ingest``),
+    so patch the engine there."""
+
+    def _fresh_engine(self, monkeypatch):
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        SQLModel.metadata.create_all(engine)
+        monkeypatch.setattr("job_applier.maintenance.engine", lambda: engine)
+        return engine
+
+    def _add(self, session, company_id, *, source, source_id, title):
+        session.add(
+            JobPosting(
+                source=source,
+                source_id=source_id,
+                url=f"https://example.com/{source_id}",
+                title=title,
+                description="",
+                dedupe_hash=f"h-{source_id}",
+                company_id=company_id,
+            )
+        )
+
+    def test_backfills_and_skips_intra_run_duplicates(self, monkeypatch):
+        engine = self._fresh_engine(monkeypatch)
+        with Session(engine) as s:
+            c = Company(name="Acme")
+            s.add(c)
+            s.flush()
+            # dup-0 / dup-1 share company + title -> same cross-source key.
+            self._add(s, c.id, source="greenhouse", source_id="dup-0", title="Senior Backend Engineer")
+            self._add(s, c.id, source="lever", source_id="dup-1", title="Senior Backend Engineer")
+            self._add(s, c.id, source="ashby", source_id="solo", title="Staff Frontend Engineer")
+            s.commit()
+
+        # dup-0 + solo get a hash; dup-1 collides with dup-0 and is left NULL so
+        # the original ingest isn't retroactively flagged as the duplicate.
+        assert backfill_cross_source_hash() == 2
+
+        with Session(engine) as s:
+            by_id = {r.source_id: r for r in s.exec(select(JobPosting)).all()}
+            assert by_id["dup-0"].cross_source_hash is not None
+            assert by_id["dup-1"].cross_source_hash is None
+            assert by_id["solo"].cross_source_hash is not None
+
+    def test_idempotent_once_all_rows_hashed(self, monkeypatch):
+        engine = self._fresh_engine(monkeypatch)
+        with Session(engine) as s:
+            c = Company(name="Acme")
+            s.add(c)
+            s.flush()
+            self._add(s, c.id, source="greenhouse", source_id="a", title="Senior Backend Engineer")
+            self._add(s, c.id, source="lever", source_id="b", title="Staff Frontend Engineer")
+            s.commit()
+
+        assert backfill_cross_source_hash() == 2
+        # No NULL-hash rows remain, so a second pass is a no-op.
+        assert backfill_cross_source_hash() == 0

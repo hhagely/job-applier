@@ -8,8 +8,6 @@
 	let profile = $derived(form?.profile ?? data.profile);
 	let saving = $state(false);
 
-	// Seed inputs once from the initial server load; $effect below re-seeds them
-	// when the server returns a fresher profile (e.g. after accepting drafts).
 	let role_titles = $state(untrack(() => joinList(data.profile.role_titles)));
 	let seniority_terms = $state(untrack(() => joinList(data.profile.seniority_terms)));
 	let required_tech = $state(untrack(() => joinList(data.profile.required_tech)));
@@ -33,253 +31,255 @@
 	}
 
 	let draft = $derived(profile.recommendations_draft);
+	const hasProvider = $derived(Boolean(data.aiProvider));
+	let suggesting = $state(false);
 </script>
 
-<h1>Search profile</h1>
-
-<p class="muted">
-	What kinds of jobs the ingest filter should keep. Lists below are one entry per
-	line (commas also work). Empty <strong>required tech</strong> or
-	<strong>seniority</strong> falls back to built-in defaults so nothing breaks.
-</p>
-
-{#if profile.using_defaults}
-	<p class="info-banner">
-		No profile saved yet — filter is using built-in defaults.
-		{#if data.hasResume}
-			Run <code>/suggest-roles</code> in Claude Code to generate recommendations from your resume.
+<div class="view-head">
+	<div class="vh-titles">
+		<h1>Search profile</h1>
+		<div class="vh-sub">What the ingest filter keeps. One entry per line — commas also work.</div>
+	</div>
+	<div class="vh-actions">
+		{#if !hasProvider}
+			<a class="btn danger" href="/settings" title="Select an AI CLI in Settings">Suggest roles — set up AI</a>
 		{:else}
-			Upload a resume first, then run <code>/suggest-roles</code> in Claude Code for recommendations.
-		{/if}
-	</p>
-{/if}
-
-{#if form?.message}
-	<p class="ok-banner">{form.message}</p>
-{/if}
-{#if form?.error}
-	<p class="error">{form.error}</p>
-{/if}
-
-{#if draft}
-	<section class="panel draft">
-		<h2>Recommendations</h2>
-		{#if draft.rationale}
-			<p class="muted">{draft.rationale}</p>
-		{/if}
-		<dl>
-			<dt>Role titles</dt>
-			<dd>{draft.role_titles.join(', ') || '—'}</dd>
-			<dt>Seniority</dt>
-			<dd>{draft.seniority_terms.join(', ') || '—'}</dd>
-			<dt>Required tech</dt>
-			<dd>{draft.required_tech.join(', ') || '—'}</dd>
-			<dt>Excluded tech</dt>
-			<dd>{draft.excluded_tech.join(', ') || '—'}</dd>
-			<dt>Skills detected</dt>
-			<dd>{draft.extracted_skills.join(', ') || '—'}</dd>
-		</dl>
-		<div class="actions">
 			<form
 				method="POST"
-				action="?/acceptDraft"
+				action="?/suggest"
 				use:enhance={() => {
+					suggesting = true;
 					return async ({ update }) => {
 						await update();
+						suggesting = false;
 					};
 				}}
 			>
-				<input type="hidden" name="mode" value="replace" />
-				<button type="submit" class="primary">Replace with these</button>
+				<button type="submit" class="btn" disabled={suggesting || !data.hasResume}>
+					{suggesting ? 'Analyzing resume…' : 'Suggest roles from resume'}
+				</button>
 			</form>
-			<form method="POST" action="?/acceptDraft" use:enhance>
-				<input type="hidden" name="mode" value="append" />
-				<button type="submit">Add to current</button>
-			</form>
-			<form method="POST" action="?/rejectDraft" use:enhance>
-				<button type="submit" class="ghost">Dismiss</button>
-			</form>
+		{/if}
+		<button type="submit" form="save-form" class="btn primary" disabled={saving}>{saving ? 'Saving…' : 'Save criteria'}</button>
+	</div>
+</div>
+
+<div class="view-body">
+	<div class="stack">
+		{#if profile.using_defaults}
+			<p class="banner info">
+				No profile saved yet — filter is using built-in defaults.
+				{#if data.hasResume}
+					Use the Suggest-roles button for recommendations.
+				{:else}
+					Upload a resume first, then suggest roles for recommendations.
+				{/if}
+			</p>
+		{/if}
+		{#if hasProvider && !data.hasResume}
+			<p class="muted">Upload a resume first to enable suggestions.</p>
+		{/if}
+		{#if form?.message}<p class="banner ok">{form.message}</p>{/if}
+		{#if form?.error}<p class="err-text">{form.error}</p>{/if}
+
+		{#if draft}
+			<div class="card" style="border-color:var(--accent)">
+				<div class="card-h"><h2>Recommendations</h2></div>
+				<div class="card-b">
+					{#if draft.rationale}<p class="muted" style="margin-bottom:12px">{draft.rationale}</p>{/if}
+					<div class="meta-table">
+						<div class="d-meta-row"><span class="dm-k">Role titles</span><span class="dm-v">{draft.role_titles.join(', ') || '—'}</span></div>
+						<div class="d-meta-row"><span class="dm-k">Seniority</span><span class="dm-v">{draft.seniority_terms.join(', ') || '—'}</span></div>
+						<div class="d-meta-row"><span class="dm-k">Required tech</span><span class="dm-v">{draft.required_tech.join(', ') || '—'}</span></div>
+						<div class="d-meta-row"><span class="dm-k">Excluded tech</span><span class="dm-v">{draft.excluded_tech.join(', ') || '—'}</span></div>
+						<div class="d-meta-row"><span class="dm-k">Skills detected</span><span class="dm-v">{draft.extracted_skills.join(', ') || '—'}</span></div>
+					</div>
+					<div class="rec-actions">
+						<form method="POST" action="?/acceptDraft" use:enhance>
+							<input type="hidden" name="mode" value="replace" />
+							<button type="submit" class="btn primary">Replace with these</button>
+						</form>
+						<form method="POST" action="?/acceptDraft" use:enhance>
+							<input type="hidden" name="mode" value="append" />
+							<button type="submit" class="btn">Add to current</button>
+						</form>
+						<form method="POST" action="?/rejectDraft" use:enhance>
+							<button type="submit" class="btn ghost">Dismiss</button>
+						</form>
+					</div>
+				</div>
+			</div>
+		{/if}
+
+		<form
+			id="save-form"
+			method="POST"
+			action="?/save"
+			use:enhance={() => {
+				saving = true;
+				return async ({ update }) => {
+					await update();
+					saving = false;
+				};
+			}}
+		>
+			<div class="card">
+				<div class="card-h"><h2>Active criteria</h2></div>
+				<div class="card-b">
+					<div class="grid-2">
+						<div class="field">
+							<span>Role titles</span>
+							<textarea class="input" name="role_titles" rows="5" bind:value={role_titles}></textarea>
+							<small>Documentation + LLM context. e.g. "Senior Software Engineer".</small>
+						</div>
+						<div class="field">
+							<span>Seniority terms <span style="color:var(--faint);font-weight:500">(gate)</span></span>
+							<textarea class="input" name="seniority_terms" rows="5" bind:value={seniority_terms}></textarea>
+							<small>Title must contain one of these (senior, staff, principal, lead).</small>
+						</div>
+					</div>
+					<div class="grid-2" style="margin-top:14px">
+						<div class="field">
+							<span>Required tech <span style="color:var(--faint);font-weight:500">(any-of)</span></span>
+							<textarea class="input" name="required_tech" rows="4" bind:value={required_tech}></textarea>
+							<small>Posting must reference at least one. Short tokens (≤2 chars) only flag as manual.</small>
+						</div>
+						<div class="field">
+							<span>Excluded tech</span>
+							<textarea class="input" name="excluded_tech" rows="4" bind:value={excluded_tech}></textarea>
+							<small>Disqualifies when in title, or in tags without a required-tech tag.</small>
+						</div>
+					</div>
+					<div class="field" style="margin-top:14px">
+						<span>Skills detected <span style="color:var(--faint);font-weight:500">(reference)</span></span>
+						<textarea class="input" name="extracted_skills" rows="4" bind:value={extracted_skills}></textarea>
+						<small>Free-form notes from resume analysis. Not used by the filter directly.</small>
+					</div>
+					<div style="margin-top:16px">
+						<button type="submit" class="btn primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+					</div>
+				</div>
+			</div>
+		</form>
+
+		<div class="card">
+			<div class="card-h"><h2>Company blacklist</h2></div>
+			<div class="card-b">
+				<p class="muted" style="margin-bottom:14px">
+					Jobs from these companies are dropped during ingest, before they ever reach your queue.
+					Matching ignores casing, punctuation, and legal suffixes, so <em>Meta</em>, <em>Meta Inc</em>,
+					and <em>Meta, Inc.</em> all count as the same company. Editing the list only affects future
+					ingests, not jobs already saved.
+				</p>
+
+				<form method="POST" action="?/addBlacklist" class="bl-add" use:enhance>
+					<input
+						class="input"
+						type="text"
+						name="company"
+						placeholder="Company name"
+						autocomplete="off"
+						required
+					/>
+					<input
+						class="input"
+						type="text"
+						name="reason"
+						placeholder="Reason (optional)"
+						autocomplete="off"
+					/>
+					<button type="submit" class="btn primary">Add</button>
+				</form>
+
+				{#if form && 'blacklistError' in form && form.blacklistError}
+					<p class="err-text" style="margin-top:10px">{form.blacklistError}</p>
+				{/if}
+				{#if form?.blacklistOk && 'blacklistMessage' in form && form.blacklistMessage}
+					<p class="banner ok" style="margin-top:10px">{form.blacklistMessage}</p>
+				{/if}
+
+				{#if data.blacklist.length === 0}
+					<p class="muted bl-empty">No companies blacklisted yet.</p>
+				{:else}
+					<ul class="bl-list">
+						{#each data.blacklist as c (c.id)}
+							<li>
+								<div class="bl-main">
+									<span class="bl-name">{c.name}</span>
+									{#if c.reason}<span class="bl-reason">{c.reason}</span>{/if}
+								</div>
+								<form method="POST" action="?/removeBlacklist" use:enhance>
+									<input type="hidden" name="id" value={c.id} />
+									<button type="submit" class="btn ghost sm bl-remove" aria-label="Remove {c.name}"
+										>Remove</button
+									>
+								</form>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
 		</div>
-	</section>
-{/if}
-
-<form
-	method="POST"
-	action="?/save"
-	use:enhance={() => {
-		saving = true;
-		return async ({ update }) => {
-			await update();
-			saving = false;
-		};
-	}}
->
-	<section class="panel">
-		<h2>Active criteria</h2>
-
-		<label>
-			<span>Role titles</span>
-			<textarea name="role_titles" rows="4" bind:value={role_titles}></textarea>
-			<small>e.g. "Senior Software Engineer". Used as documentation + LLM context.</small>
-		</label>
-
-		<label>
-			<span>Seniority terms (gate)</span>
-			<textarea name="seniority_terms" rows="3" bind:value={seniority_terms}></textarea>
-			<small>Title must contain one of these (e.g. senior, staff, principal, lead).</small>
-		</label>
-
-		<label>
-			<span>Required tech (any-of)</span>
-			<textarea name="required_tech" rows="4" bind:value={required_tech}></textarea>
-			<small>Posting must reference at least one. Short tokens (≤2 chars) only flag as manual.</small>
-		</label>
-
-		<label>
-			<span>Excluded tech</span>
-			<textarea name="excluded_tech" rows="2" bind:value={excluded_tech}></textarea>
-			<small>Disqualifies when in title, or in tags without a required-tech tag.</small>
-		</label>
-
-		<label>
-			<span>Skills detected (reference)</span>
-			<textarea name="extracted_skills" rows="4" bind:value={extracted_skills}></textarea>
-			<small>Free-form notes from resume analysis. Not used by the filter directly.</small>
-		</label>
-
-		<div class="actions">
-			<button type="submit" disabled={saving} class="primary">
-				{saving ? 'Saving…' : 'Save'}
-			</button>
-		</div>
-	</section>
-</form>
+	</div>
+</div>
 
 <style>
-	h1 {
-		margin: 0 0 0.5rem;
-		font-size: 1.5rem;
-	}
-	.muted {
-		color: var(--muted);
-		margin: 0 0 1rem;
-	}
-	.panel {
-		background: var(--panel);
-		border: 1px solid var(--panel-border);
-		border-radius: 8px;
-		padding: 1rem 1.25rem;
-		margin-bottom: 1rem;
-	}
-	.panel h2 {
-		font-size: 1rem;
-		margin: 0 0 0.75rem;
-		color: var(--muted);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-	.draft {
-		border-color: var(--accent);
-	}
-	label {
+	.rec-actions {
 		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		margin-bottom: 0.9rem;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-top: 16px;
 	}
-	label span {
-		font-size: 0.9rem;
-		color: var(--fg);
-	}
-	label small {
-		color: var(--muted);
-		font-size: 0.8rem;
-	}
-	textarea {
-		font: inherit;
-		background: var(--bg);
-		color: var(--fg);
-		border: 1px solid var(--panel-border);
-		border-radius: 6px;
-		padding: 0.5rem 0.6rem;
-		resize: vertical;
-	}
-	textarea:focus {
-		outline: 1px solid var(--accent);
-		border-color: var(--accent);
-	}
-	dl {
-		display: grid;
-		grid-template-columns: max-content 1fr;
-		column-gap: 1rem;
-		row-gap: 0.3rem;
-		margin: 0 0 1rem;
-	}
-	dt {
-		color: var(--muted);
-		font-size: 0.85rem;
-	}
-	dd {
+	.rec-actions form {
 		margin: 0;
-		font-size: 0.9rem;
 	}
-	.actions {
+	.bl-add {
 		display: flex;
-		gap: 0.5rem;
+		gap: 8px;
+		align-items: center;
 		flex-wrap: wrap;
 	}
-	.actions form {
-		margin: 0;
+	.bl-add .input {
+		flex: 1;
+		min-width: 140px;
 	}
-	button {
-		font: inherit;
-		color: var(--fg);
-		background: var(--panel-border);
-		border: 1px solid var(--panel-border);
-		border-radius: 6px;
-		padding: 0.4rem 0.9rem;
-		cursor: pointer;
+	.bl-empty {
+		margin-top: 14px;
 	}
-	button:hover {
-		border-color: var(--accent);
+	.bl-list {
+		list-style: none;
+		padding: 0;
+		margin: 14px 0 0;
 	}
-	button.primary {
-		background: var(--accent);
-		color: var(--bg);
-		border-color: var(--accent);
+	.bl-list li {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 0;
+		border-bottom: 1px solid var(--border);
 	}
-	button.ghost {
-		background: transparent;
+	.bl-list li:last-child {
+		border-bottom: 0;
+		padding-bottom: 0;
 	}
-	button:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
+	.bl-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
 	}
-	.info-banner {
-		margin: 0 0 1rem;
-		padding: 0.5rem 0.75rem;
-		background: rgba(88, 166, 255, 0.1);
-		border: 1px solid var(--accent);
-		border-radius: 6px;
-		color: var(--fg);
-		font-size: 0.9rem;
+	.bl-name {
+		font-weight: 600;
+		font-size: 13px;
+		word-break: break-word;
 	}
-	.ok-banner {
-		margin: 0 0 1rem;
-		padding: 0.4rem 0.75rem;
-		background: rgba(46, 160, 67, 0.15);
-		border: 1px solid var(--ok);
-		border-radius: 6px;
-		color: var(--fg);
-		font-size: 0.9rem;
+	.bl-reason {
+		font-size: 12px;
+		color: var(--faint);
+		word-break: break-word;
 	}
-	.error {
-		color: var(--bad);
-		margin: 0 0 1rem;
-	}
-	code {
-		background: var(--bg);
-		padding: 0.05rem 0.3rem;
-		border-radius: 3px;
+	.bl-remove {
+		flex-shrink: 0;
 	}
 </style>

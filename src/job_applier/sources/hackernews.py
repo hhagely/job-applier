@@ -21,7 +21,6 @@ manually rather than silently dropping signal.
 
 from __future__ import annotations
 
-import html
 import logging
 import re
 from collections.abc import Iterable
@@ -29,7 +28,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.contracts import html_to_text as _html_to_text
+from job_applier.sources.base import RawJob, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +42,6 @@ MAX_THREADS = 2
 
 REMOTE_HINT = re.compile(r"\bremote\b", re.IGNORECASE)
 ONSITE_HINT = re.compile(r"\b(on[\s-]?site|hybrid|in[\s-]?office)\b", re.IGNORECASE)
-TAG_RE = re.compile(r"<[^>]+>")
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 
@@ -58,11 +57,11 @@ class HackerNewsHiringSource:
                         resp = client.get(ITEM_URL.format(id=thread_id))
                         resp.raise_for_status()
                         thread = resp.json()
-                    except httpx.HTTPError as e:
+                    except (httpx.HTTPError, ValueError) as e:
                         log.warning("hackernews thread %s fetch failed: %s", thread_id, e)
                         continue
                     yield from _normalize_thread(thread, thread_created)
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, ValueError) as e:
             log.warning("hackernews search failed: %s", e)
             return
 
@@ -78,7 +77,8 @@ def _find_hiring_threads(
         },
     )
     resp.raise_for_status()
-    hits = resp.json().get("hits", [])
+    data = resp.json()
+    hits = data.get("hits", []) if isinstance(data, dict) else []
     threads: list[tuple[int, datetime | None]] = []
     for h in hits:
         title = (h.get("title") or "").lower()
@@ -88,7 +88,7 @@ def _find_hiring_threads(
             tid = int(h["objectID"])
         except (KeyError, ValueError, TypeError):
             continue
-        created = _parse_iso(h.get("created_at"))
+        created = parse_iso_date(h.get("created_at"))
         threads.append((tid, created))
         if len(threads) >= limit:
             break
@@ -98,6 +98,8 @@ def _find_hiring_threads(
 def _normalize_thread(
     thread: dict, thread_created: datetime | None
 ) -> Iterable[RawJob]:
+    if not isinstance(thread, dict):
+        return
     thread_id = thread.get("id")
     for child in thread.get("children") or []:
         if not isinstance(child, dict):
@@ -212,28 +214,8 @@ def _first_url(text: str) -> str | None:
     return m.group(0) if m else None
 
 
-def _html_to_text(s: str) -> str:
-    if not s:
-        return ""
-    # HN comments use <p> for paragraphs and <a href="...">...</a> for links.
-    # Replace block tags with newlines, drop the rest, then unescape entities.
-    s = re.sub(r"<\s*/?p\s*>", "\n", s, flags=re.IGNORECASE)
-    s = re.sub(r"<\s*br\s*/?\s*>", "\n", s, flags=re.IGNORECASE)
-    s = TAG_RE.sub("", s)
-    return html.unescape(s).strip()
-
-
 def _looks_remote(html_text: str) -> bool:
     return bool(REMOTE_HINT.search(html_text)) and not ONSITE_HINT.search(html_text)
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _parse_unix(value: int | None) -> datetime | None:

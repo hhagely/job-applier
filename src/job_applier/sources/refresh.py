@@ -5,10 +5,11 @@ table. This module fills that table — either from a small built-in seed
 (used on fresh ``job-applier init``) or from the SimplifyJobs community
 feed (the ``refresh-slugs`` CLI command).
 
-Discovery is Greenhouse + Lever only (SimplifyJobs only carries those slugs).
-Re-verification covers all four per-company sources (Greenhouse, Lever,
-Ashby, Workday) so dead boards get auto-disabled regardless of how they got
-into the table.
+Discovery pulls slugs the SimplifyJobs feed carries: Greenhouse, Lever,
+Workable, and SmartRecruiters. Re-verification is broader — it covers those
+four plus Ashby and Workday so dead boards get auto-disabled regardless of how
+they got into the table. Jibe and Oracle are seed-only (neither discovered nor
+re-verified).
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import concurrent.futures as cf
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -33,9 +35,36 @@ from job_applier.sources.companies import (
     WORKABLE_COMPANIES,
     WORKDAY_BOARDS,
 )
+from job_applier.sources.oracle import parse_slug as parse_oracle_slug
 from job_applier.sources.workday import parse_slug as parse_workday_slug
 
 log = logging.getLogger(__name__)
+
+# Sources whose slug packs several structured fields into one delimited string
+# (Workday ``tenant|region|site``, Oracle ``apiHost|siteNumber|publicBase[|company]``).
+# A malformed pack makes ``parse_slug`` return None, which the adapter silently
+# filters out at ingest — no board, no error. Validate on write so a bad seed
+# entry surfaces as a warning instead of a slug that never ingests anything.
+_PACKED_SLUG_VALIDATORS = {
+    "workday": parse_workday_slug,
+    "oracle": parse_oracle_slug,
+}
+
+
+def _valid_slugs(source: str, slugs: list[str]) -> list[str]:
+    """Return the slugs that parse for ``source``, warning about any that don't.
+
+    A no-op for sources without a packed slug format."""
+    validate = _PACKED_SLUG_VALIDATORS.get(source)
+    if validate is None:
+        return list(slugs)
+    kept: list[str] = []
+    for slug in slugs:
+        if validate(slug) is None:
+            log.warning("skipping malformed %s slug (does not parse): %r", source, slug)
+        else:
+            kept.append(slug)
+    return kept
 
 GH_VERIFY = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 LV_VERIFY = "https://api.lever.co/v0/postings/{slug}?mode=json"
@@ -112,8 +141,9 @@ def seed_if_empty() -> int:
             ).first()
             if existing is not None:
                 continue
-            session.add_all(SourceSlug(source=source, slug=s) for s in slugs)
-            inserted += len(slugs)
+            valid = _valid_slugs(source, slugs)
+            session.add_all(SourceSlug(source=source, slug=s) for s in valid)
+            inserted += len(valid)
         if inserted:
             session.commit()
     return inserted
@@ -138,30 +168,10 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
     stats.sr_candidates = len(sr_candidates)
 
     with Session(engine()) as session:
-        existing_gh = {
-            r.slug: r
-            for r in session.exec(
-                select(SourceSlug).where(SourceSlug.source == "greenhouse")
-            ).all()
-        }
-        existing_lv = {
-            r.slug: r
-            for r in session.exec(
-                select(SourceSlug).where(SourceSlug.source == "lever")
-            ).all()
-        }
-        existing_wk = {
-            r.slug: r
-            for r in session.exec(
-                select(SourceSlug).where(SourceSlug.source == "workable")
-            ).all()
-        }
-        existing_sr = {
-            r.slug: r
-            for r in session.exec(
-                select(SourceSlug).where(SourceSlug.source == "smartrecruiters")
-            ).all()
-        }
+        existing_gh = _existing_by_slug(session, "greenhouse")
+        existing_lv = _existing_by_slug(session, "lever")
+        existing_wk = _existing_by_slug(session, "workable")
+        existing_sr = _existing_by_slug(session, "smartrecruiters")
 
         new_gh = sorted(gh_candidates - set(existing_gh))
         new_lv = sorted(lv_candidates - set(existing_lv))
@@ -230,18 +240,8 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 stats.sr_added += 1
 
         if reverify_existing:
-            existing_ashby = {
-                r.slug: r
-                for r in session.exec(
-                    select(SourceSlug).where(SourceSlug.source == "ashby")
-                ).all()
-            }
-            existing_workday = {
-                r.slug: r
-                for r in session.exec(
-                    select(SourceSlug).where(SourceSlug.source == "workday")
-                ).all()
-            }
+            existing_ashby = _existing_by_slug(session, "ashby")
+            existing_workday = _existing_by_slug(session, "workday")
 
             _apply_reverify(
                 rows=existing_gh,
@@ -363,13 +363,40 @@ def _fetch_candidates_from_simplify() -> tuple[set[str], set[str], set[str], set
     return gh, lv, wk, sr
 
 
-def _verify_many(
-    slugs: list[str], url_template: str, max_workers: int
-) -> list[tuple[str, bool, int | None, str | None]]:
+def _existing_by_slug(session: Session, source: str) -> dict[str, SourceSlug]:
+    """Map of ``slug -> row`` for every ``SourceSlug`` of ``source`` — the working
+    set for discovery diffs and re-verification."""
+    return {
+        r.slug: r
+        for r in session.exec(select(SourceSlug).where(SourceSlug.source == source)).all()
+    }
+
+
+# (slug, ok, job_count_or_None, error_str_or_None) — one verification outcome.
+_VerifyResult = tuple[str, bool, "int | None", "str | None"]
+
+
+def _run_verifier(
+    slugs: list[str],
+    check: Callable[[str], _VerifyResult],
+    max_workers: int,
+) -> list[_VerifyResult]:
+    """Run ``check`` across ``slugs`` in a thread pool. Shared skeleton for the
+    three per-source verifiers, which differ only in the per-slug ``check`` body.
+    """
     if not slugs:
         return []
+    results: list[_VerifyResult] = []
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for r in ex.map(check, slugs):
+            results.append(r)
+    return results
 
-    def check(slug: str) -> tuple[str, bool, int | None, str | None]:
+
+def _verify_many(
+    slugs: list[str], url_template: str, max_workers: int
+) -> list[_VerifyResult]:
+    def check(slug: str) -> _VerifyResult:
         try:
             r = httpx.get(url_template.format(slug=slug), timeout=20, follow_redirects=True)
             if r.status_code != 200:
@@ -385,23 +412,15 @@ def _verify_many(
         except Exception as e:  # noqa: BLE001 — we want to capture the error string
             return (slug, False, None, str(e))
 
-    results: list[tuple[str, bool, int | None, str | None]] = []
-    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for r in ex.map(check, slugs):
-            results.append(r)
-    return results
+    return _run_verifier(slugs, check, max_workers)
 
 
-def _verify_workable(
-    slugs: list[str], max_workers: int
-) -> list[tuple[str, bool, int | None, str | None]]:
+def _verify_workable(slugs: list[str], max_workers: int) -> list[_VerifyResult]:
     """Workable's list endpoint is POST-only with a JSON body, so it can't share
-    ``_verify_many``. Returns the response's ``total`` as the count so the
-    caller can skip dead boards (total == 0)."""
-    if not slugs:
-        return []
+    ``_verify_many``'s GET ``check``. Returns the response's ``total`` as the count
+    so the caller can skip dead boards (total == 0)."""
 
-    def check(slug: str) -> tuple[str, bool, int | None, str | None]:
+    def check(slug: str) -> _VerifyResult:
         try:
             r = httpx.post(
                 WORKABLE_VERIFY_URL.format(slug=slug),
@@ -417,27 +436,19 @@ def _verify_workable(
         except Exception as e:  # noqa: BLE001 — capture the error string
             return (slug, False, None, str(e))
 
-    results: list[tuple[str, bool, int | None, str | None]] = []
-    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for r in ex.map(check, slugs):
-            results.append(r)
-    return results
+    return _run_verifier(slugs, check, max_workers)
 
 
-def _verify_workday(
-    slugs: list[str], max_workers: int
-) -> list[tuple[str, bool, int | None, str | None]]:
-    """Workday's CXS jobs endpoint is POST-only and tenant-specific, so it
-    can't share ``_verify_many``. Slugs are ``tenant|region|site``.
+def _verify_workday(slugs: list[str], max_workers: int) -> list[_VerifyResult]:
+    """Workday's CXS jobs endpoint is POST-only and tenant-specific, so it can't
+    share ``_verify_many``'s GET ``check``. Slugs are ``tenant|region|site``.
 
     A 422 ("Unprocessable Entity") means the tenant rejects the public CXS
     body shape — that's a permanent rejection, not a transient error, so we
     treat it as failure and let the disable path mark the row.
     """
-    if not slugs:
-        return []
 
-    def check(slug: str) -> tuple[str, bool, int | None, str | None]:
+    def check(slug: str) -> _VerifyResult:
         board = parse_workday_slug(slug)
         if board is None:
             return (slug, False, None, "malformed slug")
@@ -461,8 +472,4 @@ def _verify_workday(
         except Exception as e:  # noqa: BLE001 — capture the error string
             return (slug, False, None, str(e))
 
-    results: list[tuple[str, bool, int | None, str | None]] = []
-    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for r in ex.map(check, slugs):
-            results.append(r)
-    return results
+    return _run_verifier(slugs, check, max_workers)

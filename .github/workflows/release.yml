@@ -1,0 +1,101 @@
+# Release build + publish (Phase 7, Workstream D). Separate from ci.yml (tests),
+# which stays untouched. Triggered by pushing a v* tag; builds the installer on a
+# NATIVE runner per OS (PyInstaller can't cross-compile the sidecar), runs the
+# data-isolation guard, then uploads to a draft GitHub Release for the tag.
+#
+# DATA ISOLATION (Workstream A2): this workflow does a clean checkout and NEVER
+# copies or restores data/ or applications/ into the runner. The author's personal
+# data (jobs.db, resumes, tailored drafts) is gitignored and does not exist in a
+# fresh CI checkout, so it cannot be swept into the bundle. The guard step below is
+# defense-in-depth: it fails the build before anything is uploaded if that ever
+# changes.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+
+      # --dev installs PyInstaller (the sidecar freezer) alongside the runtime deps.
+      - name: Install Python deps
+        run: uv sync --dev
+
+      # Single source of truth: stamp desktop/package.json from __version__ so the
+      # installer filename + the window.desktop.version bridge match the backend.
+      - name: Stamp version
+        run: uv run python desktop/scripts/stamp_version.py
+
+      - name: Build web bundle (adapter-node)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      # PyInstaller runs natively, so Windows produces the .exe sidecar and Linux
+      # the ELF. Output: dist/job-applier-backend/ (referenced by electron-builder).
+      - name: Freeze backend sidecar
+        run: uv run pyinstaller --noconfirm --clean desktop/sidecar/job-applier-backend.spec
+
+      # Build the installer WITHOUT uploading; the guard runs before anything ships.
+      - name: Build installer
+        working-directory: desktop
+        run: |
+          npm ci
+          npx electron-builder --publish never
+
+      # Data-isolation guard (Workstream A2): refuse to ship if the packaged tree
+      # contains a DB, a resumes/ payload, or applications/<id>/ drafts. Nothing has
+      # been uploaded yet, so a failure here means nothing leaks.
+      - name: Data-isolation guard
+        run: uv run python desktop/scripts/check_no_personal_data.py desktop/dist
+
+      # Only reached if the guard passed. Upload the exact artifacts the guard
+      # validated to a DRAFT release for the tag (author publishes after review).
+      - name: Upload installers to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          # Create the draft release once; the matrix runs two jobs, so tolerate
+          # "already exists" from whichever loses the race.
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --draft --generate-notes --title "$tag" || true
+          shopt -s nullglob
+          files=(desktop/dist/*.exe desktop/dist/*.AppImage desktop/dist/*.deb)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No installer artifacts found to upload" >&2
+            exit 1
+          fi
+          gh release upload "$tag" "${files[@]}" --clobber

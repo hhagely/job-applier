@@ -32,11 +32,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, looks_remote, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +69,9 @@ class JibeSource:
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("jibe[%s] page %d fetch failed: %s", tenant, page, e)
                 return
+            if not isinstance(payload, dict):
+                log.warning("jibe[%s] page %d returned non-object payload, stopping", tenant, page)
+                return
             jobs = payload.get("jobs") or []
             if not jobs:
                 return
@@ -98,7 +100,7 @@ def _normalize(tenant: str, item: dict) -> RawJob | None:
         or item.get("full_location")
         or item.get("short_location")
     )
-    remote = "remote" in (location or "").lower()
+    remote = looks_remote(location)
 
     description_parts = [
         item.get("description") or "",
@@ -133,18 +135,7 @@ def _normalize(tenant: str, item: dict) -> RawJob | None:
         location=location,
         remote=remote,
         employment_type=(item.get("employment_type") or None),
-        posted_at=_parse_date(item.get("posted_date") or item.get("create_date")),
+        posted_at=parse_iso_date(item.get("posted_date") or item.get("create_date")),
         tags=tags,
         raw=item,
     )
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        # Jibe emits "+0000" without a colon; fromisoformat handles that on
-        # 3.11+. Strip a trailing "Z" if it ever appears.
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
