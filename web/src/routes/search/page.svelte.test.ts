@@ -79,6 +79,9 @@ describe('search page state-of-residence field', () => {
 
 		const select = screen.getByRole('combobox', { name: /State of residence/i });
 		expect(select).toBeInTheDocument();
+		// Must submit under name="home_state" so the +page.server.ts save action's
+		// readProfile() picks it up; a rename here would silently break persistence.
+		expect(select).toHaveAttribute('name', 'home_state');
 		expect(screen.getByRole('option', { name: 'Missouri' })).toBeInTheDocument();
 		expect(screen.getByText(/only.*to filter jobs during ingest/i)).toBeInTheDocument();
 	});

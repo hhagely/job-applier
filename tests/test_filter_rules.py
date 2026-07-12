@@ -305,6 +305,35 @@ def test_home_state_normalization():
         normalize_home_state("Ontario")
 
 
+def test_multi_word_home_state_matches_across_whitespace(make_raw):
+    # A two-word home state ("New York") counts as present even when the posting
+    # breaks it across multiple spaces — the name matcher collapses internal
+    # whitespace to \s+, so a naive single-space match wouldn't cover this.
+    ny_config = build_config(
+        role_titles=[], seniority_terms=[], required_tech=[], excluded_tech=[], home_state="New York"
+    )
+    present = make_raw(
+        description="React role. We can only hire in California, New  York, and Texas."
+    )
+    assert evaluate(present, ny_config).status is FilterStatus.passed
+
+    absent = make_raw(
+        description="React role. We can only hire in California, Texas, and Ohio."
+    )
+    assert evaluate(absent, ny_config).status is FilterStatus.dropped
+    assert "New York" in (evaluate(absent, ny_config).reason or "")
+
+
+def test_unrecognized_stored_home_state_is_kept_as_is():
+    # build_config canonicalizes best-effort: a legacy/odd stored value that isn't
+    # a known state is passed through (never crashes ingest) with no abbreviation.
+    cfg = build_config(
+        role_titles=[], seniority_terms=[], required_tech=[], excluded_tech=[], home_state="Freedonia"
+    )
+    assert cfg.home_state == "Freedonia"
+    assert cfg.home_state_abbr is None
+
+
 class TestTitleQuickFail:
     """Cheap title-only pre-check used by adapters that fan out detail fetches.
     The whole point is to drop titles before paying an HTTP round-trip, so

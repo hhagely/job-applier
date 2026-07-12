@@ -164,48 +164,58 @@ def prepare(argv: list[str]) -> int:
     _git("fetch", "origin", _DEFAULT_BRANCH)
     _git("checkout", "-b", branch, f"origin/{_DEFAULT_BRANCH}")
 
-    _replace_once(
-        _INIT,
-        r'^__version__\s*=\s*["\'][^"\']+["\']',
-        f'__version__ = "{version}"',
-        "__version__",
-    )
-    _replace_once(
-        _PYPROJECT,
-        r'^version\s*=\s*"[^"]*"',
-        f'version = "{version}"',
-        "version",
-    )
-    stamp_version.stamp()  # desktop/package.json
-    _git("add", _INIT_REL, "pyproject.toml", "desktop/package.json")
-    _git("commit", "-m", f"Release {tag}")
-    _git("push", "-u", "origin", branch)
-    print(f"pushed {branch} with the {version} bump")
-
-    # --- open the PR (best-effort: the branch is already safe on origin) -----
-    body = (
-        f"Version bump to **{version}** "
-        "(`__init__.py`, `pyproject.toml`, `desktop/package.json`).\n\n"
-        f"After this merges, tag the release: `make release-tag VERSION={version}`."
-    )
+    # Once we've switched branches, any failure must restore the caller's branch
+    # instead of stranding them on the half-built release/ branch.
     try:
-        url = _gh(
-            "pr", "create",
-            "--base", _DEFAULT_BRANCH,
-            "--head", branch,
-            "--title", f"Release {tag}",
-            "--body", body,
-            capture=True,
+        _replace_once(
+            _INIT,
+            r'^__version__\s*=\s*["\'][^"\']+["\']',
+            f'__version__ = "{version}"',
+            "__version__",
         )
-        print(f"opened PR: {url}")
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        slug = _repo_slug()
-        where = (
-            f"https://github.com/{slug}/compare/{_DEFAULT_BRANCH}...{branch}?expand=1"
-            if slug
-            else f"a PR from {branch} into {_DEFAULT_BRANCH}"
+        _replace_once(
+            _PYPROJECT,
+            r'^version\s*=\s*"[^"]*"',
+            f'version = "{version}"',
+            "version",
         )
-        print(f"warning: could not open the PR automatically ({exc}); open it manually:\n  {where}")
+        stamp_version.stamp()  # desktop/package.json
+        _git("add", _INIT_REL, "pyproject.toml", "desktop/package.json")
+        _git("commit", "-m", f"Release {tag}")
+        _git("push", "-u", "origin", branch)
+        print(f"pushed {branch} with the {version} bump")
+
+        # --- open the PR (best-effort: the branch is already safe on origin) -----
+        body = (
+            f"Version bump to **{version}** "
+            "(`__init__.py`, `pyproject.toml`, `desktop/package.json`).\n\n"
+            f"After this merges, tag the release: `make release-tag VERSION={version}`."
+        )
+        try:
+            url = _gh(
+                "pr", "create",
+                "--base", _DEFAULT_BRANCH,
+                "--head", branch,
+                "--title", f"Release {tag}",
+                "--body", body,
+                capture=True,
+            )
+            print(f"opened PR: {url}")
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            slug = _repo_slug()
+            where = (
+                f"https://github.com/{slug}/compare/{_DEFAULT_BRANCH}...{branch}?expand=1"
+                if slug
+                else f"a PR from {branch} into {_DEFAULT_BRANCH}"
+            )
+            print(f"warning: could not open the PR automatically ({exc}); open it manually:\n  {where}")
+    except BaseException:
+        # Best-effort: don't leave the user on the release branch. The error
+        # (and its one-line reason via __main__) still surfaces after this.
+        subprocess.run(
+            ["git", "checkout", start], cwd=_REPO_ROOT, capture_output=True, text=True
+        )
+        raise
 
     _git("checkout", start)  # the bump is safe on the pushed branch; return to where we were
     print(

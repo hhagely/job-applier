@@ -236,6 +236,26 @@ def test_load_active_config_carries_home_state(db_session):
     assert cfg.home_state_abbr == "MO"
 
 
+def test_load_active_config_keeps_home_state_when_tech_lists_empty(db_session):
+    # Fresh-install shape: onboarding saves a home state before any roles/tech are
+    # configured. The empty-list fallback (which uses the built-in role/tech
+    # defaults) must still honor the chosen state — otherwise the very first
+    # ingest silently skips the state-allow-list rule the wizard just set up.
+    db_session.add(
+        SearchProfile(
+            role_titles=[],
+            seniority_terms=[],
+            required_tech=[],
+            excluded_tech=[],
+            home_state="Missouri",
+        )
+    )
+    db_session.commit()
+    cfg = load_active_config(db_session)
+    assert cfg.home_state == "Missouri"
+    assert cfg.home_state_abbr == "MO"
+
+
 # ---------------------------------------------------------------------------
 # HTTP API
 # ---------------------------------------------------------------------------

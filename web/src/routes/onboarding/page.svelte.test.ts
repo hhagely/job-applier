@@ -5,6 +5,14 @@ import type { ProvidersResponse } from '$lib/api';
 // use:enhance / form submits need a runtime action; a no-op is enough for render.
 vi.mock('$app/forms', () => ({ enhance: () => ({}) }));
 
+// The wizard's state autosave calls the typed client directly (client-side island);
+// stub just the two methods it touches so we can assert the merged save payload.
+vi.mock('$lib/api', () => ({
+	getApiBase: () => '',
+	api: { getSearchProfile: vi.fn(), saveSearchProfile: vi.fn() }
+}));
+
+import { api } from '$lib/api';
 import Page from './+page.svelte';
 
 function makeData(overrides = {}) {
@@ -77,5 +85,40 @@ describe('onboarding wizard', () => {
 
 		const select = screen.getByRole('combobox', { name: /State of residence/i }) as HTMLSelectElement;
 		expect(select.value).toBe('California');
+	});
+
+	it('autosaves the picked state, merged into the existing profile', async () => {
+		const cur = {
+			role_titles: ['Senior Engineer'],
+			seniority_terms: ['senior'],
+			required_tech: ['typescript'],
+			excluded_tech: ['angular'],
+			extracted_skills: ['react'],
+			home_state: null
+		};
+		vi.mocked(api.getSearchProfile).mockResolvedValue(cur as never);
+		vi.mocked(api.saveSearchProfile).mockResolvedValue({ ...cur, home_state: 'Texas' } as never);
+
+		render(Page, { props: { data: makeData() } });
+		await fireEvent.click(screen.getByRole('button', { name: /Skip this step/i }));
+		await fireEvent.click(screen.getByRole('button', { name: /Skip this step/i }));
+
+		const select = screen.getByRole('combobox', { name: /State of residence/i });
+		await fireEvent.change(select, { target: { value: 'Texas' } });
+
+		// The chosen state is persisted, and the other profile fields are carried
+		// through untouched (the save is a full replace, so the merge must preserve them).
+		await vi.waitFor(() =>
+			expect(api.saveSearchProfile).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.anything(),
+				expect.objectContaining({
+					role_titles: ['Senior Engineer'],
+					seniority_terms: ['senior'],
+					required_tech: ['typescript'],
+					home_state: 'Texas'
+				})
+			)
+		);
 	});
 });

@@ -26,7 +26,7 @@ any particular state, so the tool is usable by anyone regardless of where they l
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -254,7 +254,19 @@ def load_active_config(session: Optional[Session] = None) -> FilterConfig:
     if profile is None:
         return _BUILTIN_DEFAULT
     if not profile.required_tech or not profile.seniority_terms:
-        return _BUILTIN_DEFAULT
+        # Fall back to the built-in role/tech defaults, but still honor the
+        # profile's home state. The state-allow-list rule is independent of the
+        # tech lists, and the onboarding wizard sets the state *before* any roles
+        # exist, so a fresh profile (empty lists) must not silently drop the
+        # state the user just chose.
+        canonical = _canonical_state(profile.home_state)
+        if canonical is None:
+            return _BUILTIN_DEFAULT
+        return replace(
+            _BUILTIN_DEFAULT,
+            home_state=canonical,
+            home_state_abbr=STATE_ABBREV_BY_NAME.get(canonical),
+        )
     return build_config(
         role_titles=profile.role_titles,
         seniority_terms=profile.seniority_terms,
@@ -395,22 +407,12 @@ def _is_specific_non_us(location: str) -> bool:
 
 
 # US states + DC, full names. Used to detect explicit state allow-lists in the
-# posting body. (We don't try to parse two-letter abbreviations — too many
-# collisions with English words like "OR", "IN", "ME".)
+# posting body. Derived from the canonical ``US_STATE_CHOICES`` above so the two
+# can't drift; internal spaces match any whitespace run ("New York" / "New  York").
+# (We don't try to parse two-letter abbreviations here — too many collisions with
+# English words like "OR", "IN", "ME".)
 US_STATES = re.compile(
-    r"\b("
-    r"alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|"
-    r"florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|"
-    r"louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|"
-    r"missouri|montana|nebraska|nevada|"
-    r"new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york|"
-    r"north\s+carolina|north\s+dakota|"
-    r"ohio|oklahoma|oregon|pennsylvania|rhode\s+island|"
-    r"south\s+carolina|south\s+dakota|"
-    r"tennessee|texas|utah|vermont|virginia|washington|"
-    r"west\s+virginia|wisconsin|wyoming|"
-    r"district\s+of\s+columbia"
-    r")\b",
+    r"\b(" + "|".join(re.escape(n).replace(r"\ ", r"\s+") for n, _ in US_STATE_CHOICES) + r")\b",
     re.IGNORECASE,
 )
 

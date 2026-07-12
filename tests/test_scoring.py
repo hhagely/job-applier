@@ -377,6 +377,38 @@ def test_build_batch_score_prompt_tags_each_job_by_id():
     assert "<p>" not in prompt and prompt.count("my resume") == 1
 
 
+# ---- state-rule clause ({{STATE_RULE}} plumbing) --------------------------
+
+
+def test_state_rule_clause_present_only_when_home_state_set():
+    # With a home state the clause names it; without one it's empty (the rule
+    # simply doesn't appear, matching the ingest filter which skips it too).
+    clause = scoring._state_rule_clause("Missouri")
+    assert "state allow-list excludes Missouri" in clause
+    assert scoring._state_rule_clause(None) == ""
+    assert scoring._state_rule_clause("") == ""
+
+
+@pytest.mark.parametrize("builder", ["single", "batch"])
+def test_score_prompt_includes_state_rule_when_home_state_set(builder):
+    e = _engine()
+    with Session(e) as s:
+        job = _seed_job(s, title="Senior Engineer", desc="<p>TypeScript.</p>")
+        if builder == "single":
+            with_state = scoring.build_score_prompt("resume", job, home_state="Missouri")
+            without = scoring.build_score_prompt("resume", job)
+        else:
+            with_state = scoring.build_batch_score_prompt("resume", [job], home_state="Missouri")
+            without = scoring.build_batch_score_prompt("resume", [job])
+    # Set: the home-state hard rule is rendered by name.
+    assert "state allow-list excludes Missouri" in with_state
+    # Unset: no state rule, and the placeholder is always resolved (never leaked
+    # as a literal into the prompt the model sees).
+    assert "state allow-list excludes" not in without
+    assert "{{STATE_RULE}}" not in with_state
+    assert "{{STATE_RULE}}" not in without
+
+
 # ---- services parity (guards the refactor) --------------------------------
 
 
