@@ -48,7 +48,8 @@ class LeverSource:
 
 def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
     title = (item.get("text") or "").strip()
-    if not title:
+    job_id = item.get("id")
+    if not title or not job_id:
         return
 
     categories = item.get("categories") or {}
@@ -76,7 +77,7 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
 
     yield RawJob(
         source="lever",
-        source_id=f"{company_slug}:{item['id']}",
+        source_id=f"{company_slug}:{job_id}",
         url=item.get("hostedUrl") or item.get("applyUrl") or "",
         title=title,
         company_name=company_slug.replace("-", " ").title(),

@@ -1,7 +1,7 @@
 import { api, APPLICATION_STATUSES, type ApplicationStatus, type FilterStatus } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { activeJobs } from '$lib/jobFilters';
-import { jobActions } from '$lib/jobActions.server';
+import { jobActions, parseFollowup } from '$lib/jobActions.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -35,8 +35,8 @@ export const actions: Actions = {
 			.filter((n) => Number.isFinite(n));
 		if (ids.length === 0) return fail(400, { error: 'no jobs selected' });
 
-		const followupRaw = (form.get('next_followup_at') as string | null) || '';
-		const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
+		const next_followup_at = parseFollowup(form.get('next_followup_at'));
+		if (next_followup_at === null) return fail(400, { error: 'invalid follow-up date' });
 
 		try {
 			await api.bulkSetStatus(fetch, serverApiBase(), ids, status, { next_followup_at });

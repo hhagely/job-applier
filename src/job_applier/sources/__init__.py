@@ -1,11 +1,13 @@
 """Source adapter registry.
 
 The DB (``SourceSlug`` table) is the runtime source of truth for which
-per-company boards (Greenhouse / Lever / Ashby / Workday) to ingest from.
-``companies.py`` exists only as a one-time seed for fresh installs.
+per-company boards (Greenhouse / Lever / Ashby / Workday / Workable /
+SmartRecruiters / Jibe / Oracle) to ingest from. ``companies.py`` exists only
+as a one-time seed for fresh installs. The registered set is whatever
+``get_all_sources`` builds — keep this list in step with it.
 
-The aggregator sources (RemoteOK, WeWorkRemotely, HackerNews) take no slug
-config — they always fetch a fixed set of feeds.
+The aggregator sources (RemoteOK, WeWorkRemotely, HackerNews, YCombinator)
+take no slug config — they always fetch a fixed set of feeds.
 """
 
 from __future__ import annotations

@@ -309,7 +309,11 @@ def _ensure_matchscore_resume_id_column() -> None:
     with engine().connect() as conn:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(matchscore)")}
         if "resume_id" not in cols:
-            conn.exec_driver_sql("ALTER TABLE matchscore ADD COLUMN resume_id INTEGER")
+            # Carry the FK so migrated DBs match the fresh-install shape
+            # (model declares foreign_key="resume.id") and duplicate_of's pattern.
+            conn.exec_driver_sql(
+                "ALTER TABLE matchscore ADD COLUMN resume_id INTEGER REFERENCES resume(id)"
+            )
             conn.commit()
 
 
@@ -341,9 +345,12 @@ def _ensure_score_kind_columns() -> None:
         for table in ("matchscore", "matchscorehistory"):
             cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
             if "score_kind" not in cols:
+                # NOT NULL to match the model's non-Optional `score_kind: str`
+                # (fresh installs build it NOT NULL); the DEFAULT backfills the
+                # existing rows so the NOT NULL is satisfied on migrated DBs.
                 conn.exec_driver_sql(
                     f"ALTER TABLE {table} ADD COLUMN score_kind VARCHAR "
-                    "DEFAULT 'baseline'"
+                    "NOT NULL DEFAULT 'baseline'"
                 )
                 conn.exec_driver_sql(
                     f"CREATE INDEX IF NOT EXISTS ix_{table}_score_kind "

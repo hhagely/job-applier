@@ -78,7 +78,8 @@ def _find_hiring_threads(
         },
     )
     resp.raise_for_status()
-    hits = resp.json().get("hits", [])
+    data = resp.json()
+    hits = data.get("hits", []) if isinstance(data, dict) else []
     threads: list[tuple[int, datetime | None]] = []
     for h in hits:
         title = (h.get("title") or "").lower()
@@ -98,6 +99,8 @@ def _find_hiring_threads(
 def _normalize_thread(
     thread: dict, thread_created: datetime | None
 ) -> Iterable[RawJob]:
+    if not isinstance(thread, dict):
+        return
     thread_id = thread.get("id")
     for child in thread.get("children") or []:
         if not isinstance(child, dict):

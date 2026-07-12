@@ -69,6 +69,9 @@ class JibeSource:
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("jibe[%s] page %d fetch failed: %s", tenant, page, e)
                 return
+            if not isinstance(payload, dict):
+                log.warning("jibe[%s] page %d returned non-object payload, stopping", tenant, page)
+                return
             jobs = payload.get("jobs") or []
             if not jobs:
                 return

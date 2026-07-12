@@ -43,6 +43,10 @@ class AshbySource:
                     log.warning("ashby[%s] fetch failed: %s", slug, e)
                     continue
 
+                if not isinstance(payload, dict):
+                    log.warning("ashby[%s] returned non-object payload, skipping", slug)
+                    continue
+
                 for item in payload.get("jobs", []):
                     if not item.get("isListed", True):
                         continue
@@ -51,7 +55,8 @@ class AshbySource:
 
 def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
     title = (item.get("title") or "").strip()
-    if not title:
+    job_id = item.get("id")
+    if not title or not job_id:
         return
 
     location = (item.get("location") or "").strip()
@@ -77,7 +82,7 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
 
     yield RawJob(
         source="ashby",
-        source_id=f"{company_slug}:{item['id']}",
+        source_id=f"{company_slug}:{job_id}",
         url=item.get("jobUrl") or item.get("applyUrl") or "",
         title=title,
         company_name=company_slug,

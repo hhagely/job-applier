@@ -139,7 +139,7 @@ A focused pass on swallowed errors, unhandled failure paths, and incomplete retu
 1. **Read [CLAUDE.md](../../../CLAUDE.md)** for any error-handling / logging conventions.
 
 2. **Fallible sinks across every changed file** — for each call below, confirm the result is checked or the exception is allowed to surface:
-   - **Python:** `httpx` calls (`.get` / `.post` / `Response.raise_for_status`), `pypdf.PdfReader(...)`, `weasyprint.HTML(...).write_pdf(...)`, `json.loads(...)`, `Path(...).read_text(...)`, `sqlmodel.Session.exec(...).one()` (raises on miss), and any subprocess call. Flag unguarded use where a failure would corrupt state or 500 a request. `warning` (or `critical` for ingest/dedupe data paths).
+   - **Python:** `httpx` calls (`.get` / `.post` / `Response.raise_for_status`), `pypdf.PdfReader(...)`, `pdf.render_to_pdf(...)` (headless Chromium/Electron), `json.loads(...)`, `Path(...).read_text(...)`, `sqlmodel.Session.exec(...).one()` (raises on miss), and any subprocess call. Flag unguarded use where a failure would corrupt state or 500 a request. `warning` (or `critical` for ingest/dedupe data paths).
    - **TypeScript / SvelteKit:** `await request.json()` / `request.formData()` in actions without a try/catch or guard, `fetch(...)` without checking `response.ok`, loaders/actions with implicit `undefined` returns. Flag as `warning`.
 
 3. **Swallowed errors:**

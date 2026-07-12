@@ -8,8 +8,9 @@ argument-hint: <job-id> [<job-id> ...]
 
 Generate a tailored **resume** and **cover letter** for one or more job postings.
 The user runs this in Claude Code so all LLM work stays inside their
-subscription. The backend stores the markdown and renders both PDFs via
-weasyprint — you do **not** generate PDFs directly.
+subscription. The backend stores the markdown and renders both PDFs via a
+headless browser engine (Chromium/Playwright in dev, Electron `printToPDF`
+when packaged) — you do **not** generate PDFs directly.
 
 Arguments are one or more job ids from the queue, separated by whitespace
 (e.g. `/draft 1991 2003 2017`). If the user invoked this without any ids, stop

@@ -99,6 +99,29 @@ def test_soft_fail_on_network_error(monkeypatch):
     assert body["current"] == __version__
 
 
+class _NonDictResp:
+    """A GitHub response whose JSON body is a list, not the expected object."""
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return ["not", "a", "dict"]
+
+
+def test_fetch_latest_tag_returns_none_on_non_dict_body(monkeypatch):
+    # A non-dict body must not raise AttributeError from `.get(...)`.
+    monkeypatch.setattr(updates.httpx, "get", lambda *a, **k: _NonDictResp())
+    assert updates._fetch_latest_tag() is None
+
+
+def test_soft_fail_on_non_dict_body(monkeypatch):
+    monkeypatch.setattr(updates.httpx, "get", lambda *a, **k: _NonDictResp())
+    body = client.get("/api/update").json()
+    assert body["update_available"] is False
+    assert body["current"] == __version__
+
+
 def test_result_is_cached(monkeypatch):
     calls = {"n": 0}
 

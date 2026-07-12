@@ -96,6 +96,9 @@ class SmartRecruitersSource:
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("smartrecruiters[%s] list fetch failed: %s", slug, e)
                 return
+            if not isinstance(payload, dict):
+                log.warning("smartrecruiters[%s] returned non-object payload, skipping", slug)
+                return
             content = payload.get("content") or []
             if not content:
                 return
@@ -111,6 +114,8 @@ class SmartRecruitersSource:
 
 
 def _normalize(company_slug: str, item: dict) -> RawJob | None:
+    if not isinstance(item, dict):
+        return None
     name = (item.get("name") or "").strip()
     posting_id = item.get("id")
     if not name or not posting_id:

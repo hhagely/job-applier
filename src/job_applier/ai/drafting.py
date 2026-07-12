@@ -105,14 +105,16 @@ def _render_html_to_pdf(html: str) -> bytes:
     no running server is needed (same CSS/seam as the Phase 2 endpoint)."""
     from job_applier import pdf
 
-    with tempfile.NamedTemporaryFile(
+    tmp = tempfile.NamedTemporaryFile(
         "w", suffix=".html", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(html)
-        path = f.name
+    )
+    path = tmp.name
     try:
+        with tmp:
+            tmp.write(html)
         return pdf.render_to_pdf(Path(path).as_uri())
     finally:
+        # Capture the path before writing so a failed write can't leak the file.
         os.unlink(path)
 
 

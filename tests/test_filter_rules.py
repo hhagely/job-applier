@@ -127,6 +127,22 @@ def test_marks_manual_when_only_short_js_ts_hint(make_raw):
     assert result.status is FilterStatus.manual
 
 
+def test_marks_manual_when_excluded_tech_only_in_description(make_raw):
+    # Excluded tech (Angular) shows up in the description while the positive
+    # TS/JS signal lives in the tags — so rule 8 passes on the haystack, but the
+    # description alone reads excluded-primary. Surface for manual review rather
+    # than dropping outright (the rule-7 tail).
+    result = evaluate(
+        make_raw(
+            title="Senior Software Engineer",
+            description="Maintain a legacy Angular dashboard plus some backend work.",
+            tags=["typescript"],
+        )
+    )
+    assert result.status is FilterStatus.manual
+    assert "verify primary stack" in (result.reason or "")
+
+
 # ---- State allow-list (Missouri eligibility) ----
 
 

@@ -133,6 +133,9 @@ def _fetch_board(client: httpx.Client, board: WorkdayBoard) -> Iterable[RawJob]:
             except ValueError:
                 break
 
+            if not isinstance(data, dict):
+                break
+
             postings = data.get("jobPostings") or []
             if not postings:
                 break
@@ -183,6 +186,9 @@ def _fetch_detail(
             external_path,
             e,
         )
+        return None
+
+    if not isinstance(data, dict):
         return None
 
     info = data.get("jobPostingInfo") or {}
