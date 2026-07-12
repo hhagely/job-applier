@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
-"""Cut a release (Phase 7): bump the version, commit, tag, and push.
+"""Cut a release (Phase 7): bump the version on a PR branch, then tag main.
 
-Pushing a ``v*`` tag is what triggers ``.github/workflows/release.yml`` (per-OS
-build -> data-isolation guard -> draft GitHub Release). This script does the local
-half of that in one shot, with guards so it fails loudly instead of doing the wrong
-thing:
+``main`` is protected (a repository ruleset requires every change to land through a
+pull request), so a release is TWO phases instead of one direct push:
 
-    make release VERSION=0.2.0
+    make release VERSION=0.2.0        # phase 1: bump on release/v0.2.0 + open a PR
+    # ... review + merge that PR on GitHub ...
+    make release-tag VERSION=0.2.0    # phase 2: tag the merged commit + push the tag
 
-Pass ``DRY_RUN=1`` (``--dry-run``) to run every precondition check and print the
-plan without editing, committing, tagging, or pushing anything.
+Pushing the ``v*`` tag is what triggers ``.github/workflows/release.yml`` (per-OS
+build -> data-isolation guard -> draft GitHub Release). The tag is pushed from your
+machine, so the workflow fires as designed; the version bump reaches ``main`` the
+only way the ruleset allows (a PR), not via a rejected ``git push origin main``.
 
-Steps:
-  1. validate the version and that the working tree is clean,
-  2. rewrite __version__ (src/job_applier/__init__.py) + version (pyproject.toml),
-  3. stamp desktop/package.json from __version__ (reuses stamp_version.py),
-  4. commit "Release vX.Y.Z", create tag vX.Y.Z, push the branch + the tag.
+Add ``DRY_RUN=1`` (``--dry-run``) to either phase to run every read-only check and
+print the plan without branching, committing, pushing, tagging, or opening anything.
+
+phase 1 (prepare):
+  1. validate the version + a clean working tree,
+  2. branch ``release/vX.Y.Z`` off the latest ``origin/main``,
+  3. rewrite __version__ (src/job_applier/__init__.py) + version (pyproject.toml) +
+     stamp desktop/package.json, and commit "Release vX.Y.Z",
+  4. push the branch and open a PR into ``main``.
+
+phase 2 (tag):
+  1. fetch origin and verify ``origin/main`` is now at vX.Y.Z (i.e. the PR merged),
+  2. verify the tag does not exist yet,
+  3. tag ``origin/main``'s commit ``vX.Y.Z`` and push the tag.
 
 After CI finishes, publish the resulting DRAFT release from the Releases page (see
 .github/release-notes-template.md).
@@ -33,11 +44,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import stamp_version  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_INIT = _REPO_ROOT / "src" / "job_applier" / "__init__.py"
+_INIT_REL = "src/job_applier/__init__.py"
+_INIT = _REPO_ROOT / _INIT_REL
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
+_DEFAULT_BRANCH = "main"
 
 # X.Y.Z with an optional pre-release suffix (e.g. 0.2.0-rc1).
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
+_VERSION_ASSIGN_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
 
 def _die(msg: str) -> "None":
@@ -56,6 +70,50 @@ def _git(*args: str, capture: bool = False) -> str:
     return (result.stdout or "").strip() if capture else ""
 
 
+def _gh(*args: str, capture: bool = False) -> str:
+    result = subprocess.run(
+        ["gh", *args],
+        cwd=_REPO_ROOT,
+        text=True,
+        capture_output=capture,
+        check=True,
+    )
+    return (result.stdout or "").strip() if capture else ""
+
+
+def _ref_exists(ref: str) -> bool:
+    """True if a local ref (branch/tag/commit) resolves."""
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", ref],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 0
+    )
+
+
+def _remote_has(kind: str, name: str) -> bool:
+    """True if origin has a matching branch (kind='--heads') or tag ('--tags')."""
+    return bool(_git("ls-remote", kind, "origin", name, capture=True))
+
+
+def _version_at(ref: str) -> str:
+    """Parse __version__ from __init__.py as it exists at *ref* (e.g. origin/main)."""
+    m = _VERSION_ASSIGN_RE.search(_git("show", f"{ref}:{_INIT_REL}", capture=True))
+    if not m:
+        _die(f"could not find __version__ at {ref}")
+    return m.group(1)
+
+
+def _repo_slug() -> str | None:
+    """owner/repo parsed from origin's URL (ssh or https), or None."""
+    url = _git("remote", "get-url", "origin", capture=True)
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url)
+    return m.group(1) if m else None
+
+
 def _replace_once(path: Path, pattern: str, repl: str, what: str) -> None:
     text = path.read_text(encoding="utf-8")
     new_text, count = re.subn(pattern, repl, text, count=1, flags=re.MULTILINE)
@@ -64,36 +122,48 @@ def _replace_once(path: Path, pattern: str, repl: str, what: str) -> None:
     path.write_text(new_text, encoding="utf-8")
 
 
-def main(argv: list[str]) -> int:
-    args = argv[1:]
-    dry_run = "--dry-run" in args
-    args = [a for a in args if a != "--dry-run"]
+def _parse(argv: list[str], subcmd: str) -> tuple[str, bool]:
+    dry_run = "--dry-run" in argv
+    args = [a for a in argv if a != "--dry-run"]
     if len(args) != 1:
-        _die("usage: release.py X.Y.Z [--dry-run]  (or: make release VERSION=X.Y.Z [DRY_RUN=1])")
+        _die(f"usage: release.py {subcmd} X.Y.Z [--dry-run]")
     version = args[0].lstrip("vV")
     if not _VERSION_RE.match(version):
         _die(f"'{version}' is not a valid version (expected X.Y.Z[-suffix])")
-    tag = f"v{version}"
+    return version, dry_run
 
-    # --- preconditions (all read-only; run in dry-run too) ------------------
+
+def prepare(argv: list[str]) -> int:
+    """Phase 1: bump the version on a release/ branch and open a PR into main."""
+    version, dry_run = _parse(argv, "prepare")
+    tag = f"v{version}"
+    branch = f"release/{tag}"
+    current = stamp_version.read_version()
+
+    # --- preconditions (all read-only) --------------------------------------
+    if version == current:
+        _die(f"version is already {version}; bump to a new version")
     if _git("status", "--porcelain", capture=True):
         _die("working tree is not clean; commit or stash first, then re-run")
-    if _git("tag", "--list", tag, capture=True):
-        _die(f"tag {tag} already exists")
-    if version == stamp_version.read_version():
-        _die(f"version is already {version}; bump to a new version")
-
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD", capture=True)
+    if _remote_has("--tags", tag):
+        _die(f"tag {tag} already exists on origin (already released?)")
+    if _remote_has("--heads", branch) or _ref_exists(f"refs/heads/{branch}"):
+        _die(f"branch {branch} already exists; delete it or pick a new version")
 
     if dry_run:
-        print(f"[dry-run] preconditions pass for {tag} on {branch}. Would:")
-        print(f"  1. bump to {version} in __init__.py, pyproject.toml, desktop/package.json")
-        print(f"  2. commit 'Release {tag}' and create tag {tag}")
-        print(f"  3. push {branch} + {tag} to origin (triggers release.yml)")
+        print(f"[dry-run] would prepare release {tag} (current version: {current}). Would:")
+        print(f"  1. branch {branch} off origin/{_DEFAULT_BRANCH}")
+        print(f"  2. bump to {version} in __init__.py, pyproject.toml, desktop/package.json")
+        print(f"  3. commit 'Release {tag}', push {branch}, open a PR into {_DEFAULT_BRANCH}")
+        print(f"then, after the PR merges: make release-tag VERSION={version}")
         print("nothing was changed.")
         return 0
 
-    # --- bump ---------------------------------------------------------------
+    # --- branch off the latest origin/main + bump ---------------------------
+    start = _git("rev-parse", "--abbrev-ref", "HEAD", capture=True)
+    _git("fetch", "origin", _DEFAULT_BRANCH)
+    _git("checkout", "-b", branch, f"origin/{_DEFAULT_BRANCH}")
+
     _replace_once(
         _INIT,
         r'^__version__\s*=\s*["\'][^"\']+["\']',
@@ -107,23 +177,95 @@ def main(argv: list[str]) -> int:
         "version",
     )
     stamp_version.stamp()  # desktop/package.json
-    print(f"bumped to {version}: __init__.py, pyproject.toml, desktop/package.json")
-
-    # --- commit / tag / push ------------------------------------------------
-    _git("add", "src/job_applier/__init__.py", "pyproject.toml", "desktop/package.json")
+    _git("add", _INIT_REL, "pyproject.toml", "desktop/package.json")
     _git("commit", "-m", f"Release {tag}")
-    _git("tag", tag)
-    print(f"committed and tagged {tag} on {branch}")
+    _git("push", "-u", "origin", branch)
+    print(f"pushed {branch} with the {version} bump")
 
-    _git("push", "origin", "HEAD")
-    _git("push", "origin", tag)
+    # --- open the PR (best-effort: the branch is already safe on origin) -----
+    body = (
+        f"Version bump to **{version}** "
+        "(`__init__.py`, `pyproject.toml`, `desktop/package.json`).\n\n"
+        f"After this merges, tag the release: `make release-tag VERSION={version}`."
+    )
+    try:
+        url = _gh(
+            "pr", "create",
+            "--base", _DEFAULT_BRANCH,
+            "--head", branch,
+            "--title", f"Release {tag}",
+            "--body", body,
+            capture=True,
+        )
+        print(f"opened PR: {url}")
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        slug = _repo_slug()
+        where = (
+            f"https://github.com/{slug}/compare/{_DEFAULT_BRANCH}...{branch}?expand=1"
+            if slug
+            else f"a PR from {branch} into {_DEFAULT_BRANCH}"
+        )
+        print(f"warning: could not open the PR automatically ({exc}); open it manually:\n  {where}")
+
+    _git("checkout", start)  # the bump is safe on the pushed branch; return to where we were
     print(
-        f"\npushed {branch} + {tag}. The release workflow is now building.\n"
-        f"When it finishes, publish the DRAFT release at:\n"
-        f"  https://github.com/hhagely/job-applier/releases"
+        f"\nprepared {tag}. Merge the PR, then run:\n"
+        f"  make release-tag VERSION={version}"
     )
     return 0
 
 
+def tag_release(argv: list[str]) -> int:
+    """Phase 2: verify the bump merged into main, then tag it and push the tag."""
+    version, dry_run = _parse(argv, "tag")
+    tag = f"v{version}"
+
+    _git("fetch", "origin", _DEFAULT_BRANCH, "--tags")
+    if _remote_has("--tags", tag):
+        _die(f"tag {tag} already exists on origin (already released?)")
+    if _ref_exists(f"refs/tags/{tag}"):
+        _die(f"local tag {tag} already exists; remove it with: git tag -d {tag}")
+
+    main_version = _version_at(f"origin/{_DEFAULT_BRANCH}")
+    if main_version != version:
+        _die(
+            f"origin/{_DEFAULT_BRANCH} is at version {main_version}, not {version}; "
+            f"merge the release PR first (make release VERSION={version})"
+        )
+    sha = _git("rev-parse", f"origin/{_DEFAULT_BRANCH}", capture=True)
+
+    if dry_run:
+        print(f"[dry-run] origin/{_DEFAULT_BRANCH} is at {version} ({sha[:9]}). Would:")
+        print(f"  tag {sha[:9]} as {tag} and push it to origin (triggers release.yml)")
+        print("nothing was changed.")
+        return 0
+
+    _git("tag", tag, sha)
+    _git("push", "origin", tag)
+    slug = _repo_slug()
+    releases = f"https://github.com/{slug}/releases" if slug else "the Releases page"
+    print(
+        f"pushed {tag}. The release workflow is now building.\n"
+        f"When it finishes, publish the DRAFT release at:\n  {releases}"
+    )
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2 or argv[1] in {"-h", "--help"}:
+        _die("usage: release.py {prepare|tag} X.Y.Z [--dry-run]")
+    sub, rest = argv[1], argv[2:]
+    if sub == "prepare":
+        return prepare(rest)
+    if sub == "tag":
+        return tag_release(rest)
+    _die(f"unknown subcommand '{sub}' (expected 'prepare' or 'tag')")
+    return 2  # unreachable; _die raises
+
+
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    try:
+        raise SystemExit(main(sys.argv))
+    except subprocess.CalledProcessError as exc:
+        # A git/gh command failed; show a one-line reason, not a Python traceback.
+        _die(f"command failed (exit {exc.returncode}): {' '.join(map(str, exc.cmd))}")
