@@ -49,7 +49,8 @@ class GreenhouseSource:
 
 def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
     title = (item.get("title") or "").strip()
-    if not title:
+    job_id = item.get("id")
+    if not title or not job_id:
         return
 
     location_name = (item.get("location") or {}).get("name", "") or ""
@@ -70,7 +71,7 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
 
     yield RawJob(
         source="greenhouse",
-        source_id=f"{company_slug}:{item['id']}",
+        source_id=f"{company_slug}:{job_id}",
         url=item.get("absolute_url") or "",
         title=title,
         company_name=item.get("company_name") or company_slug.replace("-", " ").title(),

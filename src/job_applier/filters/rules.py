@@ -288,9 +288,27 @@ _US_HINT_CI = re.compile(
 )
 _US_HINT_CS = re.compile(r"\bUS\b|\bUS[-\s]")
 
+# A comma-preceded 2-letter US-state code ("Austin, TX") is a strong US signal in
+# a location field, so it shouldn't be dropped just because the string omits an
+# explicit country. Case-sensitive (uppercase) + comma-anchored so it can't fire
+# on lowercase English words ("in"/"or"/"me") the way a bare \bST\b would. The set
+# is disjoint from Canadian province codes (ON/BC/AB/...), so "Toronto, ON" is
+# still correctly treated as non-US. Full state *names* are handled separately by
+# the state allow-list rule below.
+_US_STATE_ABBREVS = (
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS "
+    "MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV "
+    "WI WY DC"
+).split()
+_US_STATE_ABBREV = re.compile(r",\s*(" + "|".join(_US_STATE_ABBREVS) + r")\b")
+
 
 def _has_us_hint(location: str) -> bool:
-    return bool(_US_HINT_CI.search(location) or _US_HINT_CS.search(location))
+    return bool(
+        _US_HINT_CI.search(location)
+        or _US_HINT_CS.search(location)
+        or _US_STATE_ABBREV.search(location)
+    )
 
 
 # A "City, X[, Y]" pattern. Used as a fallback signal: any specific-place

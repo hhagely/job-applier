@@ -8,7 +8,26 @@ null character"). _normalize strips them at the source.
 
 from __future__ import annotations
 
+import pytest
+
 from job_applier import resume_io
+
+
+def test_extract_text_raises_valueerror_when_page_extraction_fails(monkeypatch):
+    # A PDF that *constructs* but has a malformed content stream raises while
+    # iterating pages / extracting text — that must surface as ValueError (so the
+    # endpoint returns 422), not escape as an opaque 500.
+    class _BadPage:
+        def extract_text(self):
+            raise RuntimeError("malformed content stream")
+
+    class _BadReader:
+        def __init__(self, *args, **kwargs):
+            self.pages = [_BadPage()]
+
+    monkeypatch.setattr(resume_io, "PdfReader", _BadReader)
+    with pytest.raises(ValueError, match="could not read PDF"):
+        resume_io.extract_text(b"%PDF-1.4 ...")
 
 
 def test_normalize_strips_null_and_control_chars():

@@ -16,12 +16,16 @@ def extract_text(pdf_bytes: bytes) -> tuple[str, int]:
     """Return (text, page_count). Raises ValueError if the PDF is unreadable."""
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
+        # Iterating reader.pages and page.extract_text() can also raise on a
+        # PDF that constructs but has a malformed content stream, so keep the
+        # whole extraction inside the guard (else the caller gets a 500).
+        pages = [page.extract_text() or "" for page in reader.pages]
+        page_count = len(reader.pages)
     except Exception as exc:  # pypdf raises a variety of types
         raise ValueError(f"could not read PDF: {exc}") from exc
 
-    pages = [page.extract_text() or "" for page in reader.pages]
     text = _normalize("\n\n".join(pages))
-    return text, len(reader.pages)
+    return text, page_count
 
 
 def save_pdf(pdf_bytes: bytes, original_filename: str) -> Path:

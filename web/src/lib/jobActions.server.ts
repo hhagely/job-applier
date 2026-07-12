@@ -14,6 +14,17 @@ function resolveId(source: JobIdSource, event: RequestEvent, form: FormData): nu
 	return source === 'param' ? Number(event.params.id) : Number(form.get('job_id'));
 }
 
+/** Parse the optional `next_followup_at` field into an ISO string.
+ *  Returns `undefined` when absent/blank, or `null` when present but
+ *  unparseable — so callers can `fail(400)` instead of letting a bad date make
+ *  `new Date(x).toISOString()` throw a RangeError (an unhandled 500). */
+export function parseFollowup(raw: FormDataEntryValue | null): string | null | undefined {
+	const s = typeof raw === 'string' ? raw.trim() : '';
+	if (!s) return undefined;
+	const d = new Date(s);
+	return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 /** The five shared job actions, wired to read the id from `source`. Spread the
  *  result into a route's `actions` (alongside any route-only actions). */
 export function jobActions(source: JobIdSource) {
@@ -25,8 +36,8 @@ export function jobActions(source: JobIdSource) {
 			const status = String(form.get('status') ?? '') as ApplicationStatus;
 			if (!APPLICATION_STATUSES.includes(status)) return fail(400, { error: 'invalid status' });
 			const notes = (form.get('notes') as string | null) || undefined;
-			const followupRaw = (form.get('next_followup_at') as string | null) || '';
-			const next_followup_at = followupRaw ? new Date(followupRaw).toISOString() : undefined;
+			const next_followup_at = parseFollowup(form.get('next_followup_at'));
+			if (next_followup_at === null) return fail(400, { error: 'invalid follow-up date' });
 			try {
 				await api.setStatus(event.fetch, serverApiBase(), id, status, { notes, next_followup_at });
 				return { ok: true };

@@ -10,10 +10,15 @@ from __future__ import annotations
 
 from xml.etree import ElementTree as ET
 
+from job_applier.contracts import html_to_text
 from job_applier.sources.ashby import _normalize as ashby_normalize
-from job_applier.sources.base import parse_date_multi, parse_iso_date
+from job_applier.sources.base import looks_remote, parse_date_multi, parse_iso_date
 from job_applier.sources.greenhouse import _normalize as greenhouse_normalize
-from job_applier.sources.hackernews import _html_to_text, _parse_header
+from job_applier.sources.hackernews import (
+    _html_to_text,
+    _normalize_thread,
+    _parse_header,
+)
 from job_applier.sources.lever import _normalize as lever_normalize
 from job_applier.sources.jibe import _normalize as jibe_normalize
 from job_applier.sources.oracle import (
@@ -36,6 +41,24 @@ from job_applier.sources.ycombinator import (
     _extract_jobposting_ld,
     _split_hn_title,
 )
+
+
+class TestSharedHelpers:
+    def test_looks_remote_matches_any_fragment_case_insensitively(self):
+        assert looks_remote("San Francisco, CA", "US Remote") is True
+        assert looks_remote("REMOTE") is True
+        assert looks_remote("Austin, TX", None) is False
+        assert looks_remote() is False
+
+    def test_html_to_text_flattens_blocks_and_unescapes(self):
+        out = html_to_text("<p>Hello &amp; <a href='x'>world</a></p><div>Line 2</div>")
+        assert "Hello & world" in out
+        assert "Line 2" in out
+        assert "<" not in out
+
+    def test_html_to_text_empty_input(self):
+        assert html_to_text("") == ""
+        assert html_to_text(None) == ""
 
 
 class TestSharedDateParsing:
@@ -265,6 +288,10 @@ class TestGreenhouse:
     def test_blank_title_skipped(self):
         assert list(greenhouse_normalize("co", {"id": 1, "title": ""})) == []
 
+    def test_missing_id_skipped(self):
+        # A job missing `id` is dropped (not KeyError-ing the whole board).
+        assert list(greenhouse_normalize("co", {"title": "Engineer", "content": ""})) == []
+
 
 class TestLever:
     def test_basic_normalization(self):
@@ -314,6 +341,9 @@ class TestLever:
     def test_blank_title_skipped(self):
         assert list(lever_normalize("co", {"id": "x", "text": ""})) == []
 
+    def test_missing_id_skipped(self):
+        assert list(lever_normalize("co", {"text": "Engineer", "categories": {}})) == []
+
 
 class TestAshby:
     def test_basic_normalization(self):
@@ -357,6 +387,9 @@ class TestAshby:
     def test_blank_title_skipped(self):
         item = {"id": "x", "title": ""}
         assert list(ashby_normalize("Co", item)) == []
+
+    def test_missing_id_skipped(self):
+        assert list(ashby_normalize("Co", {"title": "Engineer"})) == []
 
 
 class TestWorkday:
@@ -683,6 +716,10 @@ class TestHackerNewsParser:
         assert company is not None
         assert location is None
 
+    def test_normalize_thread_ignores_non_dict_payload(self):
+        # A thread payload that came back as a list (not a dict) must not raise.
+        assert list(_normalize_thread([], None)) == []
+
 
 class TestWorkable:
     def test_basic_normalization_with_remote(self):
@@ -796,6 +833,10 @@ class TestSmartRecruiters:
     def test_missing_id_or_name_returns_none(self):
         assert sr_normalize("Co", {"name": "X"}) is None
         assert sr_normalize("Co", {"id": "1"}) is None
+
+    def test_non_dict_detail_returns_none(self):
+        # A detail payload that came back as a list (not a dict) must not raise.
+        assert sr_normalize("Co", []) is None
 
 
 class TestJibe:

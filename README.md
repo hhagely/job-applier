@@ -142,7 +142,7 @@ src/job_applier/
   models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
   sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters, Jibe, Oracle, RemoteOK, WWR, HN, YC)
   ingest.py    # Pipeline: fetch → dedupe (per-source, cross-source, JD-SimHash) → filter → persist
-  drafts.py    # Tailored resume / cover-letter markdown + weasyprint PDF rendering
+  drafts.py    # Tailored resume / cover-letter markdown + PDF persistence (rendering in pdf.py)
   resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
   config.py    # Settings (paths, ports, DB location)

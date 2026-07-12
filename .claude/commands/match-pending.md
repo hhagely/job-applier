@@ -59,8 +59,8 @@ subscription instead of paying for API tokens.
 The rubric (five buckets summing to 100), the hard rules, and the strict-JSON output
 shape are defined **once** in [`src/job_applier/ai/prompts/score.md`](../../src/job_applier/ai/prompts/score.md)
 so this command and the in-app "Score pending" button can't drift. Read that file and
-apply it verbatim: it carries the bucket weights, the hard rules (Angular-primary,
-fake-remote, below-Senior, Missouri state allow-lists), the two-to-three-sentence
+apply it verbatim: it carries the bucket weights, the hard rules (fake-remote,
+below-Senior, Missouri state allow-list), the two-to-three-sentence
 reasoning guidance, and the exact JSON object shape you POST as `rubric` + `score` +
 `reasoning`. The `{{RESUME_TEXT}}` / `{{TITLE}}` / `{{COMPANY}}` / `{{LOCATION}}` /
 `{{DESCRIPTION}}` placeholders map to the resume text and each queue item's fields.

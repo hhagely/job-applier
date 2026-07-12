@@ -75,7 +75,10 @@ def _fetch_latest_tag() -> str | None:
         follow_redirects=True,
     )
     resp.raise_for_status()
-    return resp.json().get("tag_name")
+    data = resp.json()
+    if not isinstance(data, dict):
+        return None
+    return data.get("tag_name")
 
 
 def check_for_update(*, force: bool = False) -> dict:

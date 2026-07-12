@@ -6,17 +6,16 @@ of truth in ``prompts/score.md``).
 
 from __future__ import annotations
 
-import html
-import re
 from dataclasses import dataclass
-from importlib import resources
 from typing import Callable, Optional
 
 from pydantic import BaseModel, Field
 
 from job_applier import services
 from job_applier.ai import prompt_safety, providers
+from job_applier.ai.templates import load_template, render_job_prompt
 from job_applier.config import settings
+from job_applier.contracts import html_to_text
 from job_applier.models.db import ApplicationStatus, JobPosting, Session, engine
 
 # Below this score a job is auto-archived after scoring (60 itself survives).
@@ -31,9 +30,6 @@ BATCH_MAX_JOBS = 8
 # batch of one (i.e. the single-job path), losing no content.
 BATCH_JD_CHAR_BUDGET = 24_000
 
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
 class NoActiveResume(Exception):
     """No active resume to score against."""
 
@@ -42,50 +38,9 @@ class ScoringError(Exception):
     """The provider output couldn't be parsed/validated into a score."""
 
 
-def html_to_text(s: str) -> str:
-    """Flatten a scraped HTML job description to readable plain text."""
-    if not s:
-        return ""
-    s = re.sub(r"<\s*/?(p|div|li|h[1-6])\s*>", "\n", s, flags=re.IGNORECASE)
-    s = re.sub(r"<\s*br\s*/?\s*>", "\n", s, flags=re.IGNORECASE)
-    s = _TAG_RE.sub("", s)
-    s = html.unescape(s)
-    # Collapse runs of blank lines the tag substitution can create.
-    return re.sub(r"\n{3,}", "\n\n", s).strip()
-
-
-# ---- prompt template ------------------------------------------------------
-
-_template_cache: dict[str, str] = {}
-
-
-def _template(name: str = "score.md") -> str:
-    cached = _template_cache.get(name)
-    if cached is None:
-        cached = (
-            resources.files("job_applier.ai")
-            .joinpath(f"prompts/{name}")
-            .read_text(encoding="utf-8")
-        )
-        _template_cache[name] = cached
-    return cached
-
-
 def build_score_prompt(resume_text: str, job: JobPosting) -> str:
-    """Render the score prompt for one job. Description HTML is flattened, then fenced
-    as untrusted data with a per-call nonce so an injected instruction in the posting
-    can't escape its block (see :mod:`prompt_safety`)."""
-    nonce = prompt_safety.new_nonce()
-    description = prompt_safety.clean_untrusted(html_to_text(job.description or ""), nonce)
-    return (
-        _template()
-        .replace("{{RESUME_TEXT}}", resume_text.strip())
-        .replace("{{TITLE}}", job.title or "")
-        .replace("{{COMPANY}}", job.company.name if job.company else "Unknown")
-        .replace("{{LOCATION}}", job.location or "Not specified")
-        .replace("{{NONCE}}", nonce)
-        .replace("{{DESCRIPTION}}", description)
-    )
+    """Render the score prompt for one job (shared single-job render)."""
+    return render_job_prompt("score.md", resume_text, job)
 
 
 def _job_block(job: JobPosting, nonce: str) -> str:
@@ -116,7 +71,7 @@ def build_batch_score_prompt(resume_text: str, jobs: list[JobPosting]) -> str:
     nonce = prompt_safety.new_nonce()
     jobs_block = "\n\n".join(_job_block(j, nonce) for j in jobs)
     return (
-        _template("score_batch.md")
+        load_template("score_batch.md")
         .replace("{{RESUME_TEXT}}", resume_text.strip())
         .replace("{{NONCE}}", nonce)
         .replace("{{JOBS_BLOCK}}", jobs_block)
@@ -223,10 +178,9 @@ def _is_untriaged(job: JobPosting) -> bool:
 
 def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> ScoredPayload:
     """Run the provider and parse strict JSON into a ScoredPayload."""
-    try:
-        return providers.run_json(provider, prompt, ScoredPayload, model=model)
-    except providers.ProviderJSONError as exc:
-        raise ScoringError(f"invalid JSON after retry: {exc}") from exc
+    return providers.run_json_or(
+        provider, prompt, ScoredPayload, error_cls=ScoringError, label="score", model=model
+    )
 
 
 def _persist_score(
@@ -282,20 +236,19 @@ def _score_batch_call(
     underlying ``ProviderError`` / ``ScoringError`` on a total failure (provider error
     or unparseable JSON after retry) so the caller can fall the *whole* batch back."""
     prompt = build_batch_score_prompt(resume_text, jobs)
-    try:
-        payload = providers.run_json(
-            provider,
-            prompt,
-            BatchScoredPayload,
-            model=model,
-            timeout=settings.ai_score_batch_timeout,
-            nudge=(
-                "IMPORTANT: return ONLY the JSON object with a `results` array, one "
-                "entry per job id, each with its `id` and `score`."
-            ),
-        )
-    except providers.ProviderJSONError as exc:
-        raise ScoringError(f"invalid batch JSON after retry: {exc}") from exc
+    payload = providers.run_json_or(
+        provider,
+        prompt,
+        BatchScoredPayload,
+        error_cls=ScoringError,
+        label="batch",
+        model=model,
+        timeout=settings.ai_score_batch_timeout,
+        nudge=(
+            "IMPORTANT: return ONLY the JSON object with a `results` array, one "
+            "entry per job id, each with its `id` and `score`."
+        ),
+    )
 
     wanted = {j.id for j in jobs}
     out: dict[int, ScoredPayload] = {}

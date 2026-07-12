@@ -150,7 +150,7 @@ A focused sweep for swallowed errors, unhandled failure paths, and incomplete re
 1. **Read [CLAUDE.md](../../../CLAUDE.md)** for error-handling / logging conventions.
 
 2. **Fallible sinks — grep and audit across every source file:**
-   - Python: `httpx` calls, `Response.raise_for_status`, `pypdf.PdfReader(...)`, `weasyprint.HTML(...).write_pdf(...)`, `json.loads(...)`, `Path(...).read_text(...)`, `Session.exec(...).one()`, subprocess calls. Report unguarded sinks; the worst offenders (data paths in `ingest.py`, `drafts.py`, source adapters) → `critical`.
+   - Python: `httpx` calls, `Response.raise_for_status`, `pypdf.PdfReader(...)`, `pdf.render_to_pdf(...)` (headless Chromium/Electron), `json.loads(...)`, `Path(...).read_text(...)`, `Session.exec(...).one()`, subprocess calls. Report unguarded sinks; the worst offenders (data paths in `ingest.py`, `drafts.py`, source adapters) → `critical`.
    - TypeScript / SvelteKit: `await request.json()` / `request.formData()` in actions without try/catch, `fetch(...)` without `.ok` checks, loaders/actions with implicit `undefined` returns. Report locations; `warning`.
 
 3. **Swallowed errors:**

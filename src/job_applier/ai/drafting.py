@@ -9,14 +9,14 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass, field
-from importlib import resources
 from pathlib import Path
 from typing import Callable, Optional
 
 from pydantic import BaseModel, model_validator
 
 from job_applier import services
-from job_applier.ai import bans, prompt_safety, providers, scoring
+from job_applier.ai import bans, providers, scoring
+from job_applier.ai.templates import render_job_prompt
 from job_applier.config import settings
 from job_applier.models.db import ApplicationStatus, JobPosting, Session
 
@@ -56,48 +56,22 @@ class DraftResult:
     stages: list[str] = field(default_factory=list)
 
 
-_template_cache: Optional[str] = None
-
-
-def _template() -> str:
-    global _template_cache
-    if _template_cache is None:
-        _template_cache = (
-            resources.files("job_applier.ai")
-            .joinpath("prompts/draft.md")
-            .read_text(encoding="utf-8")
-        )
-    return _template_cache
-
-
 def build_draft_prompt(resume_text: str, job: JobPosting) -> str:
-    nonce = prompt_safety.new_nonce()
-    description = prompt_safety.clean_untrusted(
-        scoring.html_to_text(job.description or ""), nonce
-    )
-    return (
-        _template()
-        .replace("{{RESUME_TEXT}}", resume_text.strip())
-        .replace("{{TITLE}}", job.title or "")
-        .replace("{{COMPANY}}", job.company.name if job.company else "Unknown")
-        .replace("{{LOCATION}}", job.location or "Not specified")
-        .replace("{{NONCE}}", nonce)
-        .replace("{{DESCRIPTION}}", description)
-    )
+    """Render the draft prompt for one job (shared single-job render)."""
+    return render_job_prompt("draft.md", resume_text, job)
 
 
 def _run_and_parse(provider: str, prompt: str, model: Optional[str]) -> DraftEnvelope:
-    try:
-        return providers.run_json(
-            provider,
-            prompt,
-            DraftEnvelope,
-            model=model,
-            timeout=settings.ai_draft_timeout,
-            nudge="IMPORTANT: return ONLY the JSON object with resume_md and cover_letter_md.",
-        )
-    except providers.ProviderJSONError as exc:
-        raise DraftingError(f"invalid draft JSON after retry: {exc}") from exc
+    return providers.run_json_or(
+        provider,
+        prompt,
+        DraftEnvelope,
+        error_cls=DraftingError,
+        label="draft",
+        model=model,
+        timeout=settings.ai_draft_timeout,
+        nudge="IMPORTANT: return ONLY the JSON object with resume_md and cover_letter_md.",
+    )
 
 
 def _render_html_to_pdf(html: str) -> bytes:
@@ -105,14 +79,16 @@ def _render_html_to_pdf(html: str) -> bytes:
     no running server is needed (same CSS/seam as the Phase 2 endpoint)."""
     from job_applier import pdf
 
-    with tempfile.NamedTemporaryFile(
+    tmp = tempfile.NamedTemporaryFile(
         "w", suffix=".html", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(html)
-        path = f.name
+    )
+    path = tmp.name
     try:
+        with tmp:
+            tmp.write(html)
         return pdf.render_to_pdf(Path(path).as_uri())
     finally:
+        # Capture the path before writing so a failed write can't leak the file.
         os.unlink(path)
 
 

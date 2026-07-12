@@ -48,7 +48,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from job_applier.sources.base import RawJob, parse_date_multi
+from job_applier.sources.base import TITLE_GATE, RawJob, parse_date_multi
 
 log = logging.getLogger(__name__)
 
@@ -56,15 +56,6 @@ log = logging.getLogger(__name__)
 # through per site, so a misbehaving tenant can't spin forever.
 PAGE_SIZE = 100
 MAX_POSTINGS = 4000
-
-# Senior + engineering title gate, applied before the detail fetch. Mirrors the
-# Workday adapter's gate -- cheap pre-filter; anything that passes still goes
-# through the full filter pipeline downstream.
-TITLE_GATE = re.compile(
-    r"\b(senior|sr\.?|staff|principal|lead|architect|distinguished|head\s+of)\b.*?"
-    r"\b(engineer|developer|architect|sde|swe)\b",
-    re.IGNORECASE,
-)
 
 # Explicit "this is a remote role" markers in the title or description. Many
 # Oracle tenants (Oracle Health, notably) leave ``WorkplaceType`` blank and

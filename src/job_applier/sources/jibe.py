@@ -35,7 +35,7 @@ from collections.abc import Iterable
 
 import httpx
 
-from job_applier.sources.base import RawJob, parse_iso_date
+from job_applier.sources.base import RawJob, looks_remote, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +69,9 @@ class JibeSource:
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("jibe[%s] page %d fetch failed: %s", tenant, page, e)
                 return
+            if not isinstance(payload, dict):
+                log.warning("jibe[%s] page %d returned non-object payload, stopping", tenant, page)
+                return
             jobs = payload.get("jobs") or []
             if not jobs:
                 return
@@ -97,7 +100,7 @@ def _normalize(tenant: str, item: dict) -> RawJob | None:
         or item.get("full_location")
         or item.get("short_location")
     )
-    remote = "remote" in (location or "").lower()
+    remote = looks_remote(location)
 
     description_parts = [
         item.get("description") or "",

@@ -21,7 +21,6 @@ manually rather than silently dropping signal.
 
 from __future__ import annotations
 
-import html
 import logging
 import re
 from collections.abc import Iterable
@@ -29,6 +28,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from job_applier.contracts import html_to_text as _html_to_text
 from job_applier.sources.base import RawJob, parse_iso_date
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,6 @@ MAX_THREADS = 2
 
 REMOTE_HINT = re.compile(r"\bremote\b", re.IGNORECASE)
 ONSITE_HINT = re.compile(r"\b(on[\s-]?site|hybrid|in[\s-]?office)\b", re.IGNORECASE)
-TAG_RE = re.compile(r"<[^>]+>")
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 
@@ -78,7 +77,8 @@ def _find_hiring_threads(
         },
     )
     resp.raise_for_status()
-    hits = resp.json().get("hits", [])
+    data = resp.json()
+    hits = data.get("hits", []) if isinstance(data, dict) else []
     threads: list[tuple[int, datetime | None]] = []
     for h in hits:
         title = (h.get("title") or "").lower()
@@ -98,6 +98,8 @@ def _find_hiring_threads(
 def _normalize_thread(
     thread: dict, thread_created: datetime | None
 ) -> Iterable[RawJob]:
+    if not isinstance(thread, dict):
+        return
     thread_id = thread.get("id")
     for child in thread.get("children") or []:
         if not isinstance(child, dict):
@@ -210,17 +212,6 @@ def _derive_title(company: str | None, plain: str) -> str | None:
 def _first_url(text: str) -> str | None:
     m = URL_RE.search(text)
     return m.group(0) if m else None
-
-
-def _html_to_text(s: str) -> str:
-    if not s:
-        return ""
-    # HN comments use <p> for paragraphs and <a href="...">...</a> for links.
-    # Replace block tags with newlines, drop the rest, then unescape entities.
-    s = re.sub(r"<\s*/?p\s*>", "\n", s, flags=re.IGNORECASE)
-    s = re.sub(r"<\s*br\s*/?\s*>", "\n", s, flags=re.IGNORECASE)
-    s = TAG_RE.sub("", s)
-    return html.unescape(s).strip()
 
 
 def _looks_remote(html_text: str) -> bool:

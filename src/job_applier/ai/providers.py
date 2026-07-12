@@ -457,3 +457,23 @@ def run_json(
         except (ValueError, ValidationError) as exc:
             last_err = exc
     raise ProviderJSONError(str(last_err))
+
+
+def run_json_or(
+    name: str,
+    prompt: str,
+    schema: type[_ModelT],
+    *,
+    error_cls: type[Exception],
+    label: str,
+    **kwargs,
+) -> _ModelT:
+    """``run_json`` but map a ``ProviderJSONError`` to ``error_cls`` (the flow's own
+    exception) with a labeled message. The scoring, drafting, and suggest flows each
+    wrapped ``run_json`` in the identical ``try/except`` to re-raise their own error;
+    this centralizes that last per-flow copy.
+    """
+    try:
+        return run_json(name, prompt, schema, **kwargs)
+    except ProviderJSONError as exc:
+        raise error_cls(f"invalid {label} JSON after retry: {exc}") from exc
