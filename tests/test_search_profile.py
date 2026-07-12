@@ -213,6 +213,49 @@ def test_load_active_config_uses_stored_lists(db_session):
     assert not cfg.seniority_re.search("Senior Engineer")
 
 
+def test_default_config_has_no_home_state():
+    # The built-in default must not assume any state — the rule is off until the
+    # user configures one.
+    assert _BUILTIN_DEFAULT.home_state is None
+    assert _BUILTIN_DEFAULT.home_state_abbr is None
+
+
+def test_load_active_config_carries_home_state(db_session):
+    db_session.add(
+        SearchProfile(
+            role_titles=[],
+            seniority_terms=["senior"],
+            required_tech=["rust"],
+            excluded_tech=[],
+            home_state="Missouri",
+        )
+    )
+    db_session.commit()
+    cfg = load_active_config(db_session)
+    assert cfg.home_state == "Missouri"
+    assert cfg.home_state_abbr == "MO"
+
+
+def test_load_active_config_keeps_home_state_when_tech_lists_empty(db_session):
+    # Fresh-install shape: onboarding saves a home state before any roles/tech are
+    # configured. The empty-list fallback (which uses the built-in role/tech
+    # defaults) must still honor the chosen state — otherwise the very first
+    # ingest silently skips the state-allow-list rule the wizard just set up.
+    db_session.add(
+        SearchProfile(
+            role_titles=[],
+            seniority_terms=[],
+            required_tech=[],
+            excluded_tech=[],
+            home_state="Missouri",
+        )
+    )
+    db_session.commit()
+    cfg = load_active_config(db_session)
+    assert cfg.home_state == "Missouri"
+    assert cfg.home_state_abbr == "MO"
+
+
 # ---------------------------------------------------------------------------
 # HTTP API
 # ---------------------------------------------------------------------------
@@ -261,6 +304,9 @@ def test_put_profile_round_trips(client):
     assert put_body["required_tech"] == payload["required_tech"]
     assert put_body["id"] is not None
 
+    # home_state defaults to None when the payload omits it.
+    assert put_body["home_state"] is None
+
     # A subsequent PUT overwrites the same row (singleton, not append).
     second = c.put(
         "/api/search-profile",
@@ -268,6 +314,41 @@ def test_put_profile_round_trips(client):
     ).json()
     assert second["id"] == put_body["id"]
     assert second["role_titles"] == ["Staff Backend Engineer"]
+
+
+def test_put_profile_normalizes_and_clears_home_state(client):
+    c, _ = client
+    base = {
+        "role_titles": [],
+        "seniority_terms": ["senior"],
+        "required_tech": ["typescript"],
+        "excluded_tech": [],
+        "extracted_skills": [],
+    }
+    # A two-letter code is normalized to the canonical full name.
+    body = c.put("/api/search-profile", json={**base, "home_state": "mo"}).json()
+    assert body["home_state"] == "Missouri"
+
+    # A subsequent PUT with a blank value clears it back to None.
+    cleared = c.put("/api/search-profile", json={**base, "home_state": ""}).json()
+    assert cleared["home_state"] is None
+
+
+def test_put_profile_rejects_unknown_home_state(client):
+    c, _ = client
+    resp = c.put(
+        "/api/search-profile",
+        json={
+            "role_titles": [],
+            "seniority_terms": ["senior"],
+            "required_tech": ["typescript"],
+            "excluded_tech": [],
+            "extracted_skills": [],
+            "home_state": "Ontario",
+        },
+    )
+    assert resp.status_code == 422
+    assert "Ontario" in resp.json()["detail"]
 
 
 def test_post_recommendations_does_not_mutate_active_fields(client):

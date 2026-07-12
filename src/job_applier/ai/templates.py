@@ -31,12 +31,20 @@ def load_template(name: str) -> str:
     return cached
 
 
-def render_job_prompt(template_name: str, resume_text: str, job: JobPosting) -> str:
+def render_job_prompt(
+    template_name: str,
+    resume_text: str,
+    job: JobPosting,
+    *,
+    state_rule: str = "",
+) -> str:
     """Render a single-job prompt (score or draft) from ``template_name``.
 
     The JD HTML is flattened to text, then fenced as untrusted data with a per-call
     nonce so an injected instruction in the posting can't escape its block (see
-    :mod:`prompt_safety`).
+    :mod:`prompt_safety`). ``state_rule`` fills the ``{{STATE_RULE}}`` placeholder in
+    the score templates (the home-state allow-list hard rule) and is empty for
+    templates that don't carry the placeholder (e.g. ``draft.md``).
     """
     nonce = prompt_safety.new_nonce()
     description = prompt_safety.clean_untrusted(html_to_text(job.description or ""), nonce)
@@ -47,5 +55,6 @@ def render_job_prompt(template_name: str, resume_text: str, job: JobPosting) -> 
         .replace("{{COMPANY}}", job.company.name if job.company else "Unknown")
         .replace("{{LOCATION}}", job.location or "Not specified")
         .replace("{{NONCE}}", nonce)
+        .replace("{{STATE_RULE}}", state_rule)
         .replace("{{DESCRIPTION}}", description)
     )

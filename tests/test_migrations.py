@@ -57,6 +57,16 @@ CREATE TABLE matchscorehistory (
     scored_at DATETIME,
     resume_id INTEGER
 );
+CREATE TABLE searchprofile (
+    id INTEGER PRIMARY KEY,
+    role_titles JSON,
+    seniority_terms JSON,
+    required_tech JSON,
+    excluded_tech JSON,
+    extracted_skills JSON,
+    recommendations_draft JSON,
+    updated_at DATETIME
+);
 """
 
 
@@ -127,6 +137,13 @@ def test_migration_adds_score_kind_to_both_score_tables(tmp_path, monkeypatch):
     assert "ix_matchscorehistory_score_kind" in _indexes(db_path, "matchscorehistory")
 
 
+def test_migration_adds_searchprofile_home_state(tmp_path, monkeypatch):
+    # A legacy searchprofile row (pre-home_state) gets the nullable column added,
+    # so an upgraded DB can store a home state instead of silently lacking it.
+    db_path, _ = _run_startup(tmp_path, monkeypatch)
+    assert "home_state" in _cols(db_path, "searchprofile")
+
+
 def test_migration_is_idempotent(tmp_path, monkeypatch):
     """A second startup on the already-migrated DB is a clean no-op (every helper
     guards its ALTER behind a PRAGMA membership check)."""
@@ -153,12 +170,18 @@ def test_migrated_legacy_tables_have_every_model_column(tmp_path, monkeypatch):
     would not notice the new one.
     """
     db_path, _ = _run_startup(tmp_path, monkeypatch)
-    from job_applier.models.db import JobPosting, MatchScore, MatchScoreHistory
+    from job_applier.models.db import (
+        JobPosting,
+        MatchScore,
+        MatchScoreHistory,
+        SearchProfile,
+    )
 
     for model, table in (
         (JobPosting, "jobposting"),
         (MatchScore, "matchscore"),
         (MatchScoreHistory, "matchscorehistory"),
+        (SearchProfile, "searchprofile"),
     ):
         missing = _model_columns(model) - _cols(db_path, table)
         assert not missing, (

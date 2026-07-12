@@ -3,6 +3,7 @@
 	import { api, getApiBase, type Provider } from '$lib/api';
 	import ProviderList from '$lib/ProviderList.svelte';
 	import { taskStream } from '$lib/taskStream.svelte';
+	import { US_STATES } from '$lib/usStates';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -65,6 +66,36 @@
 	}
 
 	// --- Step 3: Fetch jobs ---------------------------------------------------
+	// Optional home state — set before the first ingest so state-restricted
+	// postings ("we can only hire in X, Y, Z") that exclude it are filtered out.
+	// Autosaved on change; merged into the existing profile so nothing is clobbered.
+	let home_state = $state(untrack(() => data.searchProfile?.home_state ?? ''));
+	let stateSaving = $state(false);
+	let stateSaved = $state(false);
+	let stateErr = $state('');
+
+	async function saveHomeState() {
+		stateSaving = true;
+		stateSaved = false;
+		stateErr = '';
+		try {
+			const cur = await api.getSearchProfile(fetch, base());
+			await api.saveSearchProfile(fetch, base(), {
+				role_titles: cur.role_titles,
+				seniority_terms: cur.seniority_terms,
+				required_tech: cur.required_tech,
+				excluded_tech: cur.excluded_tech,
+				extracted_skills: cur.extracted_skills,
+				home_state: home_state || null
+			});
+			stateSaved = true;
+		} catch (e) {
+			stateErr = e instanceof Error ? e.message : String(e);
+		} finally {
+			stateSaving = false;
+		}
+	}
+
 	let ingestState = $state<'idle' | 'running' | 'done' | 'error'>('idle');
 	let ingestProgress = $state({ done: 0, total: 0 });
 	let ingestCount = $state(0);
@@ -198,6 +229,29 @@
 					Pull jobs from every configured source. They're filtered on the way in; only roles that
 					pass your criteria are saved. This needs no AI provider — just a network connection.
 				</p>
+
+				<div class="field state-field">
+					<span>State of residence <span class="opt">(optional)</span></span>
+					<select
+						class="input state-select"
+						aria-label="State of residence"
+						bind:value={home_state}
+						onchange={saveHomeState}
+					>
+						<option value="">— Not set (don't filter by state) —</option>
+						{#each US_STATES as st (st)}
+							<option value={st}>{st}</option>
+						{/each}
+					</select>
+					<small class="state-hint">
+						Some employers can only hire in certain states. Set yours and ingest drops postings
+						whose "we can only hire in X, Y, Z" list leaves your state out. Used <strong>only</strong>
+						for this filter, stored locally, never sent anywhere. You can change it anytime on the
+						Search page.
+						{#if stateSaving}<span class="muted"> · Saving…</span>{:else if stateSaved}<span class="saved"> · Saved</span>{/if}
+					</small>
+					{#if stateErr}<span class="err-text">{stateErr}</span>{/if}
+				</div>
 
 				{#if ingestState === 'idle'}
 					<div class="ob-actions">
@@ -337,5 +391,23 @@
 		gap: 16px;
 		background: var(--bg);
 		flex-wrap: wrap;
+	}
+	.state-field {
+		margin-bottom: 18px;
+	}
+	.state-select {
+		max-width: 320px;
+	}
+	.state-hint {
+		line-height: 1.5;
+		max-width: 60ch;
+	}
+	.state-field .opt {
+		color: var(--faint);
+		font-weight: 500;
+	}
+	.saved {
+		color: var(--strong);
+		font-weight: 600;
 	}
 </style>

@@ -3,7 +3,8 @@
 Rules (drop on any failure):
   1. Must be fully remote.
   2. Location must not be non-US-only (when a country is named).
-  3. If the posting names an explicit US-state allow-list, Missouri must be in it.
+  3. If the posting names an explicit US-state allow-list, the user's configured
+     home state must be in it. Skipped when no home state is configured.
   4. Title must indicate one of the configured seniority terms.
   5. Title must not be a sales / pre-sales / biz-dev role.
   6. Posting must not be a crypto / blockchain / web3 role.
@@ -14,16 +15,18 @@ Ambiguous postings (e.g. tech implied via short tokens only, exclusion mentioned
 in description with no positive signal) are marked `manual` so the user can
 decide rather than silently dropping.
 
-The seniority / required-tech / excluded-tech lists live on ``SearchProfile`` in
-the DB and are configurable through the ``/search`` UI. If no profile row exists
-the filter falls back to ``_BUILTIN_DEFAULT`` so a fresh install still filters
-sanely.
+The seniority / required-tech / excluded-tech lists and the home state live on
+``SearchProfile`` in the DB and are configurable through the ``/search`` UI. If no
+profile row exists the filter falls back to ``_BUILTIN_DEFAULT`` so a fresh install
+still filters sanely. The home state is deliberately *not* part of the built-in
+default — an unset home state skips the state-allow-list rule rather than assuming
+any particular state, so the tool is usable by anyone regardless of where they live.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -49,6 +52,60 @@ def _alt_pattern(terms: list[str]) -> str:
     return "|".join(parts)
 
 
+# Canonical US state (+ DC) list — the single source of truth for the home-state
+# normalizer and the abbreviation lookup used by the allow-list rule. Proper-cased
+# full names are what we store on ``SearchProfile.home_state``.
+US_STATE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("Alabama", "AL"), ("Alaska", "AK"), ("Arizona", "AZ"), ("Arkansas", "AR"),
+    ("California", "CA"), ("Colorado", "CO"), ("Connecticut", "CT"), ("Delaware", "DE"),
+    ("Florida", "FL"), ("Georgia", "GA"), ("Hawaii", "HI"), ("Idaho", "ID"),
+    ("Illinois", "IL"), ("Indiana", "IN"), ("Iowa", "IA"), ("Kansas", "KS"),
+    ("Kentucky", "KY"), ("Louisiana", "LA"), ("Maine", "ME"), ("Maryland", "MD"),
+    ("Massachusetts", "MA"), ("Michigan", "MI"), ("Minnesota", "MN"), ("Mississippi", "MS"),
+    ("Missouri", "MO"), ("Montana", "MT"), ("Nebraska", "NE"), ("Nevada", "NV"),
+    ("New Hampshire", "NH"), ("New Jersey", "NJ"), ("New Mexico", "NM"), ("New York", "NY"),
+    ("North Carolina", "NC"), ("North Dakota", "ND"), ("Ohio", "OH"), ("Oklahoma", "OK"),
+    ("Oregon", "OR"), ("Pennsylvania", "PA"), ("Rhode Island", "RI"), ("South Carolina", "SC"),
+    ("South Dakota", "SD"), ("Tennessee", "TN"), ("Texas", "TX"), ("Utah", "UT"),
+    ("Vermont", "VT"), ("Virginia", "VA"), ("Washington", "WA"), ("West Virginia", "WV"),
+    ("Wisconsin", "WI"), ("Wyoming", "WY"), ("District of Columbia", "DC"),
+)
+
+STATE_ABBREV_BY_NAME: dict[str, str] = {name: abbr for name, abbr in US_STATE_CHOICES}
+# Both the lowercased full name and the lowercased abbreviation resolve to the
+# canonical proper name, so "mo", "MO", "missouri", and "Missouri" all normalize.
+_STATE_BY_KEY: dict[str, str] = {}
+for _name, _abbr in US_STATE_CHOICES:
+    _STATE_BY_KEY[_name.lower()] = _name
+    _STATE_BY_KEY[_abbr.lower()] = _name
+
+
+def normalize_home_state(raw: Optional[str]) -> Optional[str]:
+    """Normalize user-entered state input to its canonical proper name.
+
+    Accepts a full name or two-letter code, case-insensitively. Returns ``None``
+    for blank/empty input (meaning "no home state — skip the rule"), and raises
+    ``ValueError`` for a non-blank value that isn't a US state or DC so the API
+    can reject it rather than silently storing something the filter can't match.
+    """
+    if raw is None or not raw.strip():
+        return None
+    name = _STATE_BY_KEY.get(raw.strip().lower())
+    if name is None:
+        raise ValueError(f"unrecognized US state: {raw!r}")
+    return name
+
+
+def _canonical_state(raw: Optional[str]) -> Optional[str]:
+    """Best-effort canonicalization used at config-build time. Unlike
+    ``normalize_home_state`` this never raises — an unrecognized stored value is
+    returned as-is (so full-name matching can still work) rather than crashing the
+    ingest filter on a legacy/odd row. The API is the validation choke point."""
+    if raw is None or not raw.strip():
+        return None
+    return _STATE_BY_KEY.get(raw.strip().lower(), raw.strip())
+
+
 @dataclass
 class FilterConfig:
     """Compiled patterns used by ``evaluate``. Build via ``build_config`` so the
@@ -59,6 +116,11 @@ class FilterConfig:
     seniority_terms: list[str] = field(default_factory=list)
     required_tech: list[str] = field(default_factory=list)
     excluded_tech: list[str] = field(default_factory=list)
+    # Canonical full name of the user's state of residence (e.g. "Missouri"), or
+    # ``None`` to skip the state-allow-list rule entirely. ``home_state_abbr`` is
+    # the derived two-letter code ("MO") used for abbreviation matching.
+    home_state: Optional[str] = None
+    home_state_abbr: Optional[str] = None
 
     seniority_re: Optional[re.Pattern[str]] = None
     required_long_re: Optional[re.Pattern[str]] = None
@@ -74,6 +136,7 @@ def build_config(
     seniority_terms: list[str],
     required_tech: list[str],
     excluded_tech: list[str],
+    home_state: Optional[str] = None,
 ) -> FilterConfig:
     seniority_re = (
         re.compile(rf"\b({_alt_pattern(seniority_terms)})\b", re.IGNORECASE)
@@ -103,11 +166,14 @@ def build_config(
         else None
     )
 
+    canonical_state = _canonical_state(home_state)
     return FilterConfig(
         role_titles=list(role_titles),
         seniority_terms=list(seniority_terms),
         required_tech=list(required_tech),
         excluded_tech=list(excluded_tech),
+        home_state=canonical_state,
+        home_state_abbr=STATE_ABBREV_BY_NAME.get(canonical_state) if canonical_state else None,
         seniority_re=seniority_re,
         required_long_re=required_long_re,
         required_short_re=required_short_re,
@@ -188,12 +254,25 @@ def load_active_config(session: Optional[Session] = None) -> FilterConfig:
     if profile is None:
         return _BUILTIN_DEFAULT
     if not profile.required_tech or not profile.seniority_terms:
-        return _BUILTIN_DEFAULT
+        # Fall back to the built-in role/tech defaults, but still honor the
+        # profile's home state. The state-allow-list rule is independent of the
+        # tech lists, and the onboarding wizard sets the state *before* any roles
+        # exist, so a fresh profile (empty lists) must not silently drop the
+        # state the user just chose.
+        canonical = _canonical_state(profile.home_state)
+        if canonical is None:
+            return _BUILTIN_DEFAULT
+        return replace(
+            _BUILTIN_DEFAULT,
+            home_state=canonical,
+            home_state_abbr=STATE_ABBREV_BY_NAME.get(canonical),
+        )
     return build_config(
         role_titles=profile.role_titles,
         seniority_terms=profile.seniority_terms,
         required_tech=profile.required_tech,
         excluded_tech=profile.excluded_tech,
+        home_state=profile.home_state,
     )
 
 
@@ -328,33 +407,25 @@ def _is_specific_non_us(location: str) -> bool:
 
 
 # US states + DC, full names. Used to detect explicit state allow-lists in the
-# posting body. (We don't try to parse two-letter abbreviations — too many
-# collisions with English words like "OR", "IN", "ME".)
+# posting body. Derived from the canonical ``US_STATE_CHOICES`` above so the two
+# can't drift; internal spaces match any whitespace run ("New York" / "New  York").
+# (We don't try to parse two-letter abbreviations here — too many collisions with
+# English words like "OR", "IN", "ME".)
 US_STATES = re.compile(
-    r"\b("
-    r"alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|"
-    r"florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|"
-    r"louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|"
-    r"missouri|montana|nebraska|nevada|"
-    r"new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york|"
-    r"north\s+carolina|north\s+dakota|"
-    r"ohio|oklahoma|oregon|pennsylvania|rhode\s+island|"
-    r"south\s+carolina|south\s+dakota|"
-    r"tennessee|texas|utah|vermont|virginia|washington|"
-    r"west\s+virginia|wisconsin|wyoming|"
-    r"district\s+of\s+columbia"
-    r")\b",
+    r"\b(" + "|".join(re.escape(n).replace(r"\ ", r"\s+") for n, _ in US_STATE_CHOICES) + r")\b",
     re.IGNORECASE,
 )
 
-# Case-insensitive on the full name; case-sensitive on the abbreviation so it
-# doesn't match the prefix in words like "Monday" or "modify".
-MISSOURI_TOKEN = re.compile(r"\bmissouri\b", re.IGNORECASE)
-MISSOURI_ABBR = re.compile(r"\bMO\b")
-
-
-def _has_missouri(text: str) -> bool:
-    return bool(MISSOURI_TOKEN.search(text) or MISSOURI_ABBR.search(text))
+def _text_has_state(text: str, name: str, abbr: Optional[str]) -> bool:
+    """True if ``text`` names the given state by full name (case-insensitive) or by
+    its two-letter code (case-sensitive, so "MO" doesn't fire on "Monday"/"modify").
+    Internal whitespace in a multi-word name matches any run of whitespace."""
+    name_pat = re.escape(name).replace(r"\ ", r"\s+")
+    if re.search(rf"\b{name_pat}\b", text, re.IGNORECASE):
+        return True
+    if abbr and re.search(rf"\b{re.escape(abbr)}\b", text):
+        return True
+    return False
 
 # Phrases that announce "we only hire in these places". Each match opens a
 # window we then scan for a state list.
@@ -388,20 +459,26 @@ NATIONWIDE_OVERRIDE = re.compile(
 )
 
 
-def _has_state_allowlist_excluding_mo(text: str) -> bool:
-    """True iff the text declares a US-state allow-list that omits Missouri.
+def _has_state_allowlist_excluding_home(text: str, cfg: FilterConfig) -> bool:
+    """True iff the text declares a US-state allow-list that omits the user's home state.
 
     Strategy: each trigger-phrase match opens an 800-char scan window; if the
-    window contains 1+ state names, lacks Missouri, and isn't overridden by an
-    "any state" / "nationwide" phrase, it's a restriction we should drop on.
+    window contains 1+ state names, lacks the home state, and isn't overridden by an
+    "any state" / "nationwide" phrase, it's a restriction we should drop on. Callers
+    must only invoke this when ``cfg.home_state`` is set (an unset home state means
+    the rule does not apply).
     """
+    name = cfg.home_state
+    if not name:
+        return False
+    abbr = cfg.home_state_abbr
     for match in STATE_RESTRICTION_TRIGGER.finditer(text):
         window = text[match.start() : match.start() + 800]
         if NATIONWIDE_OVERRIDE.search(window):
             continue
         if not US_STATES.search(window):
             continue
-        if _has_missouri(window):
+        if _text_has_state(window, name, abbr):
             continue
         return True
     return False
@@ -454,9 +531,12 @@ def evaluate(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult
     if _is_specific_non_us(location):
         return FilterResult(FilterStatus.dropped, "location is non-US only")
 
-    # 3. State allow-list must include Missouri (user resides in MO)
-    if _has_state_allowlist_excluding_mo(_haystack(raw)):
-        return FilterResult(FilterStatus.dropped, "state allow-list excludes Missouri")
+    # 3. State allow-list must include the user's home state (when one is configured;
+    #    an unset home state skips this rule rather than assuming any state).
+    if cfg.home_state and _has_state_allowlist_excluding_home(_haystack(raw), cfg):
+        return FilterResult(
+            FilterStatus.dropped, f"state allow-list excludes {cfg.home_state}"
+        )
 
     # 4. Seniority (configurable)
     if cfg.seniority_re is not None and not cfg.seniority_re.search(title):

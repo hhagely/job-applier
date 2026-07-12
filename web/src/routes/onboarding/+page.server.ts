@@ -27,7 +27,16 @@ export const load: PageServerLoad = async ({ fetch }) => {
 		resume = null;
 	}
 
-	return { apiBase: base, providers, resume };
+	// The search profile carries the optional home state the wizard's Fetch-jobs
+	// step lets you set. Defensive: a failure just leaves the selector unset.
+	let searchProfile = null;
+	try {
+		searchProfile = await api.getSearchProfile(fetch, base);
+	} catch {
+		searchProfile = null;
+	}
+
+	return { apiBase: base, providers, resume, searchProfile };
 };
 
 export const actions: Actions = {

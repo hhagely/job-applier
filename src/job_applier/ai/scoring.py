@@ -16,6 +16,7 @@ from job_applier.ai import prompt_safety, providers
 from job_applier.ai.templates import load_template, render_job_prompt
 from job_applier.config import settings
 from job_applier.contracts import html_to_text
+from job_applier.filters import load_active_config
 from job_applier.models.db import ApplicationStatus, JobPosting, Session, engine
 
 # Below this score a job is auto-archived after scoring (60 itself survives).
@@ -38,9 +39,25 @@ class ScoringError(Exception):
     """The provider output couldn't be parsed/validated into a score."""
 
 
-def build_score_prompt(resume_text: str, job: JobPosting) -> str:
+def _state_rule_clause(home_state: Optional[str]) -> str:
+    """The home-state allow-list hard rule for the score prompts, filled into the
+    ``{{STATE_RULE}}`` placeholder. Empty when no home state is configured, so the
+    rule simply doesn't appear (matching the ingest filter, which skips it too)."""
+    if not home_state:
+        return ""
+    return (
+        f"- The posting names a US-state allow-list that omits {home_state}: "
+        f'score `0`, reasoning\n  `"state allow-list excludes {home_state}"`.'
+    )
+
+
+def build_score_prompt(
+    resume_text: str, job: JobPosting, *, home_state: Optional[str] = None
+) -> str:
     """Render the score prompt for one job (shared single-job render)."""
-    return render_job_prompt("score.md", resume_text, job)
+    return render_job_prompt(
+        "score.md", resume_text, job, state_rule=_state_rule_clause(home_state)
+    )
 
 
 def _job_block(job: JobPosting, nonce: str) -> str:
@@ -63,7 +80,9 @@ def _job_block(job: JobPosting, nonce: str) -> str:
     )
 
 
-def build_batch_score_prompt(resume_text: str, jobs: list[JobPosting]) -> str:
+def build_batch_score_prompt(
+    resume_text: str, jobs: list[JobPosting], *, home_state: Optional[str] = None
+) -> str:
     """Render the batch score prompt for several jobs (resume + rubric sent once).
 
     All job blocks share one per-call nonce; the guard text tells the model the block
@@ -74,6 +93,7 @@ def build_batch_score_prompt(resume_text: str, jobs: list[JobPosting]) -> str:
         load_template("score_batch.md")
         .replace("{{RESUME_TEXT}}", resume_text.strip())
         .replace("{{NONCE}}", nonce)
+        .replace("{{STATE_RULE}}", _state_rule_clause(home_state))
         .replace("{{JOBS_BLOCK}}", jobs_block)
     )
 
@@ -219,7 +239,9 @@ def score_one(
     ``score_kind="tailored"`` scores a per-job tailored resume markdown (the drafting
     flow); the same rubric template powers both so baseline/tailored can't drift.
     """
-    payload = _run_and_parse(provider, build_score_prompt(resume_text, job), model)
+    home_state = load_active_config(session).home_state
+    prompt = build_score_prompt(resume_text, job, home_state=home_state)
+    payload = _run_and_parse(provider, prompt, model)
     final_score = _persist_score(session, provider, job.id, payload, score_kind=score_kind)
     return ScoreResult(job.id, final_score, payload.reasoning)
 
@@ -229,13 +251,14 @@ def _score_batch_call(
     resume_text: str,
     jobs: list[JobPosting],
     model: Optional[str],
+    home_state: Optional[str] = None,
 ) -> dict[int, ScoredPayload]:
     """One batch invocation. Returns ``{job_id: payload}`` for the jobs the model
     scored cleanly (id echoed, no ``error``, score in range). Jobs the model dropped
     or botched are simply absent, so the caller re-queues them single-job. Raises the
     underlying ``ProviderError`` / ``ScoringError`` on a total failure (provider error
     or unparseable JSON after retry) so the caller can fall the *whole* batch back."""
-    prompt = build_batch_score_prompt(resume_text, jobs)
+    prompt = build_batch_score_prompt(resume_text, jobs, home_state=home_state)
     payload = providers.run_json_or(
         provider,
         prompt,
@@ -288,6 +311,8 @@ def score_pending(
     if resume is None:
         raise NoActiveResume("no active resume — upload one first")
 
+    home_state = load_active_config(session).home_state
+
     if job_ids is not None:
         jobs = [j for j in (session.get(JobPosting, jid) for jid in job_ids) if j]
     else:
@@ -313,7 +338,7 @@ def score_pending(
         if len(batch) > 1:
             try:
                 batch_scores = _score_batch_call(
-                    provider, resume.extracted_text, batch, model
+                    provider, resume.extracted_text, batch, model, home_state
                 )
             except Exception:  # noqa: BLE001 - a failed batch degrades to single-job, never lost
                 batch_scores = {}

@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from job_applier import services
@@ -17,6 +17,7 @@ from job_applier.api.schemas import (
     SearchProfileOut,
     SearchProfileRecommendationIn,
 )
+from job_applier.filters import normalize_home_state
 from job_applier.models.db import SearchProfile, get_session
 
 router = APIRouter(tags=["search-profile"])
@@ -40,6 +41,7 @@ def profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
         required_tech=list(p.required_tech or []),
         excluded_tech=list(p.excluded_tech or []),
         extracted_skills=list(p.extracted_skills or []),
+        home_state=p.home_state,
         recommendations_draft=p.recommendations_draft,
         updated_at=p.updated_at,
         using_defaults=using_defaults,
@@ -59,12 +61,17 @@ def get_search_profile(session: Session = Depends(get_session)):
 def put_search_profile(
     body: SearchProfileBody, session: Session = Depends(get_session)
 ):
+    try:
+        home_state = normalize_home_state(body.home_state)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     p = _load_or_create_profile(session)
     p.role_titles = body.role_titles
     p.seniority_terms = body.seniority_terms
     p.required_tech = body.required_tech
     p.excluded_tech = body.excluded_tech
     p.extracted_skills = body.extracted_skills
+    p.home_state = home_state
     p.updated_at = datetime.now(timezone.utc)
     session.add(p)
     session.commit()
