@@ -20,7 +20,8 @@ phase 1 (prepare):
   1. validate the version + a clean working tree,
   2. branch ``release/vX.Y.Z`` off the latest ``origin/main``,
   3. rewrite __version__ (src/job_applier/__init__.py) + version (pyproject.toml) +
-     stamp desktop/package.json, and commit "Release vX.Y.Z",
+     uv.lock (the job-applier self-package) + stamp desktop/package.json, and commit
+     "Release vX.Y.Z",
   4. push the branch and open a PR into ``main``.
 
 phase 2 (tag):
@@ -47,6 +48,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INIT_REL = "src/job_applier/__init__.py"
 _INIT = _REPO_ROOT / _INIT_REL
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
+_UV_LOCK = _REPO_ROOT / "uv.lock"
 _DEFAULT_BRANCH = "main"
 
 # X.Y.Z with an optional pre-release suffix (e.g. 0.2.0-rc1).
@@ -153,7 +155,7 @@ def prepare(argv: list[str]) -> int:
     if dry_run:
         print(f"[dry-run] would prepare release {tag} (current version: {current}). Would:")
         print(f"  1. branch {branch} off origin/{_DEFAULT_BRANCH}")
-        print(f"  2. bump to {version} in __init__.py, pyproject.toml, desktop/package.json")
+        print(f"  2. bump to {version} in __init__.py, pyproject.toml, uv.lock, desktop/package.json")
         print(f"  3. commit 'Release {tag}', push {branch}, open a PR into {_DEFAULT_BRANCH}")
         print(f"then, after the PR merges: make release-tag VERSION={version}")
         print("nothing was changed.")
@@ -179,8 +181,18 @@ def prepare(argv: list[str]) -> int:
             f'version = "{version}"',
             "version",
         )
+        # Keep uv.lock in lockstep: job-applier is an editable/self package inside
+        # its own lockfile, so a bump that skips uv.lock leaves the manifest and the
+        # lock inconsistent -- and the next `uv run` (e.g. this very script) would
+        # auto-sync + rewrite uv.lock, dirtying the tree and failing the clean check.
+        _replace_once(
+            _UV_LOCK,
+            r'^name = "job-applier"\nversion = "[^"]*"',
+            f'name = "job-applier"\nversion = "{version}"',
+            'job-applier version in uv.lock',
+        )
         stamp_version.stamp()  # desktop/package.json
-        _git("add", _INIT_REL, "pyproject.toml", "desktop/package.json")
+        _git("add", _INIT_REL, "pyproject.toml", "uv.lock", "desktop/package.json")
         _git("commit", "-m", f"Release {tag}")
         _git("push", "-u", "origin", branch)
         print(f"pushed {branch} with the {version} bump")
@@ -188,7 +200,7 @@ def prepare(argv: list[str]) -> int:
         # --- open the PR (best-effort: the branch is already safe on origin) -----
         body = (
             f"Version bump to **{version}** "
-            "(`__init__.py`, `pyproject.toml`, `desktop/package.json`).\n\n"
+            "(`__init__.py`, `pyproject.toml`, `uv.lock`, `desktop/package.json`).\n\n"
             f"After this merges, tag the release: `make release-tag VERSION={version}`."
         )
         try:

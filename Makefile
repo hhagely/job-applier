@@ -41,10 +41,10 @@ stamp-version: ## Stamp desktop/package.json version from src/job_applier/__init
 	uv run python desktop/scripts/stamp_version.py
 
 release: ## Release phase 1: bump version on a release/ branch + open a PR. Usage: make release VERSION=X.Y.Z (DRY_RUN=1 to preview)
-	uv run python desktop/scripts/release.py prepare $(VERSION) $(if $(DRY_RUN),--dry-run)
+	uv run --frozen python desktop/scripts/release.py prepare $(VERSION) $(if $(DRY_RUN),--dry-run)
 
 release-tag: ## Release phase 2 (after the PR merges): tag merged main + push the tag to trigger release.yml. Usage: make release-tag VERSION=X.Y.Z (DRY_RUN=1 to preview)
-	uv run python desktop/scripts/release.py tag $(VERSION) $(if $(DRY_RUN),--dry-run)
+	uv run --frozen python desktop/scripts/release.py tag $(VERSION) $(if $(DRY_RUN),--dry-run)
 
 app-dev: build-web ## Boot API + built web server on free ports and open the browser (no make api/web dance)
 	uv run job-applier app-dev
