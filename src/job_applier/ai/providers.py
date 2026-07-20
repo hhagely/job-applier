@@ -63,6 +63,15 @@ Tier = str  # "recommended" | "best-effort"
 DEFAULT_OLLAMA_MODEL = "llama3.1"
 
 
+@dataclass(frozen=True)
+class ModelOption:
+    """One entry in the Settings scoring-model dropdown. ``value`` is passed to the
+    CLI verbatim (an alias the CLI resolves, or a full model id)."""
+
+    value: str
+    label: str
+
+
 class Provider:
     """A detectable AI CLI. Subclasses own the exact (sandboxed) argv."""
 
@@ -77,6 +86,17 @@ class Provider:
     # back to the configured generation model / account default. Overridable per
     # provider in Settings (persisted as ``ai_scoring_model``).
     scoring_model: Optional[str] = None
+    # Curated choices offered in the Settings scoring-model dropdown, cheapest
+    # first. Empty means "we can't name this CLI's models" -> the UI falls back to
+    # a free-text field. The dropdown always keeps a custom-value escape hatch, so
+    # this list is a convenience, never a whitelist (a stale entry here can't lock
+    # the user out of a model their CLI supports).
+    scoring_models: tuple[ModelOption, ...] = ()
+
+    def list_scoring_models(self) -> tuple[ModelOption, ...]:
+        """The dropdown choices. Static by default; overridden where the set is
+        only knowable by asking the CLI (Ollama's locally-pulled models)."""
+        return self.scoring_models
 
     def version_argv(self) -> list[str]:
         return [self.bin, "--version"]
@@ -93,6 +113,13 @@ class ClaudeProvider(Provider):
     # Sonnet handles the scoring rubric (5 weighted buckets + hard rules) reliably
     # at a fraction of Opus's usage-window cost. Claude Code accepts the bare alias.
     scoring_model = "sonnet"
+    # Bare aliases, not pinned ids: Claude Code resolves each to the current model
+    # of that family, so this list doesn't rot when a new Sonnet/Opus ships.
+    scoring_models = (
+        ModelOption("haiku", "Haiku - fastest, cheapest"),
+        ModelOption("sonnet", "Sonnet - balanced (default)"),
+        ModelOption("opus", "Opus - most capable, burns the usage window"),
+    )
 
     def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Sandbox: empty tool allowlist + `dontAsk` permission mode => the CLI
@@ -137,6 +164,11 @@ class GeminiProvider(Provider):
     tier = "recommended"
     # Flash is Gemini's fast/cheap tier — the Sonnet-equivalent for triage scoring.
     scoring_model = "gemini-2.5-flash"
+    scoring_models = (
+        ModelOption("gemini-2.5-flash-lite", "2.5 Flash-Lite - fastest, cheapest"),
+        ModelOption("gemini-2.5-flash", "2.5 Flash - balanced (default)"),
+        ModelOption("gemini-2.5-pro", "2.5 Pro - most capable"),
+    )
 
     def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Non-interactive prompt mode, hardened against a prompt-injected job
@@ -163,18 +195,33 @@ class CodexProvider(Provider):
     display_name = "Codex CLI"
     bin = "codex"
     tier = "best-effort"
+    # No cheaper *default*: unlike Claude/Gemini we don't presume a tier for an
+    # account we can't inspect, so an unset scoring model keeps Codex's own
+    # configured model. The dropdown still names the tiers for anyone who wants
+    # to pick one.
+    scoring_models = (
+        ModelOption("gpt-5.6-luna", "5.6 Luna - fastest, cheapest"),
+        ModelOption("gpt-5.6-terra", "5.6 Terra - balanced"),
+        ModelOption("gpt-5.6-sol", "5.6 Sol - most capable"),
+    )
 
     def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Non-interactive exec with a read-only sandbox and no approval prompts.
-        return [
+        argv = [
             self.bin,
             "exec",
             "--sandbox",
             "read-only",
             "--ask-for-approval",
             "never",
-            prompt,
         ]
+        # `codex exec` takes -m/--model like the other CLIs. This was missing until
+        # 2026-07: a Settings-chosen model was persisted, resolved, and passed in
+        # here, then silently dropped — the user saw no error and no effect.
+        if model:
+            argv += ["-m", model]
+        argv.append(prompt)
+        return argv
 
 
 class OllamaProvider(Provider):
@@ -182,6 +229,36 @@ class OllamaProvider(Provider):
     display_name = "Ollama (local)"
     bin = "ollama"
     tier = "best-effort"
+
+    def list_scoring_models(self) -> tuple[ModelOption, ...]:
+        # Ollama's usable models are whatever the user has pulled locally, so a
+        # static list would be fiction — ask the CLI. Failures degrade to an empty
+        # list (the UI then offers free text), never to an error: this runs inside
+        # the Settings page load.
+        if shutil.which(self.bin) is None:
+            return ()
+        try:
+            proc = subprocess.run(
+                [self.bin, "list"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                env=_scrubbed_env(),
+                check=False,
+                creationflags=_NO_WINDOW,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ()
+        if proc.returncode != 0:
+            return ()
+        options: list[ModelOption] = []
+        # Tabular output: a "NAME  ID  SIZE  MODIFIED" header, then one row per
+        # model. The first whitespace-delimited column is the tag to run.
+        for line in (proc.stdout or "").splitlines()[1:]:
+            tag = line.split()[0] if line.split() else ""
+            if tag:
+                options.append(ModelOption(tag, tag))
+        return tuple(options)
 
     def build_argv(self, prompt: str, *, model: Optional[str] = None) -> list[str]:
         # Fully local; ollama has no tool/file access to sandbox. Needs a model.
@@ -203,6 +280,13 @@ def default_scoring_model(name: str) -> Optional[str]:
     when the CLI has no cheaper default we can name (e.g. Codex, local Ollama)."""
     provider = PROVIDERS.get(name)
     return provider.scoring_model if provider is not None else None
+
+
+def scoring_model_options(name: str) -> tuple[ModelOption, ...]:
+    """Dropdown choices for provider ``name``'s baseline-scoring model. Empty when
+    the provider is unknown or its model set can't be named."""
+    provider = PROVIDERS.get(name)
+    return provider.list_scoring_models() if provider is not None else ()
 
 
 @dataclass(frozen=True)
