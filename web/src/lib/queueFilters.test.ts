@@ -83,6 +83,40 @@ describe('filterAndSort', () => {
 		).toEqual([1]);
 	});
 
+	it('unemployment facet splits on the reported flag (no application = not used)', () => {
+		const reported = { status: 'applied', used_for_unemployment: true } as Job['application'];
+		const jobs = [
+			job({ id: 1, application: reported }),
+			job({ id: 2, application: { status: 'applied' } as Job['application'] }),
+			job({ id: 3 })
+		];
+		expect(
+			filterAndSort(jobs, { ...base, unemployment: new Set(['used']) }).map((j) => j.id)
+		).toEqual([1]);
+		expect(
+			filterAndSort(jobs, { ...base, unemployment: new Set(['unused']) }).map((j) => j.id)
+		).toEqual([2, 3]);
+		// Both selected is the same as neither — the facet covers every job.
+		expect(
+			filterAndSort(jobs, { ...base, unemployment: new Set(['used', 'unused']) })
+		).toHaveLength(3);
+	});
+
+	it('combines facets conjunctively', () => {
+		const jobs = [
+			job({ id: 1, source: 'lever', application: { status: 'applied' } as Job['application'] }),
+			job({ id: 2, source: 'lever', application: { status: 'new' } as Job['application'] }),
+			job({ id: 3, source: 'greenhouse', application: { status: 'applied' } as Job['application'] })
+		];
+		expect(
+			filterAndSort(jobs, {
+				...base,
+				sources: new Set(['lever']),
+				statuses: new Set(['applied'])
+			}).map((j) => j.id)
+		).toEqual([1]);
+	});
+
 	it('does not mutate the input array', () => {
 		const jobs = [scored(1, 10), scored(2, 90)];
 		const copy = [...jobs];
