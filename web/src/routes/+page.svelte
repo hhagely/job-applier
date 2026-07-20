@@ -230,8 +230,12 @@
 		return data.jobs.filter((j) => isUsedForUnemployment(j) === (key === 'used')).length;
 	}
 
-	// Only offer source facets that actually appear in the current queue.
-	const SOURCE_FILTERS = $derived([...new Set(data.jobs.map((j) => j.source))].sort());
+	// Only offer source facets that actually appear in the current queue — plus any
+	// still-active one, so a persisted filter for a source that has dropped out of
+	// the queue stays visible (and unsettable) instead of silently emptying the list.
+	const SOURCE_FILTERS = $derived(
+		[...new Set([...data.jobs.map((j) => j.source), ...activeSources])].sort()
+	);
 
 	let followupDate = $state<string>(defaultFollowupDate());
 
@@ -383,7 +387,10 @@
 					<span class="lbl">Ease</span>
 					{#each EASE_FILTERS as f (f.key)}
 						{@const n = easeCount(f.key)}
-						{#if n > 0}
+						<!-- Keep an active facet visible even at count 0. A persisted filter
+						     whose chip is hidden is a ghost: it still empties the list but the
+						     user has no way to see or unset it. -->
+						{#if n > 0 || activeEases.has(f.key)}
 							<button class="chip" aria-pressed={activeEases.has(f.key)} onclick={() => (activeEases = toggleIn(activeEases, f.key))}>
 								{f.label} <span class="c-n">{n}</span>
 							</button>
@@ -394,7 +401,7 @@
 					<span class="lbl">Source</span>
 					{#each SOURCE_FILTERS as key (key)}
 						{@const n = sourceCount(key)}
-						{#if n > 0}
+						{#if n > 0 || activeSources.has(key)}
 							<button class="chip" aria-pressed={activeSources.has(key)} onclick={() => (activeSources = toggleIn(activeSources, key))}>
 								{sourceInfo(key).label} <span class="c-n">{n}</span>
 							</button>
@@ -405,7 +412,7 @@
 					<span class="lbl">Status</span>
 					{#each STATUS_FILTERS as f (f.key)}
 						{@const n = statusCount(f.key)}
-						{#if n > 0}
+						{#if n > 0 || activeStatuses.has(f.key)}
 							<button class="chip" aria-pressed={activeStatuses.has(f.key)} onclick={() => (activeStatuses = toggleIn(activeStatuses, f.key))}>
 								{f.label} <span class="c-n">{n}</span>
 							</button>
