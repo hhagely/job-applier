@@ -218,6 +218,63 @@ def test_score_pending_requires_active_resume(monkeypatch):
             scoring.score_pending(s, provider="claude")
 
 
+def test_score_pending_aborts_on_repeated_provider_failure(monkeypatch):
+    """A bad model / dead CLI fails identically for every job, so the run must stop
+    with one actionable message instead of N copies of the same stderr."""
+    calls = []
+
+    def _run(provider, prompt, **k):
+        calls.append(prompt)
+        raise scoring.providers.ProviderError("unknown model: gpt-9000")
+
+    monkeypatch.setattr(scoring.providers, "run", _run)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        for i in range(12):
+            _seed_job(s, title=f"Engineer {i}")
+        with pytest.raises(scoring.ScoringAborted) as err:
+            scoring.score_pending(s, provider="claude", model="gpt-9000")
+
+    # The message names the setting AND where to change it — the failure shows up
+    # on the dashboard while the control lives on /settings.
+    msg = str(err.value)
+    assert "gpt-9000" in msg and "Settings" in msg
+    # Stopped early rather than grinding all 12 jobs.
+    assert len(calls) < 12
+
+
+def test_score_pending_provider_error_late_in_a_healthy_run_is_per_job(monkeypatch):
+    """The breaker must not fire once scoring is demonstrably working — one bad job
+    late in a good run is a per-job error, not a broken configuration."""
+
+    def _run(provider, prompt, **k):
+        if "Broken" in prompt:
+            raise scoring.providers.ProviderError("transient blip")
+        return CANNED
+
+    monkeypatch.setattr(scoring.providers, "run", _run)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        ok = _seed_job(s, title="Senior Engineer")
+        broken = [_seed_job(s, title=f"Broken {i}") for i in range(4)]
+        ok_id = ok.id
+        broken_ids = [j.id for j in broken]
+        # Explicit ids so the good job is scored first — the breaker only stays
+        # armed until something succeeds, so ordering is the point of this test.
+        outcomes = {
+            o.job_id: o
+            for o in scoring.score_pending(
+                s, provider="claude", job_ids=[ok_id, *broken_ids]
+            )
+        }
+
+    # Every job still reported; no abort despite 4 consecutive provider errors.
+    assert outcomes[ok_id].score == 82
+    assert all(outcomes[b].error is not None for b in broken_ids)
+
+
 def test_score_pending_survives_single_job_failure(monkeypatch):
     def _run(provider, prompt, **k):
         return "garbage" if "Broken" in prompt else CANNED

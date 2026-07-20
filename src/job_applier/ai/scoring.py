@@ -35,6 +35,12 @@ class NoActiveResume(Exception):
     """No active resume to score against."""
 
 
+class ScoringAborted(Exception):
+    """The provider failed identically on every attempt, so the run stopped early
+    rather than reproducing one error per job. Carries a message naming the likely
+    cause and where to fix it — this is what the user reads in the task UI."""
+
+
 class ScoringError(Exception):
     """The provider output couldn't be parsed/validated into a score."""
 
@@ -284,6 +290,30 @@ def _score_batch_call(
     return out
 
 
+# Consecutive provider-level failures (with nothing yet scored) that trip the
+# circuit breaker. Above one so a single flaky invocation doesn't abort a run.
+ABORT_AFTER_PROVIDER_ERRORS = 3
+
+
+def _provider_failure_hint(
+    provider: str, model: Optional[str], exc: Exception
+) -> str:
+    """The message the user actually reads when a run dies. It has to name the
+    setting that caused it and where to change it: the failure surfaces on the
+    dashboard while the control lives on /settings, and the CLI's own stderr says
+    nothing about either."""
+    if model:
+        return (
+            f"Scoring stopped: {provider} rejected the configured scoring model "
+            f"'{model}' on every attempt ({exc}). Change it in Settings > AI "
+            f"provider, or set it to Default."
+        )
+    return (
+        f"Scoring stopped: {provider} failed on every attempt ({exc}). Check that "
+        f"the CLI still runs and is logged in, in Settings > AI provider."
+    )
+
+
 def score_pending(
     session: Session,
     *,
@@ -306,6 +336,11 @@ def score_pending(
     loses a job. A single job's failure is recorded as a per-job error and does not abort
     the run. When ``job_ids`` is given those exact jobs are scored; otherwise the live
     pending-match queue is used.
+
+    Raises ``ScoringAborted`` if the provider fails ``ABORT_AFTER_PROVIDER_ERRORS``
+    times in a row before anything scores — a misconfiguration (bad model, expired
+    login) is identical for every job, so the run stops with one actionable message
+    instead of burning the queue to say the same thing N times.
     """
     resume = services.active_resume(session)
     if resume is None:
@@ -322,6 +357,12 @@ def score_pending(
 
     outcomes: list[JobScoreOutcome] = []
     low_scorers: list[int] = []
+    # Circuit breaker: a bad model, an expired CLI login, or a dead binary fails
+    # the same way for every job, so the per-job fallback below just multiplies one
+    # error by the size of the queue. Track consecutive provider-level failures
+    # before anything has scored; past that, stop and raise once.
+    consecutive_provider_errors = 0
+    scored_any = False
 
     def _record(job: JobPosting, score: Optional[int], error: Optional[str]) -> None:
         if score is not None and score < ARCHIVE_BELOW and _is_untriaged(job):
@@ -354,8 +395,21 @@ def score_pending(
                         session, provider, resume.extracted_text, job, model=model
                     )
                     _record(job, result.score, None)
+                scored_any = True
+                consecutive_provider_errors = 0
             except Exception as exc:  # noqa: BLE001 - one job's failure can't kill the run
                 _record(job, None, str(exc))
+                # Only provider-level errors trip the breaker, and only while the
+                # run has scored nothing: one malformed JD late in a healthy run
+                # is a per-job error, not a broken configuration.
+                if scored_any or not isinstance(exc, providers.ProviderError):
+                    consecutive_provider_errors = 0
+                    continue
+                consecutive_provider_errors += 1
+                if consecutive_provider_errors >= ABORT_AFTER_PROVIDER_ERRORS:
+                    raise ScoringAborted(
+                        _provider_failure_hint(provider, model, exc)
+                    ) from exc
 
     if low_scorers:
         services.bulk_set_status(session, low_scorers, ApplicationStatus.archived)

@@ -190,6 +190,15 @@ export interface Provider {
 	tier: ProviderTier;
 	available: boolean;
 	version?: string | null;
+	/** Baseline-scoring model choices for this provider (empty = offer free text). */
+	scoring_models: ModelOption[];
+	/** This provider's built-in scoring-model default, shown as the "Default" label. */
+	scoring_model_default?: string | null;
+}
+
+export interface ModelOption {
+	value: string;
+	label: string;
 }
 
 export interface ProvidersResponse {

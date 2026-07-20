@@ -190,12 +190,22 @@ class DraftOut(BaseModel):
     cover_letter_md: Optional[str] = None
 
 
+class ModelOptionOut(BaseModel):
+    value: str
+    label: str
+
+
 class ProviderOut(BaseModel):
     name: str
     display_name: str
     tier: Literal["recommended", "best-effort"]
     available: bool
     version: Optional[str] = None
+    # Baseline-scoring model choices for *this* provider, so the Settings dropdown
+    # can re-populate from the radio selection without waiting for a save. Empty
+    # means the UI should offer a free-text field instead.
+    scoring_models: list[ModelOptionOut] = []
+    scoring_model_default: Optional[str] = None
 
 
 class ProvidersOut(BaseModel):

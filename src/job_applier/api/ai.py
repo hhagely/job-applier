@@ -26,6 +26,7 @@ from job_applier.api.schemas import (
     AiTestIn,
     AiTestOut,
     DraftBatchIn,
+    ModelOptionOut,
     ProviderOut,
     ProvidersOut,
     ScorePendingIn,
@@ -47,6 +48,46 @@ AI_SCORING_MODEL_KEY = "ai_scoring_model"
 
 # Fixed, side-effect-free prompt for the "Test" round-trip.
 _TEST_PROMPT = "Respond with exactly the word: pong"
+
+# The save-time scoring-model probe blocks a form submit, so it gets a tighter
+# budget than the user-initiated Test round-trip (60s).
+_SCORING_PROBE_TIMEOUT = 45.0
+
+
+def _validate_scoring_model(provider: str, model: str) -> None:
+    """Reject a scoring model the CLI can't use, as a 422 carrying the CLI's own
+    reason.
+
+    Without this the value saves cleanly and only fails at the next bulk score —
+    on a different page, once per job, with nothing tying the CLI's "unknown
+    model" back to this field. Probing here puts the error where the user typed it.
+
+    Ollama is checked against its locally-pulled list rather than executed:
+    ``ollama run <absent-model>`` starts a multi-gigabyte *pull* instead of
+    failing, which is not something a form submit should kick off.
+    """
+    if provider == "ollama":
+        installed = {o.value for o in providers.scoring_model_options(provider)}
+        # An empty set means the listing itself failed (CLI gone/broken) — don't
+        # block a save on a check we couldn't actually run.
+        if installed and model not in installed:
+            raise HTTPException(
+                422,
+                f"'{model}' isn't pulled locally. Run `ollama pull {model}`, or "
+                f"pick one of: {', '.join(sorted(installed))}.",
+            )
+        return
+    try:
+        providers.run(
+            provider, _TEST_PROMPT, timeout=_SCORING_PROBE_TIMEOUT, model=model
+        )
+    except providers.ProviderNotFound:
+        # The binary vanished between detect_all() above and here. That says
+        # nothing about the model, so don't reject it on those grounds — same rule
+        # as the Ollama branch: a check we couldn't run isn't a failed check.
+        return
+    except providers.ProviderError as exc:
+        raise HTTPException(422, f"{provider} rejected '{model}': {exc}") from exc
 
 
 def resolve_scoring_model(session: Session, provider: str) -> str | None:
@@ -81,6 +122,18 @@ def _providers_out(session: Session) -> ProvidersOut:
                 tier=i.tier,
                 available=i.available,
                 version=i.version,
+                # Only probe the model list for CLIs that are actually installed —
+                # for Ollama this shells out, and an absent binary has nothing to
+                # list anyway.
+                scoring_models=(
+                    [
+                        ModelOptionOut(value=o.value, label=o.label)
+                        for o in providers.scoring_model_options(i.name)
+                    ]
+                    if i.available
+                    else []
+                ),
+                scoring_model_default=providers.default_scoring_model(i.name),
             )
             for i in infos
         ],
@@ -112,13 +165,27 @@ def select_provider(
     available = {i.name for i in providers.detect_all() if i.available}
     if body.name not in available:
         raise HTTPException(422, f"provider '{body.name}' is not available")
+
+    scoring = body.scoring_model.strip() if body.scoring_model is not None else None
+    # Probe only when the pairing is new — the probe spawns a CLI, and an
+    # unchanged (provider, model) pair was already validated on the save that set
+    # it. Switching provider re-probes even if the string is untouched: "sonnet"
+    # is valid on Claude and meaningless on Gemini.
+    reprobe = scoring != get_setting(session, AI_SCORING_MODEL_KEY) or (
+        body.name != get_setting(session, AI_PROVIDER_KEY)
+    )
+    if scoring and reprobe:
+        # Validate before persisting anything, so a rejected model can't leave the
+        # provider selection half-applied.
+        _validate_scoring_model(body.name, scoring)
+
     set_setting(session, AI_PROVIDER_KEY, body.name)
     if body.model:
         set_setting(session, AI_MODEL_KEY, body.model)
     # ``scoring_model`` present (even as "") means the user submitted the field: store
     # it, where "" clears the override so the resolver reverts to the provider default.
-    if body.scoring_model is not None:
-        set_setting(session, AI_SCORING_MODEL_KEY, body.scoring_model.strip())
+    if scoring is not None:
+        set_setting(session, AI_SCORING_MODEL_KEY, scoring)
     return _providers_out(session)
 
 
