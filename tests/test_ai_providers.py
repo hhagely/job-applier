@@ -395,6 +395,10 @@ def test_select_provider_persists_and_rejects_undetected(client, monkeypatch):
 
 def test_scoring_model_default_exposed_and_override_roundtrips(client, monkeypatch):
     monkeypatch.setattr(providers, "detect_all", lambda: _fake_infos("claude"))
+    # Saving a scoring model probes it through the CLI, so stub the runner: without
+    # this the test spawns the real binary when one happens to be installed and
+    # 422s in CI where none is.
+    monkeypatch.setattr(providers, "run", lambda *a, **k: "pong")
     client.put("/api/ai/provider", json={"name": "claude"})
 
     # The selected provider's built-in scoring default is surfaced for the placeholder.
@@ -445,6 +449,23 @@ def test_bad_scoring_model_rejected_at_save_with_the_cli_reason(client, monkeypa
     # rejected save can't leave the config half-applied.
     assert not client.get("/api/ai/providers").json()["scoring_model"]
     assert client.get("/api/ai/selected").json()["selected"] is None
+
+
+def test_missing_binary_does_not_get_blamed_on_the_model(client, monkeypatch):
+    # A CLI that vanished between detection and the probe says nothing about the
+    # model. Rejecting the save here would report "claude rejected 'haiku'" —
+    # false, and unactionable. A check that couldn't run isn't a failed check.
+    monkeypatch.setattr(providers, "detect_all", lambda: _fake_infos("claude"))
+
+    def _gone(_name, _prompt, **_kw):
+        raise providers.ProviderNotFound("'claude' is not installed / not on PATH")
+
+    monkeypatch.setattr(providers, "run", _gone)
+    r = client.put(
+        "/api/ai/provider", json={"name": "claude", "scoring_model": "haiku"}
+    )
+    assert r.status_code == 200
+    assert r.json()["scoring_model"] == "haiku"
 
 
 def test_scoring_model_probe_runs_once_per_new_pairing(client, monkeypatch):

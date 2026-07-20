@@ -81,6 +81,11 @@ def _validate_scoring_model(provider: str, model: str) -> None:
         providers.run(
             provider, _TEST_PROMPT, timeout=_SCORING_PROBE_TIMEOUT, model=model
         )
+    except providers.ProviderNotFound:
+        # The binary vanished between detect_all() above and here. That says
+        # nothing about the model, so don't reject it on those grounds — same rule
+        # as the Ollama branch: a check we couldn't run isn't a failed check.
+        return
     except providers.ProviderError as exc:
         raise HTTPException(422, f"{provider} rejected '{model}': {exc}") from exc
 
