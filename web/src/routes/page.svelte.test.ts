@@ -40,6 +40,7 @@ function data(overrides = {}) {
 		jobs: [job()],
 		filter_status: 'passed' as FilterStatus,
 		include_duplicates: false,
+		include_archived: false,
 		apiBase: '',
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
@@ -203,5 +204,17 @@ describe('queue unemployment filter', () => {
 		await fireEvent.click(chip('used')!);
 
 		expect(listedTitles()).toEqual(['Reported']);
+	});
+});
+
+describe('show-archived toggle', () => {
+	it('reflects include_archived in the chip pressed state', () => {
+		render(Board, { props: { data: data({ include_archived: false }) } });
+		expect(chip('Show archived')).toHaveAttribute('aria-pressed', 'false');
+	});
+
+	it('is pressed when archived jobs are being shown', () => {
+		render(Board, { props: { data: data({ include_archived: true }) } });
+		expect(chip('Show archived')).toHaveAttribute('aria-pressed', 'true');
 	});
 });
