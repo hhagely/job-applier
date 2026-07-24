@@ -26,6 +26,12 @@
 		"wait-on": "^8.0.1"
 	},
 	"electronmon": {
-		"patterns": ["main.js", "preload.js"]
+		"patterns": [
+			"main.js",
+			"preload.js"
+		]
+	},
+	"dependencies": {
+		"electron-updater": "^6.8.9"
 	}
 }

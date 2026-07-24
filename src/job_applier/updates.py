@@ -1,9 +1,13 @@
 """In-app update check (Phase 7, Workstream E).
 
 Compares the running version (``job_applier.__version__`` — the single source of
-truth, Workstream B) against the latest GitHub Release. No signed auto-update: the
-UI just shows a banner linking to Releases. This runs server-side so it works in
-browser dev and is unit-testable by mocking ``httpx``.
+truth, Workstream B) against the latest GitHub Release. This runs server-side so it
+works in browser dev and is unit-testable by mocking ``httpx``.
+
+The **desktop app** additionally auto-updates via electron-updater (background
+download + "Restart & install"; see ``desktop/main.js``). This server check is the
+fallback path — it drives the "Open Releases" link banner in a plain browser and
+when electron-updater can't self-update (e.g. the ``.deb`` package).
 
 Design constraints from the spec:
 - Cache in-process (6h TTL) so we don't hit GitHub on every page load.

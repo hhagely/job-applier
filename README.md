@@ -40,9 +40,12 @@ you install and log into — install **one** of
 (ingest, filter, browse, track, PDF export) works with no AI CLI installed** —
 the app just hides the scoring/drafting buttons until you add one at `/settings`.
 
-**Updates.** The app checks GitHub Releases and shows a dismissible banner when a
-newer version is out, linking back to the Releases page — download and install
-over the top. There is no background auto-update (that needs code signing).
+**Updates.** The desktop app checks GitHub Releases on launch and, when a newer
+version is out, **downloads it in the background and shows a "Restart & install"
+banner** (electron-updater) — one click swaps the app in place, keeping your data.
+The installer is still unsigned, so the same one-time SmartScreen appears. The
+`.deb` package can't self-update; there (and when running in a plain browser) the
+banner instead links back to the Releases page for a manual download.
 
 ## Architecture
 

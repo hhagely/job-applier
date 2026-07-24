@@ -1,15 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { UpdateInfo } from '$lib/api';
+	import { updater } from '$lib/updater.svelte';
 
 	let { update }: { update: UpdateInfo | null } = $props();
 
+	// --- link banner (plain browser, or Electron auto-update fallback) ---------
 	// Dismissible per-version (localStorage) so the banner doesn't nag after the
 	// user has seen a given release. External link opens in the OS browser (the
 	// Electron shell routes non-loopback URLs to shell.openExternal).
 	const DISMISS_KEY = 'ja-update-dismissed';
 	let dismissed = $state(true); // assume dismissed until localStorage is read
-	let show = $derived(!!update?.update_available && !dismissed);
 
 	function dismiss() {
 		dismissed = true;
@@ -20,9 +21,41 @@
 		const seen = localStorage.getItem(DISMISS_KEY);
 		dismissed = !!update?.latest && seen === update.latest;
 	});
+
+	// Inside the desktop shell, electron-updater actually downloads + installs, so
+	// it takes over the banner. The server-driven link only shows when the
+	// auto-updater isn't driving (a plain browser) or it errored — e.g. a .deb
+	// install electron-updater can't self-update, where a manual download is the
+	// fallback.
+	let ev = $derived(updater.event);
+	let autoActive = $derived(updater.available && updater.active);
+	let autoErrored = $derived(updater.available && ev.state === 'error');
+	let showLink = $derived(
+		(!updater.available || autoErrored) && !!update?.update_available && !dismissed
+	);
 </script>
 
-{#if show}
+{#if autoActive}
+	<div class="update-bar" role="status">
+		<span class="ub-dot"></span>
+		{#if ev.state === 'downloaded'}
+			<span class="ub-text">
+				Update ready{#if ev.version} — <strong>{ev.version}</strong>{/if}
+			</span>
+			<button type="button" class="ub-action" onclick={() => updater.install()}>
+				Restart &amp; install
+			</button>
+		{:else}
+			<span class="ub-text">
+				Downloading update{#if ev.version} <strong>{ev.version}</strong>{/if}
+				{#if ev.state === 'downloading'}<span class="ub-cur">{ev.percent}%</span>{/if}
+			</span>
+			<div class="ub-prog" aria-hidden="true">
+				<div class="ub-prog-fill" style:width="{ev.percent ?? 0}%"></div>
+			</div>
+		{/if}
+	</div>
+{:else if showLink}
 	<div class="update-bar" role="status">
 		<span class="ub-dot"></span>
 		<span class="ub-text">
@@ -63,6 +96,32 @@
 		color: var(--accent);
 		font-weight: 600;
 		white-space: nowrap;
+	}
+	.ub-action {
+		margin-left: auto;
+		color: var(--accent);
+		font-weight: 600;
+		white-space: nowrap;
+		padding: 3px 10px;
+		border: 1px solid var(--accent);
+		border-radius: 6px;
+	}
+	.ub-action:hover {
+		background: var(--accent);
+		color: var(--bg);
+	}
+	.ub-prog {
+		width: 120px;
+		height: 5px;
+		border-radius: 3px;
+		background: var(--border);
+		overflow: hidden;
+		flex: none;
+	}
+	.ub-prog-fill {
+		height: 100%;
+		background: var(--accent);
+		transition: width 0.2s ease;
 	}
 	.ub-x {
 		color: var(--muted);

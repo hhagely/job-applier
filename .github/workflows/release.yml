@@ -93,7 +93,17 @@ jobs:
           gh release view "$tag" >/dev/null 2>&1 || \
             gh release create "$tag" --draft --generate-notes --title "$tag" || true
           shopt -s nullglob
-          files=(desktop/dist/*.exe desktop/dist/*.AppImage desktop/dist/*.deb)
+          # Installers PLUS the electron-updater feed metadata: latest.yml /
+          # latest-linux.yml (the version + sha512 manifest the auto-updater reads)
+          # and the .blockmap files (differential-download index). Without the .yml
+          # the packaged app's auto-update check finds nothing. electron-builder
+          # writes all of these into dist/ during `--publish never`; we upload them
+          # here, after the data-isolation guard, so the guard still gates the ship.
+          files=(
+            desktop/dist/*.exe desktop/dist/*.blockmap
+            desktop/dist/*.AppImage desktop/dist/*.deb
+            desktop/dist/latest*.yml
+          )
           if [ ${#files[@]} -eq 0 ]; then
             echo "No installer artifacts found to upload" >&2
             exit 1

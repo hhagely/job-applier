@@ -7,6 +7,7 @@
 // packaged app ships no Playwright.
 
 const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { spawn, execSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
@@ -21,6 +22,9 @@ let backendProc = null;
 let webServer = null;
 let pdfServer = null;
 let mainWindow = null;
+// Last auto-update state pushed to the renderer, cached so a window that loads
+// (or reloads) after an event still gets the current state via `updater:state`.
+let lastUpdaterEvent = { state: 'idle' };
 
 // --- utilities -------------------------------------------------------------
 
@@ -266,6 +270,77 @@ function registerExternalLinks(contents) {
 	});
 }
 
+// --- auto-update (electron-updater) ----------------------------------------
+
+// Background download + install-on-relaunch of the GitHub Release matching this
+// OS. electron-updater reads app-update.yml (generated from the electron-builder
+// `publish` block) to find the feed, downloads the installer whose sha512 matches
+// latest.yml, and swaps the app on quit. Unsigned on Windows: the NSIS installer
+// still shows a one-time SmartScreen the README documents. Only AppImage is
+// auto-updatable on Linux; the .deb build fails soft to the "Open Releases" banner.
+//
+// Every state transition is mirrored to the renderer (updater:event) AND cached in
+// lastUpdaterEvent so a window that mounts after an event can pull current state
+// via updater:state. The renderer's UpdateBanner turns this into a progress bar and
+// a "Restart & install" button (see web/src/lib/updater.svelte.ts).
+
+function pushUpdaterEvent(payload) {
+	lastUpdaterEvent = payload;
+	// The window may not exist yet (checks fire after boot) — the cache covers that.
+	if (mainWindow && !mainWindow.isDestroyed()) {
+		mainWindow.webContents.send('updater:event', payload);
+	}
+}
+
+function initAutoUpdater() {
+	// electron-updater throws "application is not packed" in dev (no app-update.yml),
+	// so the whole flow is packaged-only; `make electron` dev runs just skip it.
+	if (!app.isPackaged) return;
+
+	autoUpdater.autoDownload = true; // pull the installer as soon as one is found
+	autoUpdater.autoInstallOnAppQuit = true; // and apply it on the next quit
+
+	autoUpdater.on('checking-for-update', () => pushUpdaterEvent({ state: 'checking' }));
+	autoUpdater.on('update-available', (info) =>
+		pushUpdaterEvent({ state: 'available', version: info?.version })
+	);
+	autoUpdater.on('update-not-available', (info) =>
+		pushUpdaterEvent({ state: 'none', version: info?.version })
+	);
+	autoUpdater.on('download-progress', (p) =>
+		pushUpdaterEvent({ state: 'downloading', percent: Math.round(p?.percent ?? 0) })
+	);
+	autoUpdater.on('update-downloaded', (info) =>
+		pushUpdaterEvent({ state: 'downloaded', version: info?.version })
+	);
+	// Fail soft: a feed error / rate-limit / non-updatable package (.deb) must never
+	// crash the app or nag — the banner falls back to the "Open Releases" link.
+	autoUpdater.on('error', (err) =>
+		pushUpdaterEvent({ state: 'error', error: String(err?.message || err) })
+	);
+
+	autoUpdater.checkForUpdates().catch((err) => {
+		pushUpdaterEvent({ state: 'error', error: String(err?.message || err) });
+	});
+}
+
+// Renderer-driven controls. `state`/`check` are request/response (invoke); `install`
+// is fire-and-forget (the app is about to quit). All are guarded so a browser-dev
+// build or an unpacked run can't reach quitAndInstall.
+function registerUpdaterIpc() {
+	ipcMain.handle('updater:state', () => lastUpdaterEvent);
+	ipcMain.handle('updater:check', () => {
+		if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {});
+		return lastUpdaterEvent;
+	});
+	ipcMain.on('updater:install', () => {
+		if (!app.isPackaged) return;
+		// isForceRunAfter=true so the freshly-installed app relaunches itself.
+		app.isQuitting = true;
+		autoUpdater.quitAndInstall(false, true);
+	});
+}
+
 // --- lifecycle -------------------------------------------------------------
 
 // Electron's loadURL() rejects whenever a navigation is aborted or the target
@@ -344,6 +419,10 @@ async function boot() {
 	});
 	registerExternalLinks(mainWindow.webContents);
 	await loadWithRetry(mainWindow, loadUrl);
+
+	// Kick off the update check once the window is up so its events have somewhere
+	// to land. Packaged-only (see initAutoUpdater); a no-op in dev.
+	initAutoUpdater();
 }
 
 // Window controls invoked from the custom titlebar. Toggle maximize so the
@@ -380,6 +459,7 @@ function shutdown() {
 }
 
 registerWindowIpc();
+registerUpdaterIpc();
 // Guard the whole boot chain: a rejection here (failed dev-server load, web
 // handler import, etc.) must not surface as an uncaught exception, or the
 // electronmon dev hook latches "errored" and stops auto-relaunching after a
