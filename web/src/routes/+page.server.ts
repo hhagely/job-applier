@@ -13,14 +13,18 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 		? filterParam
 		: 'passed') as FilterStatus;
 	const include_duplicates = url.searchParams.get('duplicates') === '1';
+	// Archived jobs (incl. anything auto-archived for a sub-60 score) are normally
+	// stripped from the queue; the "Show archived" toggle keeps them so the user can
+	// inspect *why* a job was archived (its score + reasoning survive archiving).
+	const include_archived = url.searchParams.get('archived') === '1';
 
 	const all = await api.listJobs(fetch, serverApiBase(), {
 		filter_status,
 		include_duplicates,
 		limit: 200
 	});
-	const jobs = activeJobs(all);
-	return { jobs, filter_status, include_duplicates };
+	const jobs = include_archived ? all : activeJobs(all);
+	return { jobs, filter_status, include_duplicates, include_archived };
 };
 
 export const actions: Actions = {

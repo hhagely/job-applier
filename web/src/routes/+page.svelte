@@ -246,6 +246,14 @@
 		goto(url, { invalidateAll: true });
 	}
 
+	function toggleArchived() {
+		const url = new URL(page.url);
+		if (data.include_archived) url.searchParams.delete('archived');
+		else url.searchParams.set('archived', '1');
+		selectedId = null;
+		goto(url, { invalidateAll: true });
+	}
+
 	function switchQueue(manual: boolean) {
 		const url = new URL(page.url);
 		if (manual) url.searchParams.set('filter', 'manual');
@@ -380,6 +388,7 @@
 				<input class="mini-input" type="number" min="0" max="100" placeholder="min score" style="width:88px" bind:value={minScoreInput} aria-label="Minimum score" />
 				<button class="chip" aria-pressed={unscoredOnly} onclick={() => (unscoredOnly = !unscoredOnly)}>Unscored only</button>
 				<button class="chip" aria-pressed={data.include_duplicates} onclick={toggleDuplicates}>Show duplicates</button>
+				<button class="chip" aria-pressed={data.include_archived} onclick={toggleArchived} title="Include archived jobs (e.g. auto-archived low scores) so you can see why they were dropped">Show archived</button>
 			</div>
 
 			{#if !isManual}
