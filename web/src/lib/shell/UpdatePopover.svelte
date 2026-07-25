@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { updater } from '$lib/updater.svelte';
 
 	// Fall back to a generic line when the release carries no notes (electron-updater
@@ -8,11 +7,9 @@
 	let label = $derived(
 		updater.downloaded ? 'Restart to install' : updater.downloading ? 'Downloading…' : 'Download & install'
 	);
-
-	function openFullNotes() {
-		updater.closePopover();
-		goto('/settings');
-	}
+	// Built as one expression rather than markup: whitespace around a Svelte {#if}
+	// boundary gets collapsed, which ate the space before the separator.
+	let sizeSuffix = $derived(updater.size ? ` · ${updater.size}` : '');
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -35,8 +32,7 @@
 		<div>
 			<div class="uh-t">Update available</div>
 			<div class="uh-s">
-				job-applier <b id="upVer" style="color:var(--fg)">v{updater.version}</b>{#if updater.size}
-					· {updater.size}{/if}
+				job-applier <b id="upVer" style="color:var(--fg)">v{updater.version}</b>{sizeSuffix}
 			</div>
 		</div>
 	</div>
@@ -50,13 +46,13 @@
 		<span style:width="{updater.percent}%"></span>
 	</div>
 	<div class="uf">
-		<span
+		<a
 			class="lnk"
 			id="upNotesLink"
-			role="button"
-			tabindex="0"
-			onclick={openFullNotes}
-			onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && openFullNotes()}>Full release notes</span
+			href={updater.releaseUrl}
+			target="_blank"
+			rel="noopener"
+			onclick={() => updater.closePopover()}>Full release notes</a
 		>
 		<button type="button" class="btn sm" id="upLater" onclick={() => updater.closePopover()}>Later</button>
 		<button

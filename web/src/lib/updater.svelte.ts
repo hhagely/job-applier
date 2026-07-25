@@ -52,6 +52,16 @@ export class Updater {
 		return desktop()?.version ?? '';
 	}
 
+	/**
+	 * GitHub release page for the pending update — what "release notes" links to.
+	 * Falls back to /latest before a version is known. The Electron shell opens
+	 * non-loopback URLs in the OS browser (see registerExternalLinks in main.js).
+	 */
+	get releaseUrl(): string {
+		const releases = 'https://github.com/hhagely/job-applier/releases';
+		return this.version ? `${releases}/tag/v${this.version}` : `${releases}/latest`;
+	}
+
 	private apply(e: UpdaterEvent): void {
 		if (!e || !e.type) return;
 		this.applied = true;
