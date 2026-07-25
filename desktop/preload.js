@@ -14,5 +14,21 @@ contextBridge.exposeInMainWorld('desktop', {
 		minimize: () => ipcRenderer.send('window:minimize'),
 		maximize: () => ipcRenderer.send('window:maximize'),
 		close: () => ipcRenderer.send('window:close')
+	},
+	// Auto-update bridge (electron-updater lives in the main process). `onEvent`
+	// streams typed events (checking/available/not-available/progress/downloaded/
+	// error) and returns an unsubscribe fn; `getState` pulls the last event for a
+	// late mount; `check` re-runs the check; `download` starts the two-phase
+	// download; `install` quits and applies a downloaded update.
+	updater: {
+		onEvent: (cb) => {
+			const listener = (_e, payload) => cb(payload);
+			ipcRenderer.on('updater:event', listener);
+			return () => ipcRenderer.removeListener('updater:event', listener);
+		},
+		getState: () => ipcRenderer.invoke('updater:state'),
+		check: () => ipcRenderer.invoke('updater:check'),
+		download: () => ipcRenderer.invoke('updater:download'),
+		install: () => ipcRenderer.send('updater:install')
 	}
 });

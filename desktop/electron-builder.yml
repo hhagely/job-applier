@@ -10,6 +10,9 @@ directories:
 # GitHub Releases (Phase 7). `electron-builder --publish always` uploads the built
 # installers to the repo's Release for the current tag; `--publish never` (used in
 # the release workflow before the data-isolation guard runs) builds without uploading.
+# This block also drives auto-update: it's baked into app-update.yml so the packaged
+# app's electron-updater knows to read latest.yml / latest-linux.yml from this repo's
+# Releases. The release workflow uploads those .yml manifests alongside the installers.
 publish:
   provider: github
   owner: hhagely
@@ -17,6 +20,11 @@ publish:
 
 # Only the shell code goes into the app bundle; the backend sidecar and the
 # built SvelteKit server ride along as unpacked resources.
+# NOTE: this list scopes the app's OWN source only. electron-builder additionally
+# bundles every *production* dependency from node_modules automatically — that's how
+# electron-updater (the one runtime dep, in package.json "dependencies") ships. Do
+# NOT add node_modules globs here to "fix" a missing dep; that would drag in dev
+# tooling (electron, electron-builder). Keep runtime deps in "dependencies".
 files:
   - main.js
   - preload.js
@@ -47,6 +55,14 @@ linux:
   maintainer: Herb Hagely <herb.hagely@gmail.com>
 
 nsis:
+  # MUST stay free of spaces. electron-builder's default is
+  # "${productName} Setup ${version}.${ext}" -> "job-applier Setup 0.1.3.exe", and
+  # that name is what gets written into latest.yml. GitHub then rewrites spaces to
+  # DOTS on upload ("job-applier.Setup.0.1.3.exe") while electron-updater rewrites
+  # them to HYPHENS when building the download URL (GitHubProvider.resolveFiles),
+  # so the two never agree and every Windows update 404s. Hyphenating here makes
+  # the updater's replace(/ /g,'-') a no-op and the three names identical.
+  artifactName: ${productName}-Setup-${version}.${ext}
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true

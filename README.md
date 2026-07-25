@@ -40,9 +40,15 @@ you install and log into — install **one** of
 (ingest, filter, browse, track, PDF export) works with no AI CLI installed** —
 the app just hides the scoring/drafting buttons until you add one at `/settings`.
 
-**Updates.** The app checks GitHub Releases and shows a dismissible banner when a
-newer version is out, linking back to the Releases page — download and install
-over the top. There is no background auto-update (that needs code signing).
+**Updates.** The desktop app checks GitHub Releases on launch and, when a newer
+version is out, shows an **Update** pill in the title bar. Opening it reveals what's
+new; **Download & install** fetches the new version (with a progress bar), then
+**Restart to install** swaps the app in place, keeping your data (electron-updater).
+You can also check any time from **Settings → About & updates** or the ⌘/Ctrl-K
+command palette. The installer is unsigned, so the same one-time SmartScreen appears.
+On Linux both packages self-update: the AppImage swaps itself, and the `.deb` installs
+through `dpkg` behind a password prompt (if neither `dpkg` nor `apt` is available, an
+error is shown instead).
 
 ## Architecture
 

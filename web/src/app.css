@@ -356,6 +356,48 @@ kbd {
 	height: 11px;
 }
 
+/* update indicator (titlebar pill; the popover styles live in UpdatePopover.svelte) */
+.update-pill {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	height: 26px;
+	padding: 0 11px 0 9px;
+	border-radius: 20px;
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--accent);
+	background: var(--accent-soft);
+	border: 1px solid color-mix(in oklch, var(--accent) 32%, transparent);
+	-webkit-app-region: no-drag;
+	margin-right: 6px;
+	white-space: nowrap;
+}
+.update-pill.show {
+	display: inline-flex;
+}
+.update-pill:hover {
+	background: color-mix(in oklch, var(--accent) 18%, transparent);
+}
+.update-pill .ud-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+	/* shares the status bar's pulse keyframes (defined with .statusbar .live.busy) */
+	animation: sb-pulse 2.4s ease-in-out infinite;
+}
+.update-pill svg {
+	width: 13px;
+	height: 13px;
+}
+@media (prefers-reduced-motion: reduce) {
+	.update-pill .ud-dot {
+		animation: none;
+	}
+}
+
 /* ============================================================ SIDEBAR */
 .sidebar {
 	width: 236px;
@@ -669,6 +711,12 @@ kbd {
 	color: var(--muted);
 	background: var(--surface-2);
 	white-space: nowrap;
+}
+/* accent variant (update badge) — same treatment as .update-pill */
+.pill.accent {
+	color: var(--accent);
+	background: var(--accent-soft);
+	border-color: color-mix(in oklch, var(--accent) 32%, transparent);
 }
 .pill.src-hackernews,
 .pill.src-hn {
@@ -1085,27 +1133,10 @@ select.input {
 	gap: 4px;
 }
 
-.toast {
-	position: fixed;
-	bottom: 44px;
-	left: 50%;
-	transform: translateX(-50%) translateY(20px);
-	background: var(--surface-3);
-	border: 1px solid var(--border-2);
-	color: var(--fg);
-	padding: 9px 16px;
-	border-radius: 9px;
-	font-size: 12.5px;
-	box-shadow: var(--shadow);
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 0.2s, transform 0.2s;
-	z-index: 60;
-}
-.toast.show {
-	opacity: 1;
-	transform: translateX(-50%) translateY(0);
-}
+/* NOTE: the toast styles live in Toaster.svelte (scoped). A global `.toast` used to
+   sit here, left over from the Open Design prototype; it had no consumer but its
+   `opacity:0` / `pointer-events:none` still cascaded into the scoped rule, making
+   every toast invisible and unclickable. Keep toast styling in the component. */
 
 /* ============================================================ SHARED LAYOUT HELPERS */
 .stack {

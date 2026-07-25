@@ -6,6 +6,7 @@
 	import { theme } from '$lib/theme.svelte';
 	import { NAV } from './nav';
 	import { emitCommand, type ShellCommand } from './commandBus';
+	import { updater } from '$lib/updater.svelte';
 
 	let {
 		open = false,
@@ -35,6 +36,10 @@
 		{ t: 'Run scrape now', cat: 'Action', ico: 'refresh', run: () => runDashboardCommand('scrape') },
 		{ t: 'Score pending jobs', cat: 'Action', ico: 'star', run: () => runDashboardCommand('score') },
 		{ t: 'Toggle light / dark theme', cat: 'Action', ico: 'sun', run: () => theme.toggle() },
+		// Only in the desktop shell, where electron-updater can actually check.
+		...(updater.present
+			? [{ t: 'Check for updates', cat: 'Action', ico: 'download', run: () => updater.check() }]
+			: []),
 		{ t: 'Show keyboard shortcuts', cat: 'Help', ico: 'key', run: () => onShowHelp() }
 	];
 

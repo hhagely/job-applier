@@ -8,7 +8,9 @@
 	import StatusBar from '$lib/shell/StatusBar.svelte';
 	import CommandPalette from '$lib/shell/CommandPalette.svelte';
 	import HelpSheet from '$lib/shell/HelpSheet.svelte';
-	import UpdateBanner from '$lib/shell/UpdateBanner.svelte';
+	import UpdatePopover from '$lib/shell/UpdatePopover.svelte';
+	import Toaster from '$lib/shell/Toaster.svelte';
+	import { updater } from '$lib/updater.svelte';
 	import { initTheme, theme } from '$lib/theme.svelte';
 	import { initAppearance } from '$lib/appearance.svelte';
 	import { NAV } from '$lib/shell/nav';
@@ -60,6 +62,7 @@
 		if (e.key === 'Escape') {
 			paletteOpen = false;
 			helpOpen = false;
+			updater.closePopover();
 			return;
 		}
 		if (typing) return;
@@ -85,7 +88,7 @@
 
 <Titlebar onOpenPalette={() => (paletteOpen = true)} onOpenHelp={() => (helpOpen = true)} />
 
-<UpdateBanner update={data.update} />
+<UpdatePopover />
 
 <div class="shell">
 	<Sidebar counts={data.counts ?? {}} profile={data.profile ?? null} />
@@ -113,3 +116,5 @@
 />
 
 <HelpSheet open={helpOpen} onClose={() => (helpOpen = false)} {mod} />
+
+<Toaster />

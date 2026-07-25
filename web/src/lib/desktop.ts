@@ -4,6 +4,48 @@
 
 import { browser } from '$app/environment';
 
+// Auto-update events streamed from the main process (electron-updater). Mirrors the
+// payloads sent in desktop/main.js. `idle` is the pre-check resting state.
+export type UpdaterEventType =
+	| 'idle'
+	| 'checking'
+	| 'available'
+	| 'not-available'
+	| 'progress'
+	| 'downloaded'
+	| 'error';
+
+/** Trimmed UpdateInfo the popover + Settings card render. */
+export interface UpdateDetails {
+	version?: string;
+	releaseDate?: string;
+	sizeBytes?: number;
+	notes?: string[];
+}
+
+export interface UpdaterEvent {
+	type: UpdaterEventType;
+	/** Present on available / not-available / downloaded. */
+	info?: UpdateDetails;
+	/** 0–100 on progress. */
+	percent?: number;
+	/** Present on error. */
+	message?: string;
+}
+
+export interface DesktopUpdater {
+	/** Subscribe to update events; returns an unsubscribe fn. */
+	onEvent: (cb: (e: UpdaterEvent) => void) => () => void;
+	/** Last cached event (for a late mount). */
+	getState: () => Promise<UpdaterEvent>;
+	/** Re-run the update check. */
+	check: () => Promise<UpdaterEvent>;
+	/** Start downloading the available update (two-phase flow). */
+	download: () => Promise<unknown>;
+	/** Quit and install a downloaded update. */
+	install: () => void;
+}
+
 export interface DesktopBridge {
 	isElectron?: boolean;
 	version?: string;
@@ -13,6 +55,7 @@ export interface DesktopBridge {
 		maximize: () => void;
 		close: () => void;
 	};
+	updater?: DesktopUpdater;
 }
 
 export function desktop(): DesktopBridge | null {

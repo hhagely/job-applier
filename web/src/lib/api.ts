@@ -478,6 +478,9 @@ export const api = {
 
 	getUpdate: (fetchFn: FetchFn, base: string) => call<UpdateInfo>(fetchFn, base, '/api/update'),
 
+	getVersion: (fetchFn: FetchFn, base: string) =>
+		call<{ version: string }>(fetchFn, base, '/api/version'),
+
 	listBlacklist: (fetchFn: FetchFn, base: string) =>
 		call<BlacklistedCompany[]>(fetchFn, base, '/api/blacklist'),
 

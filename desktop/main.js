@@ -7,6 +7,7 @@
 // packaged app ships no Playwright.
 
 const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { spawn, execSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
@@ -21,6 +22,9 @@ let backendProc = null;
 let webServer = null;
 let pdfServer = null;
 let mainWindow = null;
+// Last auto-update event pushed to the renderer, cached so a window that loads
+// (or reloads) after an event still gets the current state via `updater:state`.
+let lastUpdaterEvent = { type: 'idle' };
 
 // --- utilities -------------------------------------------------------------
 
@@ -266,6 +270,136 @@ function registerExternalLinks(contents) {
 	});
 }
 
+// --- auto-update (electron-updater) ----------------------------------------
+
+// Two-phase, user-driven update (matches the design): check on launch, show the
+// titlebar pill when a release exists, and let the user tap Download → Restart.
+// electron-updater reads app-update.yml (generated from the electron-builder
+// `publish` block) to find the feed and verifies the installer's sha512 against
+// latest.yml. Unsigned on Windows: the NSIS installer shows a one-time SmartScreen
+// the README documents. Both Linux targets self-update: AppImage swaps the file,
+// and the .deb installs via dpkg behind a polkit prompt (electron-builder marks
+// deb as auto-updatable and writes its entry into latest-linux.yml). A machine with
+// neither dpkg nor apt is the case that errors, and it surfaces as a toast.
+//
+// The main process owns electron-updater and streams typed events to the renderer
+// (updater:event), also caching the latest in lastUpdaterEvent so a window that
+// mounts after an event can pull current state via updater:state. The renderer
+// (web/src/lib/updater.svelte.ts) turns them into the pill + popover + Settings card.
+
+const send = (type, payload = {}) => {
+	lastUpdaterEvent = { type, ...payload };
+	// The renderer may not have subscribed yet, and a window reload drops its
+	// in-memory state — the cache covers both; it backfills via updater:state on
+	// mount. webContents can be torn down independently of the window, and send()
+	// on a dead one throws; swallowing here matters because one caller is itself a
+	// .catch() with no downstream handler (an unhandled rejection kills the app).
+	if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+		try {
+			mainWindow.webContents.send('updater:event', lastUpdaterEvent);
+		} catch {
+			/* window tearing down */
+		}
+	}
+};
+
+const errText = (err) => String(err?.message || err);
+
+// Trim electron-updater's UpdateInfo to just what the popover + Settings card show.
+function pickInfo(info) {
+	return {
+		version: info?.version,
+		releaseDate: info?.releaseDate,
+		sizeBytes: info?.files?.[0]?.size || 0,
+		notes: normalizeNotes(info?.releaseNotes)
+	};
+}
+
+// releaseNotes may be a string (HTML) or an array of {version, note}; normalize to
+// a plain string[] the "What's new" list can render.
+function normalizeNotes(rn) {
+	if (!rn) return [];
+	if (Array.isArray(rn)) {
+		return rn.map((r) => String((r && r.note) || '').replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+	}
+	return String(rn)
+		.replace(/<\/li>/gi, '\n')
+		.replace(/<[^>]+>/g, '')
+		.split('\n')
+		.map((s) => s.trim())
+		.filter(Boolean);
+}
+
+function initAutoUpdater() {
+	// electron-updater no-ops in dev ("application is not packed", checkForUpdates
+	// resolves null) because there's no app-update.yml, so the whole flow is
+	// packaged-only; `make electron` dev runs just skip it.
+	if (!app.isPackaged) return;
+
+	// autoDownload=false is intentional: the UI's two-phase Download → Restart depends
+	// on it. autoInstallOnAppQuit is the safety net if they quit instead of restarting.
+	autoUpdater.autoDownload = false;
+	autoUpdater.autoInstallOnAppQuit = true;
+
+	autoUpdater.on('checking-for-update', () => send('checking'));
+	autoUpdater.on('update-available', (info) => send('available', { info: pickInfo(info) }));
+	autoUpdater.on('update-not-available', (info) => send('not-available', { info: pickInfo(info) }));
+	autoUpdater.on('download-progress', (p) => send('progress', { percent: (p && p.percent) || 0 }));
+	autoUpdater.on('update-downloaded', (info) => send('downloaded', { info: pickInfo(info) }));
+	// Fail soft: a feed error / rate-limit / non-updatable package (.deb) must never
+	// crash the app — it surfaces as an error toast and the UI recovers.
+	autoUpdater.on('error', (err) => send('error', { message: errText(err) }));
+
+	// Quiet launch check: the pill only appears on 'available', and the renderer
+	// only toasts "you're on the latest version" for a check the user asked for,
+	// so this never nags when up to date.
+	autoUpdater.checkForUpdates().catch((err) => send('error', { message: errText(err) }));
+}
+
+// Renderer-driven controls. `state`/`check`/`download` are request/response (invoke);
+// `install` is fire-and-forget (the app is about to quit). `check`/`download`/`install`
+// are guarded on app.isPackaged so a browser-dev build or an unpacked run can't reach
+// downloadUpdate/quitAndInstall; `state` needs no guard (it only reads the cache).
+//
+// Rejections are deliberately NOT swallowed here: ipcMain.handle forwards them to the
+// renderer's invoke(), which is where the recovery lives (reset `downloading`, toast).
+function registerUpdaterIpc() {
+	ipcMain.handle('updater:state', () => lastUpdaterEvent);
+	ipcMain.handle('updater:check', async () => {
+		// Not packaged: no listeners are registered, so nothing would ever come back
+		// and the UI would sit on "checking…" forever. Answer synthetically instead.
+		if (!app.isPackaged) {
+			send('error', { message: 'Updates are only available in the packaged app.' });
+			return lastUpdaterEvent;
+		}
+		await autoUpdater.checkForUpdates();
+		return lastUpdaterEvent;
+	});
+	ipcMain.handle('updater:download', async () => {
+		if (!app.isPackaged) throw new Error('Updates are only available in the packaged app.');
+		await autoUpdater.downloadUpdate();
+	});
+	ipcMain.on('updater:install', async () => {
+		if (!app.isPackaged) return;
+		// quitAndInstall spawns the installer BEFORE app.quit() runs shutdown(), so the
+		// PyInstaller sidecar could still be holding a file lock on resources/backend
+		// inside the install dir while NSIS tries to replace it. Stop it and wait first.
+		app.isQuitting = true;
+		await stopBackend();
+		try {
+			// isSilent=false shows the installer UI; the relaunch comes from
+			// autoRunAppAfterInstall (default true), NOT from the second arg — that one
+			// is only honored in silent mode.
+			autoUpdater.quitAndInstall(false, true);
+		} catch (err) {
+			// Install refused (e.g. no dpkg/apt for a .deb). Stay alive and report it,
+			// and clear isQuitting or a later backend crash would be silently swallowed.
+			app.isQuitting = false;
+			send('error', { message: errText(err) });
+		}
+	});
+}
+
 // --- lifecycle -------------------------------------------------------------
 
 // Electron's loadURL() rejects whenever a navigation is aborted or the target
@@ -344,6 +478,10 @@ async function boot() {
 	});
 	registerExternalLinks(mainWindow.webContents);
 	await loadWithRetry(mainWindow, loadUrl);
+
+	// Kick off the update check once the window is up so its events have somewhere
+	// to land. Packaged-only (see initAutoUpdater); a no-op in dev.
+	initAutoUpdater();
 }
 
 // Window controls invoked from the custom titlebar. Toggle maximize so the
@@ -359,14 +497,34 @@ function registerWindowIpc() {
 	ipcMain.on('window:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 }
 
+// SIGTERM the sidecar and resolve once it's actually gone (SIGKILL, then give up,
+// after `graceMs`). The updater path awaits this before handing off to the installer:
+// the sidecar's exe lives inside the install directory, and Windows won't let NSIS
+// replace a running image.
+function stopBackend(graceMs = 4000) {
+	if (!backendProc || backendProc.exitCode !== null) return Promise.resolve();
+	const proc = backendProc;
+	return new Promise((resolve) => {
+		const done = () => {
+			clearTimeout(hard);
+			clearTimeout(giveUp);
+			resolve();
+		};
+		proc.once('exit', done);
+		proc.kill('SIGTERM');
+		const hard = setTimeout(() => {
+			if (proc.exitCode === null) proc.kill('SIGKILL');
+		}, graceMs);
+		// Never block quitting forever if the process refuses to die.
+		const giveUp = setTimeout(done, graceMs + 1000);
+	});
+}
+
 function shutdown() {
 	app.isQuitting = true;
-	if (backendProc && backendProc.exitCode === null) {
-		backendProc.kill('SIGTERM');
-		setTimeout(() => {
-			if (backendProc && backendProc.exitCode === null) backendProc.kill('SIGKILL');
-		}, 5000);
-	}
+	// Fire-and-forget here: 'before-quit' is synchronous, so we can't await. The
+	// updater path calls stopBackend() directly and does await it.
+	void stopBackend();
 	try {
 		webServer?.close();
 	} catch {
@@ -380,6 +538,7 @@ function shutdown() {
 }
 
 registerWindowIpc();
+registerUpdaterIpc();
 // Guard the whole boot chain: a rejection here (failed dev-server load, web
 // handler import, etc.) must not surface as an uncaught exception, or the
 // electronmon dev hook latches "errored" and stops auto-relaunching after a
