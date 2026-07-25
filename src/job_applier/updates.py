@@ -4,10 +4,12 @@ Compares the running version (``job_applier.__version__`` — the single source 
 truth, Workstream B) against the latest GitHub Release. This runs server-side so it
 works in browser dev and is unit-testable by mocking ``httpx``.
 
-The **desktop app** additionally auto-updates via electron-updater (background
-download + "Restart & install"; see ``desktop/main.js``). This server check is the
-fallback path — it drives the "Open Releases" link banner in a plain browser and
-when electron-updater can't self-update (e.g. the ``.deb`` package).
+The **desktop app** auto-updates via electron-updater (two-phase Download → Restart;
+see ``desktop/main.js`` + ``web/src/lib/updater.svelte.ts``): the titlebar pill,
+popover, and Settings "About & updates" card are driven entirely by electron-updater
+events, not by this check. This endpoint is retained as a version-comparison API but
+is **no longer wired into the UI**; the UI reads the running version from
+``/api/version`` (and, in the desktop shell, ``window.desktop.version``).
 
 Design constraints from the spec:
 - Cache in-process (6h TTL) so we don't hit GitHub on every page load.

@@ -22,9 +22,9 @@ let backendProc = null;
 let webServer = null;
 let pdfServer = null;
 let mainWindow = null;
-// Last auto-update state pushed to the renderer, cached so a window that loads
+// Last auto-update event pushed to the renderer, cached so a window that loads
 // (or reloads) after an event still gets the current state via `updater:state`.
-let lastUpdaterEvent = { state: 'idle' };
+let lastUpdaterEvent = { type: 'idle' };
 
 // --- utilities -------------------------------------------------------------
 
@@ -272,24 +272,52 @@ function registerExternalLinks(contents) {
 
 // --- auto-update (electron-updater) ----------------------------------------
 
-// Background download + install-on-relaunch of the GitHub Release matching this
-// OS. electron-updater reads app-update.yml (generated from the electron-builder
-// `publish` block) to find the feed, downloads the installer whose sha512 matches
-// latest.yml, and swaps the app on quit. Unsigned on Windows: the NSIS installer
-// still shows a one-time SmartScreen the README documents. Only AppImage is
-// auto-updatable on Linux; the .deb build fails soft to the "Open Releases" banner.
+// Two-phase, user-driven update (matches the design): check on launch, show the
+// titlebar pill when a release exists, and let the user tap Download → Restart.
+// electron-updater reads app-update.yml (generated from the electron-builder
+// `publish` block) to find the feed and verifies the installer's sha512 against
+// latest.yml. Unsigned on Windows: the NSIS installer shows a one-time SmartScreen
+// the README documents; AppImage self-updates on Linux; the .deb can't and simply
+// surfaces an error toast.
 //
-// Every state transition is mirrored to the renderer (updater:event) AND cached in
-// lastUpdaterEvent so a window that mounts after an event can pull current state
-// via updater:state. The renderer's UpdateBanner turns this into a progress bar and
-// a "Restart & install" button (see web/src/lib/updater.svelte.ts).
+// The main process owns electron-updater and streams typed events to the renderer
+// (updater:event), also caching the latest in lastUpdaterEvent so a window that
+// mounts after an event can pull current state via updater:state. The renderer
+// (web/src/lib/updater.svelte.ts) turns them into the pill + popover + Settings card.
 
-function pushUpdaterEvent(payload) {
-	lastUpdaterEvent = payload;
-	// The window may not exist yet (checks fire after boot) — the cache covers that.
+const send = (type, payload = {}) => {
+	lastUpdaterEvent = { type, ...payload };
+	// The window may not exist yet (the launch check fires during boot) — the cache
+	// covers that; the renderer backfills via updater:state on mount.
 	if (mainWindow && !mainWindow.isDestroyed()) {
-		mainWindow.webContents.send('updater:event', payload);
+		mainWindow.webContents.send('updater:event', lastUpdaterEvent);
 	}
+};
+
+// Trim electron-updater's UpdateInfo to just what the popover + Settings card show.
+function pickInfo(info) {
+	const size = info && info.files && info.files[0] && info.files[0].size;
+	return {
+		version: info && info.version,
+		releaseDate: info && info.releaseDate,
+		sizeBytes: size || 0,
+		notes: normalizeNotes(info && info.releaseNotes)
+	};
+}
+
+// releaseNotes may be a string (HTML) or an array of {version, note}; normalize to
+// a plain string[] the "What's new" list can render.
+function normalizeNotes(rn) {
+	if (!rn) return [];
+	if (Array.isArray(rn)) {
+		return rn.map((r) => String((r && r.note) || '').replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+	}
+	return String(rn)
+		.replace(/<\/li>/gi, '\n')
+		.replace(/<[^>]+>/g, '')
+		.split('\n')
+		.map((s) => s.trim())
+		.filter(Boolean);
 }
 
 function initAutoUpdater() {
@@ -297,41 +325,38 @@ function initAutoUpdater() {
 	// so the whole flow is packaged-only; `make electron` dev runs just skip it.
 	if (!app.isPackaged) return;
 
-	autoUpdater.autoDownload = true; // pull the installer as soon as one is found
-	autoUpdater.autoInstallOnAppQuit = true; // and apply it on the next quit
+	// autoDownload=false is intentional: the UI's two-phase Download → Restart depends
+	// on it. autoInstallOnAppQuit is the safety net if they quit instead of restarting.
+	autoUpdater.autoDownload = false;
+	autoUpdater.autoInstallOnAppQuit = true;
 
-	autoUpdater.on('checking-for-update', () => pushUpdaterEvent({ state: 'checking' }));
-	autoUpdater.on('update-available', (info) =>
-		pushUpdaterEvent({ state: 'available', version: info?.version })
-	);
-	autoUpdater.on('update-not-available', (info) =>
-		pushUpdaterEvent({ state: 'none', version: info?.version })
-	);
-	autoUpdater.on('download-progress', (p) =>
-		pushUpdaterEvent({ state: 'downloading', percent: Math.round(p?.percent ?? 0) })
-	);
-	autoUpdater.on('update-downloaded', (info) =>
-		pushUpdaterEvent({ state: 'downloaded', version: info?.version })
-	);
+	autoUpdater.on('checking-for-update', () => send('checking'));
+	autoUpdater.on('update-available', (info) => send('available', { info: pickInfo(info) }));
+	autoUpdater.on('update-not-available', (info) => send('not-available', { info: pickInfo(info) }));
+	autoUpdater.on('download-progress', (p) => send('progress', { percent: (p && p.percent) || 0 }));
+	autoUpdater.on('update-downloaded', (info) => send('downloaded', { info: pickInfo(info) }));
 	// Fail soft: a feed error / rate-limit / non-updatable package (.deb) must never
-	// crash the app or nag — the banner falls back to the "Open Releases" link.
-	autoUpdater.on('error', (err) =>
-		pushUpdaterEvent({ state: 'error', error: String(err?.message || err) })
-	);
+	// crash the app — it surfaces as an error toast and the UI recovers.
+	autoUpdater.on('error', (err) => send('error', { message: String((err && err.message) || err) }));
 
-	autoUpdater.checkForUpdates().catch((err) => {
-		pushUpdaterEvent({ state: 'error', error: String(err?.message || err) });
-	});
+	// Quiet launch check: the pill only appears on 'available', so this never nags
+	// when up to date.
+	autoUpdater.checkForUpdates().catch((err) =>
+		send('error', { message: String((err && err.message) || err) })
+	);
 }
 
-// Renderer-driven controls. `state`/`check` are request/response (invoke); `install`
-// is fire-and-forget (the app is about to quit). All are guarded so a browser-dev
-// build or an unpacked run can't reach quitAndInstall.
+// Renderer-driven controls. `state`/`check`/`download` are request/response (invoke);
+// `install` is fire-and-forget (the app is about to quit). All are guarded so a
+// browser-dev build or an unpacked run can't reach downloadUpdate/quitAndInstall.
 function registerUpdaterIpc() {
 	ipcMain.handle('updater:state', () => lastUpdaterEvent);
 	ipcMain.handle('updater:check', () => {
 		if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {});
 		return lastUpdaterEvent;
+	});
+	ipcMain.handle('updater:download', () => {
+		if (app.isPackaged) return autoUpdater.downloadUpdate().catch(() => {});
 	});
 	ipcMain.on('updater:install', () => {
 		if (!app.isPackaged) return;

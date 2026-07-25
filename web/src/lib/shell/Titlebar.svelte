@@ -3,6 +3,7 @@
 	import Icon from '$lib/Icon.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import { desktop, isElectron } from '$lib/desktop';
+	import UpdatePill from './UpdatePill.svelte';
 
 	let { onOpenPalette, onOpenHelp }: { onOpenPalette: () => void; onOpenHelp: () => void } =
 		$props();
@@ -30,6 +31,7 @@
 	</button>
 
 	<div class="tb-actions">
+		<UpdatePill />
 		<button
 			class="icon-btn"
 			onclick={() => theme.toggle()}

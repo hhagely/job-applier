@@ -4,34 +4,44 @@
 
 import { browser } from '$app/environment';
 
-// Auto-update state streamed from the main process (electron-updater). Mirrors the
-// payloads pushed in desktop/main.js. `idle`/`none` mean "nothing to show".
-export type UpdaterState =
+// Auto-update events streamed from the main process (electron-updater). Mirrors the
+// payloads sent in desktop/main.js. `idle` is the pre-check resting state.
+export type UpdaterEventType =
 	| 'idle'
 	| 'checking'
 	| 'available'
-	| 'downloading'
+	| 'not-available'
+	| 'progress'
 	| 'downloaded'
-	| 'none'
 	| 'error';
 
-export interface UpdaterEvent {
-	state: UpdaterState;
-	/** Target version (available/downloaded) or the up-to-date version (none). */
+/** Trimmed UpdateInfo the popover + Settings card render. */
+export interface UpdateDetails {
 	version?: string;
-	/** 0–100 while downloading. */
+	releaseDate?: string;
+	sizeBytes?: number;
+	notes?: string[];
+}
+
+export interface UpdaterEvent {
+	type: UpdaterEventType;
+	/** Present on available / not-available / downloaded. */
+	info?: UpdateDetails;
+	/** 0–100 on progress. */
 	percent?: number;
-	/** Set only when state === 'error'. */
-	error?: string;
+	/** Present on error. */
+	message?: string;
 }
 
 export interface DesktopUpdater {
-	/** Subscribe to state transitions; returns an unsubscribe fn. */
+	/** Subscribe to update events; returns an unsubscribe fn. */
 	onEvent: (cb: (e: UpdaterEvent) => void) => () => void;
-	/** Current cached state (for a late mount). */
+	/** Last cached event (for a late mount). */
 	getState: () => Promise<UpdaterEvent>;
 	/** Re-run the update check. */
 	check: () => Promise<UpdaterEvent>;
+	/** Start downloading the available update (two-phase flow). */
+	download: () => Promise<unknown>;
 	/** Quit and install a downloaded update. */
 	install: () => void;
 }

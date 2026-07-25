@@ -24,6 +24,7 @@
 		external: '<path d="M7 17L17 7M9 7h8v8"/>',
 		chevron: '<path d="M9 6l6 6-6 6"/>',
 		upload: '<path d="M12 16V4M6 10l6-6 6 6"/><path d="M4 20h16"/>',
+		download: '<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/>',
 		palette: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9l3 3-3 3"/>',
 		logo: '<path d="M20 6L9 17l-5-5"/>',
 		x: '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>'

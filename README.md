@@ -41,11 +41,12 @@ you install and log into — install **one** of
 the app just hides the scoring/drafting buttons until you add one at `/settings`.
 
 **Updates.** The desktop app checks GitHub Releases on launch and, when a newer
-version is out, **downloads it in the background and shows a "Restart & install"
-banner** (electron-updater) — one click swaps the app in place, keeping your data.
-The installer is still unsigned, so the same one-time SmartScreen appears. The
-`.deb` package can't self-update; there (and when running in a plain browser) the
-banner instead links back to the Releases page for a manual download.
+version is out, shows an **Update** pill in the title bar. Opening it reveals what's
+new; **Download & install** fetches the new version (with a progress bar), then
+**Restart to install** swaps the app in place, keeping your data (electron-updater).
+You can also check any time from **Settings → About & updates** or the ⌘/Ctrl-K
+command palette. The installer is unsigned, so the same one-time SmartScreen appears;
+the `.deb` package can't self-update (an error is shown if you try).
 
 ## Architecture
 

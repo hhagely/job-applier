@@ -66,15 +66,6 @@ export const load: LayoutServerLoad = async ({ fetch, url, cookies }) => {
 		aiProvider = null;
 	}
 
-	// In-app update check (cached + fail-soft server-side). A null result just
-	// hides the banner; it never blocks the page.
-	let update = null;
-	try {
-		update = await api.getUpdate(fetch, base);
-	} catch {
-		update = null;
-	}
-
 	const counts: ShellCounts = { jobs: null, queue: null, followups: null, strong: null };
 	try {
 		const [passed, followups] = await Promise.all([
@@ -90,5 +81,5 @@ export const load: LayoutServerLoad = async ({ fetch, url, cookies }) => {
 		// leave counts as nulls — badges simply won't render
 	}
 
-	return { apiBase: base, aiProvider, counts, update, profile: deriveProfile(resume) };
+	return { apiBase: base, aiProvider, counts, profile: deriveProfile(resume) };
 };

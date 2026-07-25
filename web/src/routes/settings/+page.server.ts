@@ -4,8 +4,17 @@ import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const ai = await api.getProviders(fetch, serverApiBase());
-	return { ai };
+	const base = serverApiBase();
+	const ai = await api.getProviders(fetch, base);
+	// Running version for the About card. In the desktop shell the pill/popover use
+	// window.desktop.version; this backs the same value in a plain browser.
+	let version: string | null = null;
+	try {
+		version = (await api.getVersion(fetch, base)).version;
+	} catch {
+		version = null;
+	}
+	return { ai, version };
 };
 
 export const actions: Actions = {

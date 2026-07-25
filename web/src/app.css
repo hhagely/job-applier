@@ -356,6 +356,51 @@ kbd {
 	height: 11px;
 }
 
+/* update indicator (titlebar pill; the popover styles live in UpdatePopover.svelte) */
+.update-pill {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	height: 26px;
+	padding: 0 11px 0 9px;
+	border-radius: 20px;
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--accent);
+	background: var(--accent-soft);
+	border: 1px solid color-mix(in oklch, var(--accent) 32%, transparent);
+	-webkit-app-region: no-drag;
+	margin-right: 6px;
+	white-space: nowrap;
+}
+.update-pill.show {
+	display: inline-flex;
+}
+.update-pill:hover {
+	background: color-mix(in oklch, var(--accent) 18%, transparent);
+}
+.update-pill .ud-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+	animation: udpulse 2.4s ease-in-out infinite;
+}
+.update-pill svg {
+	width: 13px;
+	height: 13px;
+}
+@keyframes udpulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.4;
+	}
+}
+
 /* ============================================================ SIDEBAR */
 .sidebar {
 	width: 236px;
