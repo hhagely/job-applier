@@ -4,9 +4,13 @@
 ``main`` is protected (a repository ruleset requires every change to land through a
 pull request), so a release is TWO phases instead of one direct push:
 
-    make release VERSION=0.2.0        # phase 1: bump on release/v0.2.0 + open a PR
+    make release BUMP=minor           # phase 1: bump on release/v0.2.0 + open a PR
     # ... review + merge that PR on GitHub ...
     make release-tag VERSION=0.2.0    # phase 2: tag the merged commit + push the tag
+
+Phase 1 takes ``BUMP=major|minor|patch`` (derived from the current version) or an
+explicit ``VERSION=X.Y.Z``; phase 2 always names the version it expects to find on
+``main``, since that is the check that the right commit gets tagged.
 
 Pushing the ``v*`` tag is what triggers ``.github/workflows/release.yml`` (per-OS
 build -> data-isolation guard -> draft GitHub Release). The tag is pushed from your
@@ -54,6 +58,8 @@ _DEFAULT_BRANCH = "main"
 # X.Y.Z with an optional pre-release suffix (e.g. 0.2.0-rc1).
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 _VERSION_ASSIGN_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+_PLAIN_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_BUMP_KINDS = ("major", "minor", "patch")
 
 
 def _die(msg: str) -> "None":
@@ -124,46 +130,101 @@ def _replace_once(path: Path, pattern: str, repl: str, what: str) -> None:
     path.write_text(new_text, encoding="utf-8")
 
 
-def _parse(argv: list[str], subcmd: str) -> tuple[str, bool]:
+def _bumped(current: str, kind: str) -> str:
+    """Apply a major/minor/patch bump to *current*.
+
+    Deliberately refuses a pre-release current version (0.2.0-rc1): whether the next
+    patch is 0.2.0 (promote the rc) or 0.2.1 is a judgement call, so make the caller
+    say it with VERSION= instead of guessing wrong.
+    """
+    m = _PLAIN_VERSION_RE.match(current)
+    if not m:
+        _die(f"current version '{current}' is not a plain X.Y.Z; pass VERSION=X.Y.Z instead")
+    major, minor, patch = (int(g) for g in m.groups())
+    if kind == "major":
+        return f"{major + 1}.0.0"
+    if kind == "minor":
+        return f"{major}.{minor + 1}.0"
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def _take_bump(args: list[str]) -> str | None:
+    """Pop a ``--bump KIND`` pair out of *args* (mutating it); None if absent."""
+    if "--bump" not in args:
+        return None
+    i = args.index("--bump")
+    kind = (args[i + 1] if i + 1 < len(args) else "").lower()
+    del args[i : i + 2]
+    if kind not in _BUMP_KINDS:
+        _die(f"--bump needs one of {'|'.join(_BUMP_KINDS)} (got '{kind or 'nothing'}')")
+    return kind
+
+
+def _parse(
+    argv: list[str], subcmd: str, *, allow_bump: bool = False
+) -> tuple[str | None, str | None, bool]:
+    """Resolve argv to (version, bump_kind, dry_run) -- exactly one of the first two.
+
+    ``prepare`` also accepts ``--bump major|minor|patch``; resolving that to a number
+    is the caller's job, because it needs origin/main first. ``tag`` always takes the
+    literal version, because naming it is how phase 2 verifies it is tagging the
+    commit it thinks it is.
+    """
     dry_run = "--dry-run" in argv
     args = [a for a in argv if a != "--dry-run"]
+    kind = _take_bump(args) if allow_bump else None
+
+    if kind and args:
+        _die(f"pass either a version or --bump {'|'.join(_BUMP_KINDS)}, not both")
+    if kind:
+        return None, kind, dry_run
     if len(args) != 1:
-        _die(f"usage: release.py {subcmd} X.Y.Z [--dry-run]")
+        bump = f" | --bump {'|'.join(_BUMP_KINDS)}" if allow_bump else ""
+        _die(f"usage: release.py {subcmd} X.Y.Z{bump} [--dry-run]")
     version = args[0].lstrip("vV")
     if not _VERSION_RE.match(version):
         _die(f"'{version}' is not a valid version (expected X.Y.Z[-suffix])")
-    return version, dry_run
+    return version, None, dry_run
 
 
 def prepare(argv: list[str]) -> int:
     """Phase 1: bump the version on a release/ branch and open a PR into main."""
-    version, dry_run = _parse(argv, "prepare")
-    tag = f"v{version}"
-    branch = f"release/{tag}"
-    current = stamp_version.read_version()
+    arg_version, kind, dry_run = _parse(argv, "prepare", allow_bump=True)
 
     # --- preconditions (all read-only) --------------------------------------
-    if version == current:
-        _die(f"version is already {version}; bump to a new version")
     if _git("status", "--porcelain", capture=True):
         _die("working tree is not clean; commit or stash first, then re-run")
+
+    # The release branches off origin/main, so origin/main's version -- not the local
+    # checkout's, which may be behind -- is what a --bump counts from. Fetching here
+    # (rather than after the dry-run exit) is what makes the printed plan trustworthy.
+    _git("fetch", "origin", _DEFAULT_BRANCH)
+    current = _version_at(f"origin/{_DEFAULT_BRANCH}")
+    version = _bumped(current, kind) if kind else arg_version
+    tag = f"v{version}"
+    branch = f"release/{tag}"
+
+    if version == current:
+        _die(f"origin/{_DEFAULT_BRANCH} is already at {version}; bump to a new version")
     if _remote_has("--tags", tag):
         _die(f"tag {tag} already exists on origin (already released?)")
     if _remote_has("--heads", branch) or _ref_exists(f"refs/heads/{branch}"):
         _die(f"branch {branch} already exists; delete it or pick a new version")
 
     if dry_run:
-        print(f"[dry-run] would prepare release {tag} (current version: {current}). Would:")
+        print(f"[dry-run] would prepare release {tag} (origin/{_DEFAULT_BRANCH} is at {current}). Would:")
         print(f"  1. branch {branch} off origin/{_DEFAULT_BRANCH}")
         print(f"  2. bump to {version} in __init__.py, pyproject.toml, uv.lock, desktop/package.json")
         print(f"  3. commit 'Release {tag}', push {branch}, open a PR into {_DEFAULT_BRANCH}")
         print(f"then, after the PR merges: make release-tag VERSION={version}")
-        print("nothing was changed.")
+        print("nothing was committed, pushed, or tagged.")
         return 0
 
     # --- branch off the latest origin/main + bump ---------------------------
+    # Echo the resolved version first: with BUMP= the caller never typed it, so this
+    # is their only chance to see it before anything is branched or pushed.
+    print(f"preparing {tag} (origin/{_DEFAULT_BRANCH} is at {current})")
     start = _git("rev-parse", "--abbrev-ref", "HEAD", capture=True)
-    _git("fetch", "origin", _DEFAULT_BRANCH)
     _git("checkout", "-b", branch, f"origin/{_DEFAULT_BRANCH}")
 
     # Once we've switched branches, any failure must restore the caller's branch
@@ -239,7 +300,7 @@ def prepare(argv: list[str]) -> int:
 
 def tag_release(argv: list[str]) -> int:
     """Phase 2: verify the bump merged into main, then tag it and push the tag."""
-    version, dry_run = _parse(argv, "tag")
+    version, _kind, dry_run = _parse(argv, "tag")
     tag = f"v{version}"
 
     _git("fetch", "origin", _DEFAULT_BRANCH, "--tags")
@@ -275,7 +336,7 @@ def tag_release(argv: list[str]) -> int:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[1] in {"-h", "--help"}:
-        _die("usage: release.py {prepare|tag} X.Y.Z [--dry-run]")
+        _die("usage: release.py {prepare X.Y.Z|--bump KIND | tag X.Y.Z} [--dry-run]")
     sub, rest = argv[1], argv[2:]
     if sub == "prepare":
         return prepare(rest)
