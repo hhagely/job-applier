@@ -55,6 +55,14 @@ linux:
   maintainer: Herb Hagely <herb.hagely@gmail.com>
 
 nsis:
+  # MUST stay free of spaces. electron-builder's default is
+  # "${productName} Setup ${version}.${ext}" -> "job-applier Setup 0.1.3.exe", and
+  # that name is what gets written into latest.yml. GitHub then rewrites spaces to
+  # DOTS on upload ("job-applier.Setup.0.1.3.exe") while electron-updater rewrites
+  # them to HYPHENS when building the download URL (GitHubProvider.resolveFiles),
+  # so the two never agree and every Windows update 404s. Hyphenating here makes
+  # the updater's replace(/ /g,'-') a no-op and the three names identical.
+  artifactName: ${productName}-Setup-${version}.${ext}
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true

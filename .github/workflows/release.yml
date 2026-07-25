@@ -93,19 +93,24 @@ jobs:
           gh release view "$tag" >/dev/null 2>&1 || \
             gh release create "$tag" --draft --generate-notes --title "$tag" || true
           shopt -s nullglob
-          # Installers PLUS the electron-updater feed metadata: latest.yml /
-          # latest-linux.yml (the version + sha512 manifest the auto-updater reads)
-          # and the .blockmap files (differential-download index). Without the .yml
-          # the packaged app's auto-update check finds nothing. electron-builder
-          # writes all of these into dist/ during `--publish never`; we upload them
-          # here, after the data-isolation guard, so the guard still gates the ship.
-          files=(
-            desktop/dist/*.exe desktop/dist/*.blockmap
-            desktop/dist/*.AppImage desktop/dist/*.deb
-            desktop/dist/latest*.yml
-          )
-          if [ ${#files[@]} -eq 0 ]; then
+          # Guard on the INSTALLERS only. electron-builder writes latest*.yml whenever
+          # a publish block exists, so folding it into this array would make the count
+          # never reach 0 — and a metadata-only build would then ship a feed pointing
+          # at installers that aren't there, telling every client an update exists and
+          # 404ing on download. That is worse than the failure this guard catches.
+          installers=(desktop/dist/*.exe desktop/dist/*.AppImage desktop/dist/*.deb)
+          if [ ${#installers[@]} -eq 0 ]; then
             echo "No installer artifacts found to upload" >&2
             exit 1
           fi
+          # Ship the installers PLUS the electron-updater feed metadata: latest.yml /
+          # latest-linux.yml (the version + sha512 manifest the auto-updater reads, and
+          # without which the packaged app's check finds nothing) and the .blockmap
+          # files (differential-download index; the updater falls back to a full
+          # download without them). electron-builder writes all of these into dist/
+          # during `--publish never`; we upload them here, after the data-isolation
+          # guard, so the guard still gates the ship.
+          files=("${installers[@]}" desktop/dist/*.blockmap desktop/dist/latest*.yml)
+          # NOTE: the release stays a DRAFT. electron-updater reads releases.atom, which
+          # excludes drafts, so auto-update only goes live once it's published by hand.
           gh release upload "$tag" "${files[@]}" --clobber

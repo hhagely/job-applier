@@ -39,7 +39,10 @@
 	<div class="ub">
 		<h4>What's new</h4>
 		<ul class="un" id="upNotes">
-			{#each notes as n (n)}<li>{n}</li>{/each}
+			<!-- Keyed by index, not by value: release notes are a static, never-reordered
+			 list, and two identical lines (a repeated bullet) would otherwise throw
+			 `each_key_duplicate` and take the whole shell down with it. -->
+		{#each notes as n, i (i)}<li>{n}</li>{/each}
 		</ul>
 	</div>
 	<div class="up-prog" id="upProg" style:display={updater.downloading ? 'block' : 'none'}>

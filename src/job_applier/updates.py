@@ -14,7 +14,7 @@ is **no longer wired into the UI**; the UI reads the running version from
 Design constraints from the spec:
 - Cache in-process (6h TTL) so we don't hit GitHub on every page load.
 - Fail soft: any network error / rate-limit returns ``update_available: False``
-  rather than raising, so the banner simply doesn't appear.
+  rather than raising, so a caller just sees "no update".
 - No token: unauthenticated latest-release reads are fine for a single-user app.
 """
 
@@ -91,7 +91,7 @@ def check_for_update(*, force: bool = False) -> dict:
     """Return ``{current, latest, update_available, url}``.
 
     Cached for 6h and fail-soft: network errors, rate limits, or a malformed
-    response all yield ``update_available: False`` so the banner just stays hidden.
+    response all yield ``update_available: False`` rather than raising.
     """
     global _cache
     now = time.monotonic()
@@ -101,8 +101,8 @@ def check_for_update(*, force: bool = False) -> dict:
     try:
         latest = _fetch_latest_tag()
     except (httpx.HTTPError, ValueError, KeyError):
-        # Do not cache transient failures for the full TTL; a short backoff keeps
-        # the banner responsive once connectivity returns.
+        # Do not cache transient failures for the full TTL; a short backoff picks
+        # up a real answer soon after connectivity returns.
         result = _soft_result()
         _cache = (now + 5 * 60, result)
         return result

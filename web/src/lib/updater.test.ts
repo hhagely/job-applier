@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Updater } from './updater.svelte';
+import { toasts } from './toast.svelte';
 
 // A controllable stand-in for the electron-updater preload bridge.
 function fakeBridge() {
@@ -28,6 +29,7 @@ function installBridge(bridge: unknown, version = '2.0.0') {
 
 afterEach(() => {
 	delete (window as unknown as { desktop?: unknown }).desktop;
+	toasts.items = [];
 });
 
 describe('Updater store', () => {
@@ -122,5 +124,72 @@ describe('Updater store', () => {
 		await Promise.resolve();
 		expect(u.downloaded).toBe(true);
 		expect(u.version).toBe('9.9.9'); // not overwritten by the stale read
+	});
+
+	// The main process caches only the LAST event, so a window reload replays a bare
+	// 'downloaded'/'progress'. Both must imply availability or the pill and the
+	// Settings install row (gated on `available`) leave the user no way to install.
+	it('treats a replayed downloaded event as implying availability', () => {
+		const bridge = fakeBridge();
+		installBridge(bridge);
+		const u = new Updater();
+		bridge.emit({ type: 'downloaded', info: { version: '2.1.0' } });
+		expect(u.available).toBe(true);
+		expect(u.downloaded).toBe(true);
+	});
+
+	it('treats a replayed progress event as implying availability', () => {
+		const bridge = fakeBridge();
+		installBridge(bridge);
+		const u = new Updater();
+		bridge.emit({ type: 'progress', percent: 30 });
+		expect(u.available).toBe(true);
+		expect(u.downloading).toBe(true);
+	});
+
+	it('keeps a completed download when the same version is re-offered', () => {
+		const bridge = fakeBridge();
+		installBridge(bridge);
+		const u = new Updater();
+		bridge.emit({ type: 'available', info: { version: '2.1.0' } });
+		bridge.emit({ type: 'downloaded', info: { version: '2.1.0' } });
+		// A "Check now" re-emits update-available for the version already on disk.
+		bridge.emit({ type: 'available', info: { version: '2.1.0' } });
+		expect(u.downloaded).toBe(true);
+		expect(u.percent).toBe(100);
+
+		// A genuinely newer version does reset it.
+		bridge.emit({ type: 'available', info: { version: '2.2.0' } });
+		expect(u.downloaded).toBe(false);
+		expect(u.percent).toBe(0);
+	});
+
+	it('recovers from an error: clears downloading and the checking label', () => {
+		const bridge = fakeBridge();
+		installBridge(bridge);
+		const u = new Updater();
+		bridge.emit({ type: 'available', info: { version: '2.1.0' } });
+		u.install();
+		bridge.emit({ type: 'progress', percent: 20 });
+		expect(u.downloading).toBe(true);
+
+		bridge.emit({ type: 'error', message: 'ENOTFOUND' });
+		expect(u.downloading).toBe(false);
+		expect(u.percent).toBe(0);
+		expect(u.checkedLabel).toBe(''); // never leaves "Last checked checking…."
+	});
+
+	it('only announces "up to date" for a check the user asked for', () => {
+		const bridge = fakeBridge();
+		installBridge(bridge);
+		const u = new Updater();
+
+		// Launch check: must stay quiet, it fires on every start.
+		bridge.emit({ type: 'not-available', info: { version: '2.0.0' } });
+		expect(toasts.items.some((t) => /latest version/i.test(t.message))).toBe(false);
+
+		u.check();
+		bridge.emit({ type: 'not-available', info: { version: '2.0.0' } });
+		expect(toasts.items.some((t) => /latest version/i.test(t.message))).toBe(true);
 	});
 });

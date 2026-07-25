@@ -45,8 +45,10 @@ version is out, shows an **Update** pill in the title bar. Opening it reveals wh
 new; **Download & install** fetches the new version (with a progress bar), then
 **Restart to install** swaps the app in place, keeping your data (electron-updater).
 You can also check any time from **Settings → About & updates** or the ⌘/Ctrl-K
-command palette. The installer is unsigned, so the same one-time SmartScreen appears;
-the `.deb` package can't self-update (an error is shown if you try).
+command palette. The installer is unsigned, so the same one-time SmartScreen appears.
+On Linux both packages self-update: the AppImage swaps itself, and the `.deb` installs
+through `dpkg` behind a password prompt (if neither `dpkg` nor `apt` is available, an
+error is shown instead).
 
 ## Architecture
 
