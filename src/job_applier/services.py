@@ -103,6 +103,33 @@ def upsert_score(
     return row
 
 
+def adopt_scores(session: Session, *, resume_id: int) -> int:
+    """Re-stamp baseline scores onto ``resume_id`` so they stop reading as stale.
+
+    The escape hatch for a *minor* resume edit. Staleness is only an id mismatch
+    (see ``score_out``), and every upload writes a new ``Resume`` row, so fixing a
+    typo would otherwise invalidate every score at once and force a full re-run.
+    Adopting re-points the active rows instead — no AI calls, one UPDATE.
+
+    Only active ``MatchScore`` rows move; ``MatchScoreHistory`` keeps the resume
+    each score was really computed against, so the audit trail stays honest. The
+    caller owns the judgment that the edit was small enough to keep the numbers.
+
+    Returns the number of scores adopted.
+    """
+    rows = session.exec(
+        select(MatchScore).where(
+            MatchScore.resume_id.is_not(None),  # type: ignore[union-attr]
+            MatchScore.resume_id != resume_id,
+        )
+    ).all()
+    for row in rows:
+        row.resume_id = resume_id
+        session.add(row)
+    session.commit()
+    return len(rows)
+
+
 # ---- pending-match selection ----------------------------------------------
 
 

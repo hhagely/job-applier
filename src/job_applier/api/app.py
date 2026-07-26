@@ -357,6 +357,20 @@ def stale_score_count(session: Session = Depends(get_session)) -> dict:
     return {"count": count}
 
 
+@app.post("/api/scores/adopt")
+def adopt_stale_scores(session: Session = Depends(get_session)) -> dict:
+    """Keep existing baseline scores after a *minor* resume edit.
+
+    Re-stamps stale scores onto the active resume rather than re-running them, so
+    a typo fix doesn't cost an AI call per job. The "is this edit small enough?"
+    judgment is the user's — the resume page asks right after an upload.
+    """
+    resume = services.active_resume(session)
+    if resume is None:
+        raise HTTPException(409, "no active resume to adopt scores onto")
+    return {"count": services.adopt_scores(session, resume_id=resume.id)}
+
+
 @app.post("/api/jobs/{job_id}/score", response_model=ScoreOut)
 def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_session)):
     try:

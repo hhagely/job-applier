@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from job_applier.api.app import app
 from job_applier.models import JobPosting, Resume
-from job_applier.models.db import FilterStatus, get_session
+from job_applier.models.db import FilterStatus, MatchScoreHistory, get_session
 
 
 @pytest.fixture
@@ -184,3 +184,56 @@ def test_stale_count_zero_when_no_active_resume(client):
     c, _ = client
     body = c.get("/api/scores/stale-count").json()
     assert body == {"count": 0}
+
+
+def test_adopt_scores_clears_staleness_without_rescoring(client):
+    """A minor resume edit can keep its scores instead of re-running them."""
+    c, engine = client
+    stale_a = _seed_job(engine, source_id="a")
+    stale_b = _seed_job(engine, source_id="b")
+    tailored = _seed_job(engine, source_id="t")
+    r1 = _seed_resume(engine, filename="v1.pdf", active=True)
+    c.post(f"/api/jobs/{stale_a}/score", json={"score": 60, "rubric": {}})
+    c.post(f"/api/jobs/{stale_b}/score", json={"score": 65, "rubric": {}})
+    c.post(
+        f"/api/jobs/{tailored}/score",
+        json={"score": 90, "rubric": {}, "score_kind": "tailored"},
+    )
+
+    _deactivate(engine, r1)
+    r2 = _seed_resume(engine, filename="v2.pdf", active=True)
+    assert c.get("/api/scores/stale-count").json() == {"count": 2}
+
+    # Only the two baseline rows move — tailored scores carry no resume id.
+    assert c.post("/api/scores/adopt").json() == {"count": 2}
+
+    assert c.get("/api/scores/stale-count").json() == {"count": 0}
+    assert c.get(f"/api/jobs/{stale_a}").json()["score"]["resume_id"] == r2
+    assert c.get(f"/api/jobs/{stale_a}").json()["score"]["is_stale"] is False
+    assert c.get(f"/api/jobs/{tailored}").json()["score"]["resume_id"] is None
+    # The scores stay put, so nothing is left queued for the background scorer.
+    assert c.get("/api/pending-match?include_stale=true").json() == []
+
+
+def test_adopt_scores_leaves_history_truthful(client):
+    """History records the resume each score was really computed against."""
+    c, engine = client
+    job_id = _seed_job(engine)
+    r1 = _seed_resume(engine, filename="v1.pdf", active=True)
+    c.post(f"/api/jobs/{job_id}/score", json={"score": 60, "rubric": {}})
+    # Re-score under r1 so there is a history row stamped with r1.
+    c.post(f"/api/jobs/{job_id}/score", json={"score": 70, "rubric": {}})
+
+    _deactivate(engine, r1)
+    r2 = _seed_resume(engine, filename="v2.pdf", active=True)
+    c.post("/api/scores/adopt")
+
+    with Session(engine) as s:
+        history = s.exec(select(MatchScoreHistory)).all()
+    assert [h.resume_id for h in history] == [r1]
+    assert c.get(f"/api/jobs/{job_id}").json()["score"]["resume_id"] == r2
+
+
+def test_adopt_scores_requires_an_active_resume(client):
+    c, _ = client
+    assert c.post("/api/scores/adopt").status_code == 409

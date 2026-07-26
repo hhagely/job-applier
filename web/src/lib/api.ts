@@ -383,6 +383,10 @@ export const api = {
 	getStaleScoreCount: (fetchFn: FetchFn, base: string) =>
 		call<{ count: number }>(fetchFn, base, '/api/scores/stale-count'),
 
+	/** Keep scores from the previous resume by re-stamping them onto the active one. */
+	adoptScores: (fetchFn: FetchFn, base: string) =>
+		call<{ count: number }>(fetchFn, base, '/api/scores/adopt', { method: 'POST' }),
+
 	uploadResume: async (fetchFn: FetchFn, base: string, file: File): Promise<Resume> => {
 		const fd = new FormData();
 		fd.append('file', file, file.name);
