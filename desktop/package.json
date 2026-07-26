@@ -1,6 +1,6 @@
 {
 	"name": "job-applier-desktop",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"private": true,
 	"description": "job-applier desktop shell (Electron)",
 	"homepage": "https://github.com/hhagely/job-applier",
