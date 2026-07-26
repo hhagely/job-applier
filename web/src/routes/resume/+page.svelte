@@ -2,6 +2,8 @@
 	import { enhance } from '$app/forms';
 	import { api } from '$lib/api';
 	import Icon from '$lib/Icon.svelte';
+	import ScoreProgress from '$lib/ScoreProgress.svelte';
+	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -9,7 +11,15 @@
 	let apiBase = $derived(data.apiBase ?? '');
 	let resume = $derived(form?.resume ?? data.resume);
 	let uploading = $state(false);
-	let staleCount = $derived(form?.ok ? (form.staleCount ?? 0) : 0);
+	// Only the upload action sets `staleCount`, so answering the prompt (either
+	// button) replaces `form` and retires it.
+	let staleCount = $derived(form?.staleCount ?? 0);
+	let keptCount = $derived(form?.kept ?? 0);
+
+	const rescore = createTaskRunner({
+		kind: 'score_pending',
+		failMessage: 'could not start scoring'
+	});
 
 	let fileInput = $state<HTMLInputElement | null>(null);
 </script>
@@ -28,6 +38,7 @@
 
 <div class="view-body">
 	<div class="stack">
+		<ScoreProgress task={rescore.snap} onDismiss={rescore.dismiss} />
 		<div class="card">
 			<div class="card-h"><h3>Upload</h3></div>
 			<div class="card-b">
@@ -67,12 +78,41 @@
 				</form>
 
 				{#if form?.error}<p class="err-text" style="margin-top:12px">{form.error}</p>{/if}
+				{#if rescore.error && !rescore.snap}
+					<p class="err-text" style="margin-top:12px">{rescore.error}</p>
+				{/if}
+
+				<!-- Every upload writes a new resume row, which invalidates every score at
+				     once. Ask here, while the user still knows how big the edit was. -->
 				{#if staleCount > 0}
-					<p class="banner warn" style="margin-top:12px">
-						{staleCount} scored {staleCount === 1 ? 'job is' : 'jobs are'} now stale — re-score to refresh.
+					<div class="banner warn stale-choice" style="margin-top:12px">
+						<div>
+							<strong>{staleCount} scored {staleCount === 1 ? 'job was' : 'jobs were'}</strong> matched
+							against your previous resume. Keep those scores, or re-run them against this one?
+						</div>
+						<div class="sc-actions">
+							<form method="POST" action="?/keepScores" use:enhance>
+								<button type="submit" class="btn">Keep existing scores</button>
+							</form>
+							<form method="POST" action="?/rescoreStale" use:enhance={rescore.enhance}>
+								<button type="submit" class="btn primary" disabled={rescore.busy}>
+									{rescore.busy ? 'Scoring…' : `Re-score ${staleCount}`}
+								</button>
+							</form>
+						</div>
+						<div class="hint">
+							Typo or reworded bullet? Keep them — re-scoring spends an AI call per job. Rewrote a
+							section, or changed your titles or tech? Re-score.
+						</div>
+					</div>
+				{/if}
+				{#if keptCount > 0}
+					<p class="banner info" style="margin-top:12px">
+						Kept {keptCount} existing {keptCount === 1 ? 'score' : 'scores'} — they now count against the
+						new resume.
 					</p>
 				{/if}
-				{#if form?.ok}
+				{#if form?.resume}
 					<p class="banner info" style="margin-top:12px">
 						Resume uploaded. Use the <a href="/search">search profile</a> page's Suggest-roles button to
 						refresh your recommendations.
@@ -135,6 +175,20 @@
 		display: grid;
 		place-items: center;
 		flex: none;
+	}
+	.stale-choice {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 10px;
+	}
+	.sc-actions {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.stale-choice .hint {
+		margin: 0;
 	}
 	.extracted {
 		font-family: var(--mono);
