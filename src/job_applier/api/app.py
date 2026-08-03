@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import Integer, cast, func
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
@@ -25,6 +26,7 @@ from job_applier.api.schemas import (
     ApplicationOut,
     BulkStatusUpdate,
     BulkUnemploymentUpdate,
+    CompanyCoverageOut,
     CompanyOut,
     FollowupUpdate,
     JobDetail,
@@ -46,10 +48,15 @@ from job_applier.models.db import (
     JobPosting,
     MatchScore,
     MatchScoreHistory,
+    SourceSlug,
     create_db_and_tables,
+    engine,
     get_session,
+    get_setting,
+    set_setting,
 )
-from job_applier.sources.refresh import seed_if_empty
+from job_applier.sources import refresh as refresh_mod
+from job_applier.sources.refresh import refresh_slugs, seed_if_empty
 from job_applier.updates import check_for_update
 
 @asynccontextmanager
@@ -465,6 +472,89 @@ def start_ingest(session: Session = Depends(get_session)):
 
     total = len(get_all_sources())
     task_id = ai_tasks.start_task("ingest", total, _run_ingest_task)
+    return StartTaskOut(task_id=task_id)
+
+
+# When the company-board discovery pass last ran. Stored as a setting rather than
+# derived from SourceSlug.updated_at because a run that finds nothing new still
+# counts as "we checked" — and that distinction is the whole point of showing it.
+COMPANY_CHECKED_KEY = "companies_last_checked_at"
+
+
+@app.get("/api/company-coverage", response_model=CompanyCoverageOut)
+def company_coverage(session: Session = Depends(get_session)):
+    """How many company job boards ingest watches, split by source, plus when the
+    list was last checked for new ones."""
+    # `enabled` is a Boolean column, so SUM() over it inherits the Boolean result
+    # processor and every non-zero total collapses to True (=1). Cast to Integer so
+    # the sum stays a count.
+    rows = session.exec(
+        select(
+            SourceSlug.source,
+            func.count(SourceSlug.id),
+            func.sum(cast(SourceSlug.enabled, Integer)),
+        ).group_by(SourceSlug.source)
+    ).all()
+    by_source = {source: int(n) for source, n, _ in rows}
+    last = get_setting(session, COMPANY_CHECKED_KEY)
+    return CompanyCoverageOut(
+        total=sum(by_source.values()),
+        enabled=sum(int(en or 0) for _, _, en in rows),
+        by_source=dict(sorted(by_source.items(), key=lambda kv: -kv[1])),
+        last_checked_at=datetime.fromisoformat(last) if last else None,
+    )
+
+
+def _run_refresh_companies_task(state: "ai_tasks.TaskState", reverify: bool) -> None:
+    """Worker body: discover + verify new company job boards, reporting one step
+    per source pass. Stamps the checked-at setting only on success, so a failed
+    run doesn't make a stale list look fresh."""
+
+    def _cb(done: int, total: int, label: str) -> None:
+        state.total = total
+        state.done = done
+        state.results.append(label)
+        state.publish()
+
+    stats = refresh_slugs(reverify_existing=reverify, progress_cb=_cb)
+    added = stats.gh_added + stats.lv_added + stats.wk_added + stats.sr_added
+    disabled = (
+        stats.gh_disabled
+        + stats.lv_disabled
+        + stats.ashby_disabled
+        + stats.workday_disabled
+        + stats.wk_disabled
+        + stats.sr_disabled
+    )
+    summary = f"done: {added} new compan{'y' if added == 1 else 'ies'} added"
+    if reverify:
+        summary += f", {disabled} dead board{'' if disabled == 1 else 's'} disabled"
+    state.results.append(summary)
+
+    with Session(engine()) as own:
+        set_setting(own, COMPANY_CHECKED_KEY, datetime.now(timezone.utc).isoformat())
+
+
+@app.post("/api/company-coverage/refresh", response_model=StartTaskOut)
+def start_company_refresh(
+    reverify: bool = False, session: Session = Depends(get_session)
+):
+    """Kick off a background pass that finds company job boards not yet watched
+    (and, with ``reverify``, disables ones that no longer respond). Poll
+    GET /api/ai/tasks/{id} for progress. Needs no AI provider — just network."""
+    running = ai_tasks.active_task("refresh_companies")
+    if running is not None:
+        # Already in flight — hand back the live task instead of queueing a second
+        # pass over the same feed.
+        return StartTaskOut(task_id=running.id)
+    total = (
+        refresh_mod.REFRESH_STEPS_REVERIFY if reverify else refresh_mod.REFRESH_STEPS
+    )
+    task_id = ai_tasks.start_task(
+        "refresh_companies",
+        total,
+        lambda state: _run_refresh_companies_task(state, reverify),
+    )
     return StartTaskOut(task_id=task_id)
 
 

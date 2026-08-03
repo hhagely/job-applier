@@ -154,6 +154,16 @@ export interface SearchProfile {
 	using_defaults: boolean;
 }
 
+/** How many company job boards ingest watches, and when that list was last
+ *  checked for new ones. Surfaced as the "Companies searched" card on /search. */
+export interface CompanyCoverage {
+	total: number;
+	enabled: number;
+	by_source: Record<string, number>;
+	/** ISO timestamp of the last discovery run, or null if it has never run. */
+	last_checked_at: string | null;
+}
+
 export interface SearchProfileRecommendation {
 	role_titles: string[];
 	seniority_terms: string[];
@@ -465,6 +475,19 @@ export const api = {
 
 	startIngest: (fetchFn: FetchFn, base: string) =>
 		call<{ task_id: string }>(fetchFn, base, '/api/ingest', { method: 'POST' }),
+
+	getCompanyCoverage: (fetchFn: FetchFn, base: string) =>
+		call<CompanyCoverage>(fetchFn, base, '/api/company-coverage'),
+
+	/** Find company job boards we aren't watching yet. `reverify` also re-checks
+	 *  the ones we already have and disables any that no longer respond. */
+	startCompanyRefresh: (fetchFn: FetchFn, base: string, reverify = false) =>
+		call<{ task_id: string }>(
+			fetchFn,
+			base,
+			`/api/company-coverage/refresh?reverify=${reverify}`,
+			{ method: 'POST' }
+		),
 
 	startDraft: (fetchFn: FetchFn, base: string, jobId: number) =>
 		call<{ task_id: string }>(fetchFn, base, `/api/jobs/${jobId}/ai/draft`, {
