@@ -4,12 +4,13 @@ import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const [profile, resume, blacklist] = await Promise.all([
+	const [profile, resume, blacklist, coverage] = await Promise.all([
 		api.getSearchProfile(fetch, serverApiBase()),
 		api.getCurrentResume(fetch, serverApiBase()),
-		api.listBlacklist(fetch, serverApiBase())
+		api.listBlacklist(fetch, serverApiBase()),
+		api.getCompanyCoverage(fetch, serverApiBase())
 	]);
-	return { profile, hasResume: resume !== null, blacklist };
+	return { profile, hasResume: resume !== null, blacklist, coverage };
 };
 
 /** FastAPI HTTPException bodies come back as `{"detail": "..."}` wrapped in the
@@ -134,6 +135,20 @@ export const actions: Actions = {
 			return { blacklistOk: true, blacklistMessage: `Blacklisted ${name}.` };
 		} catch (e) {
 			return fail(422, { blacklistError: cleanError(e) });
+		}
+	},
+
+	// Kick off a background pass that finds company job boards we aren't watching.
+	// Mutation stays server-side per convention; progress arrives over the shared
+	// task stream, same as the dashboard's scrape.
+	refreshCompanies: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const reverify = form.get('reverify') === 'on';
+		try {
+			const { task_id } = await api.startCompanyRefresh(fetch, serverApiBase(), reverify);
+			return { ok: true, task_id };
+		} catch (e) {
+			return fail(500, { coverageError: cleanError(e) });
 		}
 	},
 

@@ -247,6 +247,19 @@ class StartTaskOut(BaseModel):
     task_id: str
 
 
+class CompanyCoverageOut(BaseModel):
+    """How many company job boards ingest currently watches, and when that list
+    was last checked for new ones. Drives the "Companies searched" card on
+    /search — the staleness of this list is otherwise invisible."""
+
+    total: int
+    enabled: int
+    by_source: dict[str, int]
+    # When the discovery pass last RAN (not when a row last changed): a run that
+    # finds nothing new still counts as "we looked". None until the first run.
+    last_checked_at: Optional[datetime] = None
+
+
 class TaskOut(BaseModel):
     id: str
     kind: str

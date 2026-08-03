@@ -31,6 +31,12 @@ function data(overrides = {}) {
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		blacklist: [],
+		coverage: {
+			total: 1432,
+			enabled: 1430,
+			by_source: { greenhouse: 1003, lever: 375 },
+			last_checked_at: new Date().toISOString()
+		},
 		...overrides
 	};
 }

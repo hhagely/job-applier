@@ -13,7 +13,7 @@ Personal job-board project. The README has the full architecture and daily flow 
 
 | Task | Command |
 | --- | --- |
-| Refresh ATS slug list | `make refresh-slugs` (or `make refresh-slugs-full` to also re-verify existing) |
+| Refresh ATS slug list | `make refresh-slugs` (or `make refresh-slugs-full` to also re-verify existing). Also in-app: **Companies searched → Update company list** on `/search`, which surfaces the slug count + how stale the list is. |
 | Prune old postings | `make prune` (clears description/raw on old/archived rows; keeps dedupe hashes) |
 | Backfill JD SimHashes | `make dedupe-jd` (idempotent; soft-links near-duplicate JDs) |
 | Init DB | `uv run job-applier init` (creates tables, runs lightweight `ALTER TABLE` migrations, seeds slugs from `companies.py` if empty) |

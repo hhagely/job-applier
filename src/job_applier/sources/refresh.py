@@ -3,7 +3,9 @@
 The runtime source of truth for which slugs to fetch is the ``SourceSlug``
 table. This module fills that table — either from a small built-in seed
 (used on fresh ``job-applier init``) or from the SimplifyJobs community
-feed (the ``refresh-slugs`` CLI command).
+feed. The feed pass is reachable two ways: the ``refresh-slugs`` CLI command
+and ``POST /api/company-coverage/refresh`` (the "Update company list" button on
+``/search``), which runs it as a background task via ``progress_cb``.
 
 Discovery pulls slugs the SimplifyJobs feed carries: Greenhouse, Lever,
 Workable, and SmartRecruiters. Re-verification is broader — it covers those
@@ -149,7 +151,17 @@ def seed_if_empty() -> int:
     return inserted
 
 
-def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> RefreshStats:
+# Progress steps reported through ``progress_cb``: one for the feed fetch, one per
+# per-source verify pass. Reverification adds a second pass over six sources.
+REFRESH_STEPS = 5
+REFRESH_STEPS_REVERIFY = REFRESH_STEPS + 6
+
+
+def refresh_slugs(
+    reverify_existing: bool = False,
+    max_workers: int = 30,
+    progress_cb: "Callable[[int, int, str], None] | None" = None,
+) -> RefreshStats:
     """Pull candidate slugs from SimplifyJobs and verify against the live APIs.
 
     - New verified slugs are inserted with ``enabled=True``.
@@ -157,11 +169,25 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
       rows that fail get marked disabled with ``last_error`` populated.
     - Slugs already in the DB are left alone (their enabled flag is preserved)
       unless ``reverify_existing`` is set.
+
+    ``progress_cb(done, total, label)`` is called after each verify pass so a
+    caller (the API's background task) can report progress; the whole run is a
+    handful of long network passes, so per-pass granularity is the useful unit.
     """
     stats = RefreshStats()
+    total = REFRESH_STEPS_REVERIFY if reverify_existing else REFRESH_STEPS
+    done = 0
+
+    def _step(label: str) -> None:
+        nonlocal done
+        done += 1
+        if progress_cb is not None:
+            progress_cb(done, total, label)
+
     gh_candidates, lv_candidates, wk_candidates, sr_candidates = (
         _fetch_candidates_from_simplify()
     )
+    _step("fetched candidate list")
     stats.gh_candidates = len(gh_candidates)
     stats.lv_candidates = len(lv_candidates)
     stats.wk_candidates = len(wk_candidates)
@@ -179,9 +205,13 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
         new_sr = sorted(sr_candidates - set(existing_sr))
 
         gh_results = _verify_many(new_gh, GH_VERIFY, max_workers)
+        _step(f"checked {len(new_gh)} new Greenhouse boards")
         lv_results = _verify_many(new_lv, LV_VERIFY, max_workers)
+        _step(f"checked {len(new_lv)} new Lever boards")
         wk_results = _verify_workable(new_wk, max_workers)
+        _step(f"checked {len(new_wk)} new Workable boards")
         sr_results = _verify_many(new_sr, SR_VERIFY, max_workers)
+        _step(f"checked {len(new_sr)} new SmartRecruiters boards")
 
         now = datetime.now(timezone.utc)
         for slug, ok, count, err in gh_results:
@@ -251,6 +281,7 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 reverified_field="gh_reverified",
                 disabled_field="gh_disabled",
             )
+            _step(f"re-checked {len(existing_gh)} Greenhouse boards")
             _apply_reverify(
                 rows=existing_lv,
                 results=_verify_many(sorted(existing_lv), LV_VERIFY, max_workers),
@@ -259,6 +290,7 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 reverified_field="lv_reverified",
                 disabled_field="lv_disabled",
             )
+            _step(f"re-checked {len(existing_lv)} Lever boards")
             _apply_reverify(
                 rows=existing_ashby,
                 results=_verify_many(sorted(existing_ashby), ASHBY_VERIFY, max_workers),
@@ -267,6 +299,7 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 reverified_field="ashby_reverified",
                 disabled_field="ashby_disabled",
             )
+            _step(f"re-checked {len(existing_ashby)} Ashby boards")
             _apply_reverify(
                 rows=existing_workday,
                 results=_verify_workday(sorted(existing_workday), max_workers),
@@ -275,6 +308,7 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 reverified_field="workday_reverified",
                 disabled_field="workday_disabled",
             )
+            _step(f"re-checked {len(existing_workday)} Workday boards")
             _apply_reverify(
                 rows=existing_wk,
                 results=_verify_workable(sorted(existing_wk), max_workers),
@@ -283,6 +317,7 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 reverified_field="wk_reverified",
                 disabled_field="wk_disabled",
             )
+            _step(f"re-checked {len(existing_wk)} Workable boards")
             _apply_reverify(
                 rows=existing_sr,
                 results=_verify_many(sorted(existing_sr), SR_VERIFY, max_workers),
@@ -291,6 +326,7 @@ def refresh_slugs(reverify_existing: bool = False, max_workers: int = 30) -> Ref
                 reverified_field="sr_reverified",
                 disabled_field="sr_disabled",
             )
+            _step(f"re-checked {len(existing_sr)} SmartRecruiters boards")
 
         session.commit()
 
