@@ -70,6 +70,25 @@ export interface BlacklistedCompany {
 	created_at: string;
 }
 
+/** A company job board the user added by hand at /search (the whitelist). */
+export interface WatchedCompany {
+	id: number;
+	source: string;
+	slug: string;
+	label: string;
+	enabled: boolean;
+	last_job_count?: number | null;
+	last_error?: string | null;
+	added_at: string;
+}
+
+export interface WatchedCompanyAdd {
+	/** `already_searched` means the company was in the list already — a notice, not an error. */
+	status: 'added' | 'already_searched';
+	message: string;
+	companies: WatchedCompany[];
+}
+
 export interface Score {
 	score: number;
 	rubric: Record<string, unknown>;
@@ -521,6 +540,25 @@ export const api = {
 		const res = await fetchWithRetry(fetchFn, `${base}/api/blacklist/${id}`, { method: 'DELETE' });
 		if (!res.ok && res.status !== 404) {
 			throw new Error(`API /api/blacklist/${id} -> ${res.status}: ${await res.text()}`);
+		}
+	},
+
+	listWatchedCompanies: (fetchFn: FetchFn, base: string) =>
+		call<WatchedCompany[]>(fetchFn, base, '/api/watched-companies'),
+
+	/** Resolves a company name or board URL over the network — expect seconds, not ms. */
+	addWatchedCompany: (fetchFn: FetchFn, base: string, query: string) =>
+		call<WatchedCompanyAdd>(fetchFn, base, '/api/watched-companies', {
+			method: 'POST',
+			body: JSON.stringify({ query })
+		}),
+
+	removeWatchedCompany: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
+		const res = await fetchWithRetry(fetchFn, `${base}/api/watched-companies/${id}`, {
+			method: 'DELETE'
+		});
+		if (!res.ok && res.status !== 404) {
+			throw new Error(`API /api/watched-companies/${id} -> ${res.status}: ${await res.text()}`);
 		}
 	}
 };

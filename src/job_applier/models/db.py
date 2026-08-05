@@ -146,6 +146,14 @@ class SourceSlug(SQLModel, table=True):
     one-time seed used by ``job-applier init`` when the table is empty.
     Run ``job-applier refresh-slugs`` to expand the list from the
     SimplifyJobs community feed.
+
+    ``added_by_user`` marks rows the user added by hand at ``/search`` (the
+    company whitelist) rather than ones that arrived via the seed or feed
+    discovery. Ingest treats every row the same; the flag exists so the UI can
+    list back the handful the user is responsible for — the discovered list runs
+    to thousands. ``label`` keeps the name they typed for display, since a slug
+    like ``acme-corp`` (or a packed Workday ``tenant|region|site``) doesn't read
+    as a company name.
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -155,6 +163,8 @@ class SourceSlug(SQLModel, table=True):
     last_fetched_at: Optional[datetime] = None
     last_job_count: Optional[int] = None
     last_error: Optional[str] = None
+    added_by_user: bool = Field(default=False, index=True)
+    label: Optional[str] = None
     added_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -291,6 +301,7 @@ def create_db_and_tables() -> None:
     _ensure_application_unemployment_columns()
     _ensure_jd_dedupe_columns()
     _ensure_searchprofile_columns()
+    _ensure_sourceslug_columns()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -357,6 +368,33 @@ def _ensure_searchprofile_columns() -> None:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(searchprofile)")}
         if "home_state" not in cols:
             conn.exec_driver_sql("ALTER TABLE searchprofile ADD COLUMN home_state VARCHAR")
+            conn.commit()
+
+
+def _ensure_sourceslug_columns() -> None:
+    """Add SourceSlug.added_by_user / .label on existing DBs that pre-date them.
+
+    Everything already in the table got there via the seed or feed discovery, so
+    the DEFAULT 0 backfill is the truthful value: no existing row was added by
+    hand. ``label`` stays nullable — the UI falls back to the slug.
+    """
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(sourceslug)")}
+        added = False
+        if "added_by_user" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE sourceslug ADD COLUMN added_by_user "
+                "BOOLEAN NOT NULL DEFAULT 0"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_sourceslug_added_by_user "
+                "ON sourceslug (added_by_user)"
+            )
+            added = True
+        if "label" not in cols:
+            conn.exec_driver_sql("ALTER TABLE sourceslug ADD COLUMN label VARCHAR")
+            added = True
+        if added:
             conn.commit()
 
 

@@ -31,6 +31,7 @@ function data(overrides = {}) {
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		blacklist: [],
+		watched: [],
 		coverage: {
 			total: 1432,
 			enabled: 1430,
@@ -122,5 +123,53 @@ describe('search page company blacklist', () => {
 		expect(screen.getByText('Globex')).toBeInTheDocument();
 		expect(screen.getByRole('button', { name: /Remove Evil Corp/ })).toBeInTheDocument();
 		expect(screen.queryByText(/No companies blacklisted yet/i)).not.toBeInTheDocument();
+	});
+});
+
+describe('search page company check', () => {
+	it('shows the check-a-company card with no list until something is added', () => {
+		render(Page, { props: { data: data(), form: null } });
+
+		expect(screen.getByText('Check a company')).toBeInTheDocument();
+		expect(screen.getByPlaceholderText('Company name or job-board URL')).toBeInTheDocument();
+		expect(screen.queryByText(/Added this way/i)).not.toBeInTheDocument();
+	});
+
+	it('lists added companies with their board and a remove control', () => {
+		const props = data({
+			watched: [
+				{
+					id: 3,
+					source: 'greenhouse',
+					slug: 'acme',
+					label: 'Acme',
+					enabled: true,
+					last_job_count: 12,
+					last_error: null,
+					added_at: ''
+				}
+			]
+		});
+		render(Page, { props: { data: props, form: null } });
+
+		expect(screen.getByText('Acme')).toBeInTheDocument();
+		expect(screen.getByText(/greenhouse \/ acme/)).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: /Remove Acme/ })).toBeInTheDocument();
+		expect(screen.getByText(/Added this way/i)).toBeInTheDocument();
+	});
+
+	it('shows the already-searched notice as a warning, not an error', () => {
+		render(Page, {
+			props: {
+				data: data(),
+				form: {
+					companyOk: true,
+					companyAlready: true,
+					companyMessage: 'Acme is already in your search list (greenhouse / acme) — not added again.'
+				}
+			}
+		});
+
+		expect(screen.getByText(/Acme is already in your search list/)).toBeInTheDocument();
 	});
 });

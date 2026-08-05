@@ -4,13 +4,14 @@ import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const [profile, resume, blacklist, coverage] = await Promise.all([
+	const [profile, resume, blacklist, coverage, watched] = await Promise.all([
 		api.getSearchProfile(fetch, serverApiBase()),
 		api.getCurrentResume(fetch, serverApiBase()),
 		api.listBlacklist(fetch, serverApiBase()),
-		api.getCompanyCoverage(fetch, serverApiBase())
+		api.getCompanyCoverage(fetch, serverApiBase()),
+		api.listWatchedCompanies(fetch, serverApiBase())
 	]);
-	return { profile, hasResume: resume !== null, blacklist, coverage };
+	return { profile, hasResume: resume !== null, blacklist, coverage, watched };
 };
 
 /** FastAPI HTTPException bodies come back as `{"detail": "..."}` wrapped in the
@@ -149,6 +150,38 @@ export const actions: Actions = {
 			return { ok: true, task_id };
 		} catch (e) {
 			return fail(500, { coverageError: cleanError(e) });
+		}
+	},
+
+	// Add one company to the searched list. The backend probes the live ATS APIs,
+	// so this action is seconds-slow by nature — the UI shows a busy state.
+	addCompany: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const query = (form.get('query') as string | null)?.trim() ?? '';
+		if (!query) return fail(400, { companyError: 'Enter a company name or job-board URL.' });
+		try {
+			const result = await api.addWatchedCompany(fetch, serverApiBase(), query);
+			// "already searched" is a 200 with a notice, not a failure — the company
+			// is in the list either way, so the user just needs telling.
+			return {
+				companyOk: true,
+				companyAlready: result.status === 'already_searched',
+				companyMessage: result.message
+			};
+		} catch (e) {
+			return fail(422, { companyError: cleanError(e) });
+		}
+	},
+
+	removeCompany: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		if (!Number.isFinite(id)) return fail(400, { companyError: 'Bad company id.' });
+		try {
+			await api.removeWatchedCompany(fetch, serverApiBase(), id);
+			return { companyOk: true, companyAlready: false, companyMessage: '' };
+		} catch (e) {
+			return fail(400, { companyError: cleanError(e) });
 		}
 	},
 

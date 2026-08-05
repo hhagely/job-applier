@@ -27,6 +27,31 @@ class BlacklistAddIn(BaseModel):
     reason: Optional[str] = None
 
 
+class WatchedCompanyOut(BaseModel):
+    """One hand-added company job board (a ``SourceSlug`` row the user created)."""
+
+    id: int
+    source: str
+    slug: str
+    label: str
+    enabled: bool
+    last_job_count: Optional[int] = None
+    last_error: Optional[str] = None
+    added_at: datetime
+
+
+class WatchedCompanyAddIn(BaseModel):
+    # A company name ("Stripe") or a pasted job-board URL — the server decides
+    # which it got.
+    query: str
+
+
+class WatchedCompanyAddOut(BaseModel):
+    status: Literal["added", "already_searched"]
+    message: str
+    companies: list[WatchedCompanyOut]
+
+
 class ScoreOut(BaseModel):
     score: int
     rubric: dict

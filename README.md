@@ -112,7 +112,11 @@ features works with no provider installed.
    an AI provider selected in Settings) to have the model propose a profile from
    your resume; you accept or edit it before it applies. The same page holds a
    **company blacklist** — employers you never want surfaced; their postings are
-   dropped at ingest before they reach your queue.
+   dropped at ingest before they reach your queue — and its mirror, **check a
+   company**: name an employer to see whether your scrapes already cover them,
+   and if they don't, have their job board added and searched from the next
+   ingest on. Most well-known employers are already on the list, so the usual
+   answer is "already covered" rather than a new entry.
 4. **Ingest** new postings:
    ```sh
    make ingest
@@ -157,7 +161,7 @@ web/           # SvelteKit app
   src/lib/draftCart.svelte.ts                          # cross-route draft cart (Svelte rune-based store)
   src/routes/+page.{svelte,server.ts}                  # queue (persisted filters, source/status/ease chips)
   src/routes/jobs/[id]/+page.{svelte,server.ts}        # detail, status form actions, rubric popover, drafts
-  src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft) + company blacklist
+  src/routes/search/+page.{svelte,server.ts}           # search profile editor (review /suggest-roles draft) + company black/whitelist
   src/routes/followups/+page.{svelte,server.ts}        # applied jobs past their follow-up date
   src/routes/resume/+page.{svelte,server.ts}           # resume upload + view
 .claude/commands/    # legacy Claude-Code slash commands (mirror src/job_applier/ai/prompts/)
@@ -224,7 +228,7 @@ exists or its required-tech list is empty.
 | ---------------- | ------------------------------- | --------------------------------------------------------------------- |
 | Greenhouse       | DB slug list (`SourceSlug`)     | `boards-api.greenhouse.io/v1/boards/{slug}/jobs`                      |
 | Lever            | DB slug list (`SourceSlug`)     | `api.lever.co/v0/postings/{slug}`                                     |
-| Ashby            | DB slug list (`SourceSlug`)     | `api.ashbyhq.com/posting-api/job-board/{slug}`. Slugs are case-sensitive (`Notion`, not `notion`). |
+| Ashby            | DB slug list (`SourceSlug`)     | `api.ashbyhq.com/posting-api/job-board/{slug}`. The API accepts either casing, but the slug is used as the employer name in your queue, so discovery keeps the branded spelling the feed carries (`Notion`, not `notion`) and dedupes case-insensitively. |
 | Workday          | DB slug list, packed format     | Slug is `{tenant}\|{region}\|{site}` — e.g. `salesforce\|wd12\|External_Career_Site`. List call returns only titles; descriptions need a per-posting detail fetch, so the adapter pre-filters titles before going deep. |
 | Workable         | DB slug list (`SourceSlug`)     | `apply.workable.com/api/v3/accounts/{slug}/jobs` (list) + v1 detail for the full description. |
 | SmartRecruiters  | DB slug list (`SourceSlug`)     | `api.smartrecruiters.com/v1/companies/{slug}/postings`. Slugs are case-sensitive (`Visa` ≠ `visa`). |
@@ -255,16 +259,41 @@ make refresh-slugs
 make refresh-slugs-full
 ```
 
-Discovery (the candidate-pull) covers the four sources the SimplifyJobs feed
-carries URLs for: Greenhouse, Lever, Workable, and SmartRecruiters. There's no
-equivalent public list for the others. Re-verification is broader — it covers
-those four plus Ashby and Workday, auto-disabling dead boards; Jibe and Oracle
+Discovery (the candidate-pull) covers the five sources the SimplifyJobs feed
+carries URLs for: Greenhouse, Lever, Ashby, Workable, and SmartRecruiters.
+There's no equivalent public list for the others. Re-verification is broader —
+it covers those five plus Workday, auto-disabling dead boards; Jibe and Oracle
 are seed-only (neither discovered nor re-verified).
 
+Sources differ in what counts as proof a board is real, so `board_exists()` in
+[refresh.py](src/job_applier/sources/refresh.py) holds the rule for both
+discovery and the manual add. Greenhouse, Lever, and Ashby 404 a slug they don't
+know, so any 200 is proof — a board with no openings today is a real employer
+who just isn't hiring. SmartRecruiters answers 200 with an empty list for *any*
+string, and Workable keeps abandoned accounts alive forever, so on those two a
+board only counts when it currently has at least one open posting.
+
 The SimplifyJobs feed is heavily new-grad / intern biased — it's only useful
-as a wide net for *valid* slugs, not relevant ones. To add a target company
-by hand, insert into the DB directly (or edit `companies.py` before your first
-`init`). Failed fetches during ingest log a warning but don't break the run.
+as a wide net for *valid* slugs, not relevant ones. Failed fetches during
+ingest log a warning but don't break the run.
+
+**Checking or adding one company by hand.** Use **Check a company** on
+http://localhost:5174/search: type the employer's name and the app derives slug
+candidates and probes every source it can check from a bare slug (applying the
+same `board_exists` rule above), or paste the URL of their job board for an
+exact match. A URL is the only way to add a Workday tenant, whose slug packs
+`tenant|region|site`; Oracle can't be added this way at all, since its slug
+carries an internal Fusion API host and a numeric site id no public URL exposes.
+Employers who run a custom careers page rather than a supported ATS are out of
+reach entirely — the check will say so rather than guess.
+
+If the company is already being searched — including the usual case where the
+seed or the SimplifyJobs feed already covered it — you're told so and nothing is
+added twice; the match is on the same normalized name key the blacklist uses, so
+`Acme Corp` finds the stored slug `acme-corp`. A pasted URL is checked the same
+way, including against the same employer already watched on a different ATS. Hand-added boards are marked in
+the DB (`SourceSlug.added_by_user`) so the page can list back just yours out of
+the thousand-plus discovered ones, and removing one there deletes only that row.
 
 ### Dedupe
 
@@ -321,7 +350,7 @@ so the `baseline → tailored` delta and prior-resume scores remain visible.
 | `make api`               | Run FastAPI on `:8000` with auto-reload                           |
 | `make web`               | Run SvelteKit dev server on `:5174`                               |
 | `make ingest`            | Pull jobs from configured sources                                 |
-| `make refresh-slugs`     | Discover new Greenhouse/Lever/Workable/SmartRecruiters slugs from SimplifyJobs |
+| `make refresh-slugs`     | Discover new Greenhouse/Lever/Ashby/Workable/SmartRecruiters slugs from SimplifyJobs |
 | `make refresh-slugs-full`| Discover + re-verify existing slugs (auto-disables dead boards)   |
 | `make prune`             | Clear description/raw on old or archived postings (keeps hashes)  |
 | `make dedupe-jd`         | Backfill JD SimHash fingerprints + soft-link near-duplicate JDs   |

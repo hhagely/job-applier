@@ -57,6 +57,10 @@
 			: null
 	);
 	const coverageStale = $derived(daysSinceCheck === null || daysSinceCheck >= STALE_DAYS);
+	// The add-a-company POST probes live ATS APIs, so it's seconds-slow — hold the
+	// form disabled rather than letting it look like nothing happened.
+	let addingCompany = $state(false);
+
 	const lastCheckedLabel = $derived(
 		daysSinceCheck === null
 			? 'never'
@@ -282,6 +286,81 @@
 		</div>
 
 		<div class="card">
+			<div class="card-h"><h2>Check a company</h2></div>
+			<div class="card-b">
+				<p class="muted" style="margin-bottom:14px">
+					Have an employer in mind? Type their name to find out whether your scrapes already
+					cover them — most well-known companies are on the list already. If they aren't, and
+					their job board is one we can read (Greenhouse, Lever, Ashby, SmartRecruiters,
+					Workable, Workday, or Jibe), it gets added and searched from the next scrape on.
+					Pasting the URL of their job board works too, and is more exact than a name.
+				</p>
+
+				<form
+					method="POST"
+					action="?/addCompany"
+					class="wl-add"
+					use:enhance={() => {
+						addingCompany = true;
+						return async ({ update }) => {
+							await update();
+							addingCompany = false;
+						};
+					}}
+				>
+					<input
+						class="input"
+						type="text"
+						name="query"
+						placeholder="Company name or job-board URL"
+						autocomplete="off"
+						disabled={addingCompany}
+						required
+					/>
+					<button type="submit" class="btn primary" disabled={addingCompany}>
+						{addingCompany ? 'Checking…' : 'Check'}
+					</button>
+				</form>
+				<small class="muted wl-hint">Takes a few seconds — we ask each job board directly.</small>
+
+				{#if form && 'companyError' in form && form.companyError}
+					<p class="err-text" style="margin-top:10px">{form.companyError}</p>
+				{/if}
+				{#if form?.companyOk && 'companyMessage' in form && form.companyMessage}
+					<p class="banner {form.companyAlready ? 'warn' : 'ok'}" style="margin-top:10px">
+						{form.companyMessage}
+					</p>
+				{/if}
+
+				{#if data.watched.length > 0}
+					<div class="wl-list-head">Added this way</div>
+					<ul class="bl-list">
+						{#each data.watched as c (c.id)}
+							<li>
+								<div class="bl-main">
+									<span class="bl-name">{c.label}</span>
+									<span class="bl-reason">
+										{c.source} / {c.slug}
+										{#if c.last_job_count !== null && c.last_job_count !== undefined}
+											· {c.last_job_count} roles at last check
+										{/if}
+										{#if !c.enabled}· <span class="wl-off">disabled — board stopped responding</span>{/if}
+									</span>
+								</div>
+								<form method="POST" action="?/removeCompany" use:enhance>
+									<input type="hidden" name="id" value={c.id} />
+									<button type="submit" class="btn ghost sm bl-remove" aria-label="Remove {c.label}"
+										>Remove</button
+									>
+								</form>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
+		</div>
+
+		<div class="card">
 			<div class="card-h"><h2>Company blacklist</h2></div>
 			<div class="card-b">
 				<p class="muted" style="margin-bottom:14px">
@@ -417,11 +496,31 @@
 	.rec-actions form {
 		margin: 0;
 	}
-	.bl-add {
+	.bl-add,
+	.wl-add {
 		display: flex;
 		gap: 8px;
 		align-items: center;
 		flex-wrap: wrap;
+	}
+	.wl-add .input {
+		flex: 1;
+		min-width: 220px;
+	}
+	.wl-hint {
+		display: block;
+		margin-top: 6px;
+	}
+	.wl-list-head {
+		margin-top: 18px;
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--muted);
+	}
+	.wl-off {
+		color: var(--warn);
 	}
 	.bl-add .input {
 		flex: 1;

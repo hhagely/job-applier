@@ -28,6 +28,7 @@ from job_applier.sources.oracle import _combine_description as oracle_combine_de
 from job_applier.sources.oracle import _normalize as oracle_normalize
 from job_applier.sources.oracle import _parse_list as oracle_parse_list
 from job_applier.sources.oracle import parse_slug as oracle_parse_slug
+from job_applier.sources import refresh as refresh_mod
 from job_applier.sources.refresh import _valid_slugs
 from job_applier.sources.remoteok import _normalize as remoteok_normalize
 from job_applier.sources.smartrecruiters import _normalize as sr_normalize
@@ -107,6 +108,93 @@ class TestSlugValidation:
     def test_passes_non_packed_sources_through_untouched(self):
         slugs = ["stripe", "anything-goes", "a|b|c"]
         assert _valid_slugs("greenhouse", slugs) == slugs
+
+
+class TestSlugDiscoveryParsing:
+    """Feed URL -> candidate slug, the front half of the discovery pass. The
+    network half (verify) is exercised against the live APIs, not here."""
+
+    def _candidates(self, urls, monkeypatch):
+        """Run _fetch_candidates_from_simplify over a stubbed feed."""
+
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get(self, _url):
+                return FakeResp([{"url": u} for u in urls])
+
+        monkeypatch.setattr(refresh_mod.httpx, "Client", lambda **kw: FakeClient())
+        return refresh_mod._fetch_candidates_from_simplify()
+
+    def test_finds_ashby_boards_in_the_feed(self, monkeypatch):
+        found = self._candidates(
+            ["https://jobs.ashbyhq.com/Notion/abc-123", "https://jobs.ashbyhq.com/ramp"],
+            monkeypatch,
+        )
+        assert found["ashby"] == {"Notion", "ramp"}
+
+    def test_ashby_keeps_the_branded_spelling(self, monkeypatch):
+        # The slug doubles as the employer name in the queue, so when the feed
+        # spells one company both ways we keep the capitalized form — and only
+        # one candidate, or we'd add the same board twice.
+        found = self._candidates(
+            ["https://jobs.ashbyhq.com/notion/a", "https://jobs.ashbyhq.com/Notion/b"],
+            monkeypatch,
+        )
+        assert found["ashby"] == {"Notion"}
+
+    def test_other_sources_still_lowercase(self, monkeypatch):
+        found = self._candidates(
+            ["https://boards.greenhouse.io/Acme", "https://jobs.lever.co/Globex"],
+            monkeypatch,
+        )
+        assert found["greenhouse"] == {"acme"}
+        assert found["lever"] == {"globex"}
+
+    def test_new_slugs_skips_existing_ashby_board_in_either_casing(self):
+        existing = {"Notion": object(), "ramp": object()}
+        new = refresh_mod._new_slugs("ashby", {"notion", "Ramp", "Linear"}, existing)
+        assert new == ["Linear"]
+
+    def test_new_slugs_is_exact_for_lowercased_sources(self):
+        existing = {"acme": object()}
+        assert refresh_mod._new_slugs("greenhouse", {"acme", "globex"}, existing) == [
+            "globex"
+        ]
+
+    def test_board_exists_accepts_an_empty_board_where_404_means_missing(self):
+        # Greenhouse/Lever/Ashby 404 an unknown slug, so a 200 proves the board
+        # is real even with nothing posted right now.
+        for source in ("greenhouse", "lever", "ashby"):
+            assert refresh_mod.board_exists(source, True, 0) is True
+            assert refresh_mod.board_exists(source, False, None) is False
+
+    def test_board_exists_demands_a_posting_where_200_proves_nothing(self):
+        # SmartRecruiters answers 200 for ANY string and Workable keeps
+        # abandoned accounts alive, so an empty board there isn't evidence.
+        for source in ("smartrecruiters", "workable"):
+            assert refresh_mod.board_exists(source, True, 0) is False
+            assert refresh_mod.board_exists(source, True, 3) is True
+
+    def test_new_slugs_stays_exact_for_smartrecruiters(self):
+        # SmartRecruiters' API IS case-sensitive, so `Visa` and `visa` may be
+        # different boards — folding them would silently skip a real one.
+        existing = {"visa": object()}
+        assert refresh_mod._new_slugs("smartrecruiters", {"Visa"}, existing) == ["Visa"]
 
 
 class TestRemoteOK:

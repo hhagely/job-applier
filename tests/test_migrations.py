@@ -7,7 +7,7 @@ missing the newer columns), run the startup path, and assert the columns +
 indexes get added — the exact regression the strategy is most exposed to
 ("added a field, forgot the helper"). The ``application`` column migrations are
 already covered by test_followups / test_unemployment; this file covers the
-other four helpers.
+other five helpers.
 """
 
 from __future__ import annotations
@@ -65,6 +65,17 @@ CREATE TABLE searchprofile (
     excluded_tech JSON,
     extracted_skills JSON,
     recommendations_draft JSON,
+    updated_at DATETIME
+);
+CREATE TABLE sourceslug (
+    id INTEGER PRIMARY KEY,
+    source VARCHAR NOT NULL,
+    slug VARCHAR NOT NULL,
+    enabled BOOLEAN,
+    last_fetched_at DATETIME,
+    last_job_count INTEGER,
+    last_error VARCHAR,
+    added_at DATETIME,
     updated_at DATETIME
 );
 """
@@ -144,6 +155,25 @@ def test_migration_adds_searchprofile_home_state(tmp_path, monkeypatch):
     assert "home_state" in _cols(db_path, "searchprofile")
 
 
+def test_migration_adds_sourceslug_whitelist_columns(tmp_path, monkeypatch):
+    # Every pre-migration row got into the table via the seed or feed discovery,
+    # so the backfill must read as "not added by hand" — otherwise the /search
+    # whitelist would list back the user's whole thousand-slug discovered set.
+    db_path, _ = _run_startup(tmp_path, monkeypatch)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("INSERT INTO sourceslug (source, slug, enabled) VALUES ('gh','a',1)")
+        conn.commit()
+        assert conn.execute("SELECT added_by_user, label FROM sourceslug").fetchone() == (
+            0,
+            None,
+        )
+    finally:
+        conn.close()
+    assert {"added_by_user", "label"}.issubset(_cols(db_path, "sourceslug"))
+    assert "ix_sourceslug_added_by_user" in _indexes(db_path, "sourceslug")
+
+
 def test_migration_is_idempotent(tmp_path, monkeypatch):
     """A second startup on the already-migrated DB is a clean no-op (every helper
     guards its ALTER behind a PRAGMA membership check)."""
@@ -175,6 +205,7 @@ def test_migrated_legacy_tables_have_every_model_column(tmp_path, monkeypatch):
         MatchScore,
         MatchScoreHistory,
         SearchProfile,
+        SourceSlug,
     )
 
     for model, table in (
@@ -182,6 +213,7 @@ def test_migrated_legacy_tables_have_every_model_column(tmp_path, monkeypatch):
         (MatchScore, "matchscore"),
         (MatchScoreHistory, "matchscorehistory"),
         (SearchProfile, "searchprofile"),
+        (SourceSlug, "sourceslug"),
     ):
         missing = _model_columns(model) - _cols(db_path, table)
         assert not missing, (
