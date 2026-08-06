@@ -576,8 +576,21 @@ def test_start_task_records_fatal_error():
 
 
 @pytest.fixture
-def client():
-    e = _engine()
+def client(tmp_path):
+    # File-backed on purpose, unlike the in-memory `_engine()` the rest of this
+    # module uses. These endpoint tests run the scoring worker on a background
+    # thread while the TestClient polls it, and StaticPool hands every session the
+    # *same* SQLite connection — so two threads drive one connection concurrently.
+    # That raced: the worker's commit + `session.refresh(row)` inside upsert_score
+    # intermittently couldn't find its row ("Could not refresh instance
+    # '<MatchScore ...>'"), recording the job as an ERROR and failing this file
+    # ~10% of runs. A file DB gives each thread its own connection, which is the
+    # shape production actually has.
+    e = create_engine(
+        f"sqlite:///{tmp_path / 'test.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(e)
 
     def _dep():
         with Session(e) as s:
