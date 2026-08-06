@@ -8,10 +8,10 @@ and ``POST /api/company-coverage/refresh`` (the "Update company list" button on
 ``/search``), which runs it as a background task via ``progress_cb``.
 
 Discovery pulls slugs the SimplifyJobs feed carries: Greenhouse, Lever,
-Workable, and SmartRecruiters. Re-verification is broader — it covers those
-four plus Ashby and Workday so dead boards get auto-disabled regardless of how
-they got into the table. Jibe and Oracle are seed-only (neither discovered nor
-re-verified).
+Workable, SmartRecruiters, and Ashby. Re-verification covers those five plus
+Workday so dead boards get auto-disabled regardless of how they got into the
+table. Jibe and Oracle are seed-only (neither discovered nor re-verified) —
+their slugs pack fields no public URL exposes.
 """
 
 from __future__ import annotations
@@ -72,8 +72,19 @@ GH_VERIFY = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 LV_VERIFY = "https://api.lever.co/v0/postings/{slug}?mode=json"
 ASHBY_VERIFY = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 SR_VERIFY = "https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=1"
+JIBE_VERIFY = "https://{slug}.jibeapply.com/api/jobs?page=1"
 # Workable's verify is a POST with a body — handled by a dedicated helper.
 WORKABLE_VERIFY_URL = "https://apply.workable.com/api/v3/accounts/{slug}/jobs"
+
+# Sources whose "does this board exist" check is a plain GET returning either a
+# job list or a ``{"jobs": [...]}`` envelope, so they can share ``_verify_many``.
+GET_VERIFY_URLS = {
+    "greenhouse": GH_VERIFY,
+    "lever": LV_VERIFY,
+    "ashby": ASHBY_VERIFY,
+    "smartrecruiters": SR_VERIFY,
+    "jibe": JIBE_VERIFY,
+}
 
 # SimplifyJobs maintains community-sourced listings.json files updated via
 # GitHub Actions on every PR. We pull both repos and union the slugs.
@@ -88,8 +99,46 @@ SR_URL_RE = re.compile(
     r"(?:jobs|careers)\.smartrecruiters\.com/([\w.-]+?)(?=/|\?|#|$)",
     re.IGNORECASE,
 )
+ASHBY_URL_RE = re.compile(r"jobs\.ashbyhq\.com/([\w.-]+)", re.IGNORECASE)
 HEX_RE = re.compile(r"^[a-f0-9]{16,}$")
 NUMERIC_RE = re.compile(r"^\d+$")
+
+# Sources whose slug spelling must survive discovery verbatim. SmartRecruiters
+# because its API is genuinely case-sensitive (``Visa`` != ``visa``); Ashby
+# because its API accepts either casing but the adapter uses the slug as the
+# employer name shown in the queue (see sources/ashby.py), so lowercasing it
+# would rename "Notion" to "notion" everywhere.
+CASE_PRESERVING_SOURCES = {"smartrecruiters", "ashby"}
+
+# ...and the narrower set where two spellings are provably the SAME board, so
+# discovery may dedupe across casing. Only Ashby: its API returns identical
+# results for ``notion`` and ``Notion``. SmartRecruiters is deliberately absent
+# — its API is case-sensitive, so treating ``Visa`` and ``visa`` as one board
+# could silently skip a real one.
+_CASE_INSENSITIVE_DEDUPE = {"ashby"}
+
+# Sources whose API 404s a slug it doesn't know, which makes a 200 proof that
+# the board is real — even with zero open postings today. Everything else needs
+# at least one posting as proof of life, for two different reasons:
+# SmartRecruiters answers 200 with an empty list for ANY string (verified), so
+# "it responded" means nothing there; Workable 404s properly but keeps abandoned
+# accounts alive forever, so a long-squatted name still answers 200.
+BOARDS_404_WHEN_MISSING = {"greenhouse", "lever", "ashby", "jibe"}
+
+
+def board_exists(source: str, ok: bool, job_count: int | None) -> bool:
+    """Whether a verify result proves a board worth storing.
+
+    The single home for the per-source "is this real" rule, shared by feed
+    discovery and the manual add flow so the two can't drift. Getting this wrong
+    in either direction is costly: too lax floods the table with dead boards,
+    too strict hides a real employer who simply isn't hiring this week.
+    """
+    if not ok:
+        return False
+    if source in BOARDS_404_WHEN_MISSING:
+        return True
+    return (job_count or 0) > 0
 
 
 @dataclass
@@ -98,10 +147,12 @@ class RefreshStats:
     lv_candidates: int = 0
     wk_candidates: int = 0
     sr_candidates: int = 0
+    ashby_candidates: int = 0
     gh_added: int = 0
     lv_added: int = 0
     wk_added: int = 0
     sr_added: int = 0
+    ashby_added: int = 0
     gh_reverified: int = 0
     lv_reverified: int = 0
     gh_disabled: int = 0
@@ -153,7 +204,7 @@ def seed_if_empty() -> int:
 
 # Progress steps reported through ``progress_cb``: one for the feed fetch, one per
 # per-source verify pass. Reverification adds a second pass over six sources.
-REFRESH_STEPS = 5
+REFRESH_STEPS = 6
 REFRESH_STEPS_REVERIFY = REFRESH_STEPS + 6
 
 
@@ -184,25 +235,26 @@ def refresh_slugs(
         if progress_cb is not None:
             progress_cb(done, total, label)
 
-    gh_candidates, lv_candidates, wk_candidates, sr_candidates = (
-        _fetch_candidates_from_simplify()
-    )
+    candidates = _fetch_candidates_from_simplify()
     _step("fetched candidate list")
-    stats.gh_candidates = len(gh_candidates)
-    stats.lv_candidates = len(lv_candidates)
-    stats.wk_candidates = len(wk_candidates)
-    stats.sr_candidates = len(sr_candidates)
+    stats.gh_candidates = len(candidates["greenhouse"])
+    stats.lv_candidates = len(candidates["lever"])
+    stats.wk_candidates = len(candidates["workable"])
+    stats.sr_candidates = len(candidates["smartrecruiters"])
+    stats.ashby_candidates = len(candidates["ashby"])
 
     with Session(engine()) as session:
         existing_gh = _existing_by_slug(session, "greenhouse")
         existing_lv = _existing_by_slug(session, "lever")
         existing_wk = _existing_by_slug(session, "workable")
         existing_sr = _existing_by_slug(session, "smartrecruiters")
+        existing_ashby = _existing_by_slug(session, "ashby")
 
-        new_gh = sorted(gh_candidates - set(existing_gh))
-        new_lv = sorted(lv_candidates - set(existing_lv))
-        new_wk = sorted(wk_candidates - set(existing_wk))
-        new_sr = sorted(sr_candidates - set(existing_sr))
+        new_gh = _new_slugs("greenhouse", candidates["greenhouse"], existing_gh)
+        new_lv = _new_slugs("lever", candidates["lever"], existing_lv)
+        new_wk = _new_slugs("workable", candidates["workable"], existing_wk)
+        new_sr = _new_slugs("smartrecruiters", candidates["smartrecruiters"], existing_sr)
+        new_ashby = _new_slugs("ashby", candidates["ashby"], existing_ashby)
 
         gh_results = _verify_many(new_gh, GH_VERIFY, max_workers)
         _step(f"checked {len(new_gh)} new Greenhouse boards")
@@ -212,65 +264,34 @@ def refresh_slugs(
         _step(f"checked {len(new_wk)} new Workable boards")
         sr_results = _verify_many(new_sr, SR_VERIFY, max_workers)
         _step(f"checked {len(new_sr)} new SmartRecruiters boards")
+        ashby_results = _verify_many(new_ashby, ASHBY_VERIFY, max_workers)
+        _step(f"checked {len(new_ashby)} new Ashby boards")
 
         now = datetime.now(timezone.utc)
-        for slug, ok, count, err in gh_results:
-            if ok:
-                session.add(
-                    SourceSlug(
-                        source="greenhouse",
-                        slug=slug,
-                        last_fetched_at=now,
-                        last_job_count=count,
-                        updated_at=now,
-                    )
-                )
-                stats.gh_added += 1
 
-        for slug, ok, count, err in lv_results:
-            if ok:
+        def _insert_verified(source: str, results, stats_field: str) -> None:
+            """Store every result that ``board_exists`` accepts for ``source``."""
+            for slug, ok, count, _err in results:
+                if not board_exists(source, ok, count):
+                    continue
                 session.add(
                     SourceSlug(
-                        source="lever",
+                        source=source,
                         slug=slug,
                         last_fetched_at=now,
                         last_job_count=count,
                         updated_at=now,
                     )
                 )
-                stats.lv_added += 1
+                setattr(stats, stats_field, getattr(stats, stats_field) + 1)
 
-        # Workable accounts live forever once created — verifying just "endpoint
-        # responds" floods the table with dead boards, so we only insert ones
-        # that currently have at least one open posting.
-        for slug, ok, count, _err in wk_results:
-            if ok and (count or 0) > 0:
-                session.add(
-                    SourceSlug(
-                        source="workable",
-                        slug=slug,
-                        last_fetched_at=now,
-                        last_job_count=count,
-                        updated_at=now,
-                    )
-                )
-                stats.wk_added += 1
-
-        for slug, ok, count, _err in sr_results:
-            if ok and (count or 0) > 0:
-                session.add(
-                    SourceSlug(
-                        source="smartrecruiters",
-                        slug=slug,
-                        last_fetched_at=now,
-                        last_job_count=count,
-                        updated_at=now,
-                    )
-                )
-                stats.sr_added += 1
+        _insert_verified("greenhouse", gh_results, "gh_added")
+        _insert_verified("lever", lv_results, "lv_added")
+        _insert_verified("workable", wk_results, "wk_added")
+        _insert_verified("smartrecruiters", sr_results, "sr_added")
+        _insert_verified("ashby", ashby_results, "ashby_added")
 
         if reverify_existing:
-            existing_ashby = _existing_by_slug(session, "ashby")
             existing_workday = _existing_by_slug(session, "workday")
 
             _apply_reverify(
@@ -354,17 +375,30 @@ def _apply_reverify(
         setattr(stats, reverified_field, getattr(stats, reverified_field) + 1)
 
 
-def _fetch_candidates_from_simplify() -> tuple[set[str], set[str], set[str], set[str]]:
-    """Return (greenhouse, lever, workable, smartrecruiters) candidate slug sets.
+def _fetch_candidates_from_simplify() -> dict[str, set[str]]:
+    """Return candidate slug sets keyed by source name.
 
-    SmartRecruiters slugs are case-sensitive (e.g. ``Visa`` ≠ ``visa``), so
-    we preserve case for that source. The other three are lowercased to keep
-    dedup behaviour matching how the live APIs treat their slugs.
+    Case handling differs by source (see ``CASE_PRESERVING_SOURCES``): SmartRecruiters
+    and Ashby keep the spelling the feed carries, the rest are lowercased to
+    match how their live APIs treat slugs. For the case-preserving pair the feed
+    can name one company two ways (``Notion`` and ``notion``), so those collapse
+    to a single candidate — otherwise we'd add the same board twice.
     """
-    gh: set[str] = set()
-    lv: set[str] = set()
-    wk: set[str] = set()
-    sr: set[str] = set()
+    found: dict[str, set[str]] = {
+        source: set()
+        for source in ("greenhouse", "lever", "workable", "smartrecruiters", "ashby")
+    }
+    # For case-preserving sources: lowercase key -> chosen spelling.
+    cased: dict[str, dict[str, str]] = {source: {} for source in CASE_PRESERVING_SOURCES}
+
+    def _add_cased(source: str, slug: str) -> None:
+        chosen = cased[source]
+        key = slug.lower()
+        # Prefer a branded spelling over an all-lowercase one, since the slug is
+        # what the user ends up reading as the employer name.
+        if key not in chosen or (slug != key and chosen[key] == key):
+            chosen[key] = slug
+
     with httpx.Client(timeout=60.0, follow_redirects=True) as client:
         for url in SIMPLIFY_LISTINGS:
             try:
@@ -380,23 +414,46 @@ def _fetch_candidates_from_simplify() -> tuple[set[str], set[str], set[str], set
                 for m in GH_URL_RE.finditer(u):
                     s = m.group(1).lower()
                     if not HEX_RE.match(s) and s != "embed":
-                        gh.add(s)
+                        found["greenhouse"].add(s)
                 for m in LV_URL_RE.finditer(u):
                     s = m.group(1).lower()
                     if not HEX_RE.match(s):
-                        lv.add(s)
+                        found["lever"].add(s)
                 for m in WK_URL_RE.finditer(u):
                     s = m.group(1).lower()
                     if not NUMERIC_RE.match(s):
-                        wk.add(s)
+                        found["workable"].add(s)
                 for m in SR_URL_RE.finditer(u):
                     # SmartRecruiters URLs occasionally embed a posting ID
                     # where the company slug should be — those are numeric
                     # and useless for the company-postings endpoint.
                     s = m.group(1)
                     if not NUMERIC_RE.match(s):
-                        sr.add(s)
-    return gh, lv, wk, sr
+                        _add_cased("smartrecruiters", s)
+                for m in ASHBY_URL_RE.finditer(u):
+                    s = m.group(1)
+                    if not NUMERIC_RE.match(s) and not HEX_RE.match(s.lower()):
+                        _add_cased("ashby", s)
+
+    for source, chosen in cased.items():
+        found[source] = set(chosen.values())
+    return found
+
+
+def _new_slugs(
+    source: str, candidates: set[str], existing: dict[str, SourceSlug]
+) -> list[str]:
+    """Candidates not already in the table, sorted for stable progress labels.
+
+    For ``_CASE_INSENSITIVE_DEDUPE`` sources the comparison ignores casing: the
+    seed spells Ashby boards ``Notion`` while a feed URL might say ``notion``,
+    and those are the same board — inserting both would double-ingest the
+    company. Every other source compares exactly.
+    """
+    if source in _CASE_INSENSITIVE_DEDUPE:
+        seen = {slug.lower() for slug in existing}
+        return sorted(s for s in candidates if s.lower() not in seen)
+    return sorted(candidates - set(existing))
 
 
 def _existing_by_slug(session: Session, source: str) -> dict[str, SourceSlug]:
@@ -429,12 +486,36 @@ def _run_verifier(
     return results
 
 
+def verify_slugs(
+    source: str, slugs: list[str], max_workers: int = 8, timeout: float = 20
+) -> list[_VerifyResult]:
+    """Check ``slugs`` against ``source``'s live API, one result per slug.
+
+    The public entry point onto the per-source verifiers, used by the manual
+    "add a company" flow (``sources.discover``) so a hand-added board is proven
+    to exist before it's stored. Raises ``ValueError`` for a source with no
+    verifier (Oracle — its packed slug can't be checked from a name or URL).
+    """
+    if not slugs:
+        return []
+    url_template = GET_VERIFY_URLS.get(source)
+    if url_template is not None:
+        return _verify_many(slugs, url_template, max_workers, timeout=timeout)
+    if source == "workable":
+        return _verify_workable(slugs, max_workers, timeout=timeout)
+    if source == "workday":
+        return _verify_workday(slugs, max_workers, timeout=timeout)
+    raise ValueError(f"no board verifier for source {source!r}")
+
+
 def _verify_many(
-    slugs: list[str], url_template: str, max_workers: int
+    slugs: list[str], url_template: str, max_workers: int, timeout: float = 20
 ) -> list[_VerifyResult]:
     def check(slug: str) -> _VerifyResult:
         try:
-            r = httpx.get(url_template.format(slug=slug), timeout=20, follow_redirects=True)
+            r = httpx.get(
+                url_template.format(slug=slug), timeout=timeout, follow_redirects=True
+            )
             if r.status_code != 200:
                 return (slug, False, None, f"HTTP {r.status_code}")
             payload = r.json()
@@ -451,7 +532,9 @@ def _verify_many(
     return _run_verifier(slugs, check, max_workers)
 
 
-def _verify_workable(slugs: list[str], max_workers: int) -> list[_VerifyResult]:
+def _verify_workable(
+    slugs: list[str], max_workers: int, timeout: float = 20
+) -> list[_VerifyResult]:
     """Workable's list endpoint is POST-only with a JSON body, so it can't share
     ``_verify_many``'s GET ``check``. Returns the response's ``total`` as the count
     so the caller can skip dead boards (total == 0)."""
@@ -461,7 +544,7 @@ def _verify_workable(slugs: list[str], max_workers: int) -> list[_VerifyResult]:
             r = httpx.post(
                 WORKABLE_VERIFY_URL.format(slug=slug),
                 json={"query": ""},
-                timeout=20,
+                timeout=timeout,
                 follow_redirects=True,
             )
             if r.status_code != 200:
@@ -475,7 +558,9 @@ def _verify_workable(slugs: list[str], max_workers: int) -> list[_VerifyResult]:
     return _run_verifier(slugs, check, max_workers)
 
 
-def _verify_workday(slugs: list[str], max_workers: int) -> list[_VerifyResult]:
+def _verify_workday(
+    slugs: list[str], max_workers: int, timeout: float = 20
+) -> list[_VerifyResult]:
     """Workday's CXS jobs endpoint is POST-only and tenant-specific, so it can't
     share ``_verify_many``'s GET ``check``. Slugs are ``tenant|region|site``.
 
@@ -497,7 +582,7 @@ def _verify_workday(slugs: list[str], max_workers: int) -> list[_VerifyResult]:
                     "Accept": "application/json",
                     "User-Agent": "Mozilla/5.0 (compatible; job-applier/0.1)",
                 },
-                timeout=20,
+                timeout=timeout,
                 follow_redirects=True,
             )
             if r.status_code != 200:

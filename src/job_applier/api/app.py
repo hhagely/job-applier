@@ -14,6 +14,7 @@ from job_applier.api import blacklist as blacklist_router
 from job_applier.api import drafts as drafts_router
 from job_applier.api import profile as profile_router
 from job_applier.api import resume as resume_router
+from job_applier.api import watchlist as watchlist_router
 from job_applier.api.ai import router as ai_router
 from job_applier.api.deps import require_job
 from job_applier.api.serializers import active_resume_id as _active_resume_id
@@ -96,6 +97,7 @@ app.include_router(resume_router.router)
 app.include_router(profile_router.router)
 app.include_router(drafts_router.router)
 app.include_router(blacklist_router.router)
+app.include_router(watchlist_router.router)
 
 
 @app.get("/api/jobs", response_model=list[JobOut])
@@ -517,7 +519,13 @@ def _run_refresh_companies_task(state: "ai_tasks.TaskState", reverify: bool) -> 
         state.publish()
 
     stats = refresh_slugs(reverify_existing=reverify, progress_cb=_cb)
-    added = stats.gh_added + stats.lv_added + stats.wk_added + stats.sr_added
+    added = (
+        stats.gh_added
+        + stats.lv_added
+        + stats.wk_added
+        + stats.sr_added
+        + stats.ashby_added
+    )
     disabled = (
         stats.gh_disabled
         + stats.lv_disabled
