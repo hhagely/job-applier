@@ -441,9 +441,25 @@ def run(
             tmp.cleanup()
 
     if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip() or f"exit code {proc.returncode}"
-        raise ProviderError(stderr)
+        # These CLIs split their failures across both streams: argv/usage errors go
+        # to stderr, but *operational* ones go to STDOUT with stderr left empty —
+        # `claude -p` prints "Not logged in - Please run /login", or "There's an
+        # issue with the selected model (x)", and exits 1 saying nothing on stderr.
+        # Reading stderr alone collapsed every one of those into a bare "exit code
+        # 1", throwing away the one sentence that told the user what to fix (a
+        # not-logged-in CLI still passes `--version` detection, so this is the
+        # first place the user ever learns about it). Prefer stderr, fall back to
+        # stdout.
+        detail = (proc.stderr or "").strip() or _clip(proc.stdout)
+        raise ProviderError(detail or f"exit code {proc.returncode}")
     return (proc.stdout or "").strip()
+
+
+def _clip(text: Optional[str], *, limit: int = 400) -> str:
+    """Head of CLI output, for use in an error message. Capped because stdout on
+    this path can be a full model response rather than a one-line complaint."""
+    stripped = (text or "").strip()
+    return stripped if len(stripped) <= limit else stripped[:limit].rstrip() + "..."
 
 
 # ---- tolerant JSON extraction (used by later scoring/drafting phases) ------

@@ -87,7 +87,14 @@ def _validate_scoring_model(provider: str, model: str) -> None:
         # as the Ollama branch: a check we couldn't run isn't a failed check.
         return
     except providers.ProviderError as exc:
-        raise HTTPException(422, f"{provider} rejected '{model}': {exc}") from exc
+        # Deliberately not "rejected the model": this probe is usually the first
+        # real invocation of the CLI, so it's just as likely to be reporting a
+        # not-logged-in CLI or a broken install as a bad model. Blaming the model
+        # sent users hunting for a model problem that wasn't there. The CLI's own
+        # sentence follows the colon and is the actionable part.
+        raise HTTPException(
+            422, f"Couldn't run {provider} with model '{model}': {exc}"
+        ) from exc
 
 
 def resolve_scoring_model(session: Session, provider: str) -> str | None:
