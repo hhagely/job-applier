@@ -81,6 +81,13 @@ def _validate_scoring_model(provider: str, model: str) -> None:
         providers.run(
             provider, _TEST_PROMPT, timeout=_SCORING_PROBE_TIMEOUT, model=model
         )
+    except providers.ProviderUsageLimit:
+        # Rate-limited before the CLI ever got far enough to judge the model. Same
+        # rule as the missing-binary branch below: a check we couldn't run isn't a
+        # failed check. Rejecting here would strand the user behind a limit that
+        # has nothing to do with the value they typed, with no way to save it until
+        # their window resets. `score_pending`'s breaker remains the backstop.
+        return
     except providers.ProviderNotFound:
         # The binary vanished between detect_all() above and here. That says
         # nothing about the model, so don't reject it on those grounds — same rule

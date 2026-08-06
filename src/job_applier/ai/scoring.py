@@ -7,7 +7,7 @@ of truth in ``prompts/score.md``).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, NoReturn, Optional
 
 from pydantic import BaseModel, Field
 
@@ -295,6 +295,25 @@ def _score_batch_call(
 ABORT_AFTER_PROVIDER_ERRORS = 3
 
 
+def _abort_on_usage_limit(
+    session: Session,
+    low_scorers: list[int],
+    provider: str,
+    model: Optional[str],
+    exc: providers.ProviderUsageLimit,
+) -> NoReturn:
+    """Stop a run that has hit the provider's usage limit, banking its work first.
+
+    The auto-archive of low scorers normally runs after the loop, so aborting
+    without it would score a job below the threshold and then leave it sitting in
+    the queue. Individual scores need no such care — ``upsert_score`` commits per
+    job, so everything already scored is durable.
+    """
+    if low_scorers:
+        services.bulk_set_status(session, low_scorers, ApplicationStatus.archived)
+    raise ScoringAborted(_provider_failure_hint(provider, model, exc)) from exc
+
+
 def _provider_failure_hint(
     provider: str, model: Optional[str], exc: Exception
 ) -> str:
@@ -302,6 +321,17 @@ def _provider_failure_hint(
     setting that caused it and where to change it: the failure surfaces on the
     dashboard while the control lives on /settings, and the CLI's own stderr says
     nothing about either."""
+    if isinstance(exc, providers.ProviderUsageLimit):
+        # Nothing here is misconfigured, so the model/Settings advice below would
+        # send the user to change a setting that was never the problem. The repair
+        # is waiting, and the reassurance matters as much as the cause: this run
+        # stopped partway through a queue, and the user needs to know the scores it
+        # did finish are banked.
+        return (
+            f"Scoring stopped: {provider} has hit its usage limit ({exc}). Scores "
+            f"already saved are kept — run Score pending again once the limit "
+            f"resets and it will pick up where this left off."
+        )
     if model:
         return (
             f"Scoring stopped: {provider} rejected the configured scoring model "
@@ -337,7 +367,9 @@ def score_pending(
     the run. When ``job_ids`` is given those exact jobs are scored; otherwise the live
     pending-match queue is used.
 
-    Raises ``ScoringAborted`` if the provider fails ``ABORT_AFTER_PROVIDER_ERRORS``
+    Raises ``ScoringAborted`` immediately on a provider usage limit (waiting is the
+    only fix, so the rest of the queue would just re-hit it), or if the provider
+    fails ``ABORT_AFTER_PROVIDER_ERRORS``
     times in a row before anything scores — a misconfiguration (bad model, expired
     login) is identical for every job, so the run stops with one actionable message
     instead of burning the queue to say the same thing N times.
@@ -381,6 +413,11 @@ def score_pending(
                 batch_scores = _score_batch_call(
                     provider, resume.extracted_text, batch, model, home_state
                 )
+            except providers.ProviderUsageLimit as exc:
+                # The single-job fallback exists to rescue a batch the *model*
+                # fumbled. A usage limit isn't that: falling back would re-hit the
+                # same wall once per job in the batch.
+                _abort_on_usage_limit(session, low_scorers, provider, model, exc)
             except Exception:  # noqa: BLE001 - a failed batch degrades to single-job, never lost
                 batch_scores = {}
 
@@ -397,6 +434,16 @@ def score_pending(
                     _record(job, result.score, None)
                 scored_any = True
                 consecutive_provider_errors = 0
+            except providers.ProviderUsageLimit as exc:
+                # The one provider failure that is *expected* to arrive mid-run:
+                # you spend the window on successful work and then hit the wall.
+                # The breaker below is exactly backwards for it — it disarms as
+                # soon as anything succeeds, so a limit reached at job 40 of 200
+                # would let all 160 remaining jobs each spend their own doomed CLI
+                # spawn re-confirming it, turning a wait into a long grind that
+                # ends with 160 identical errors. Stop at the first one.
+                _record(job, None, str(exc))
+                _abort_on_usage_limit(session, low_scorers, provider, model, exc)
             except Exception as exc:  # noqa: BLE001 - one job's failure can't kill the run
                 _record(job, None, str(exc))
                 # Only provider-level errors trip the breaker, and only while the

@@ -49,6 +49,15 @@ class ProviderTimeout(ProviderError):
     """The CLI didn't finish within the timeout."""
 
 
+class ProviderUsageLimit(ProviderError):
+    """The CLI reported a plan/usage/quota limit rather than a broken setup.
+
+    Split out from ``ProviderError`` because the repair is *waiting*, not changing
+    a setting — and because a caller working through a queue has to stop rather
+    than spend the remainder of it re-hitting a wall that is already up.
+    """
+
+
 class ProviderJSONError(ProviderError):
     """Provider output couldn't be parsed/validated into the expected JSON model."""
 
@@ -450,9 +459,29 @@ def run(
         # not-logged-in CLI still passes `--version` detection, so this is the
         # first place the user ever learns about it). Prefer stderr, fall back to
         # stdout.
-        detail = (proc.stderr or "").strip() or _clip(proc.stdout)
-        raise ProviderError(detail or f"exit code {proc.returncode}")
+        detail = (
+            (proc.stderr or "").strip()
+            or _clip(proc.stdout)
+            or f"exit code {proc.returncode}"
+        )
+        if _USAGE_LIMIT_RE.search(detail):
+            raise ProviderUsageLimit(detail)
+        raise ProviderError(detail)
     return (proc.stdout or "").strip()
+
+
+# Usage/quota exhaustion as each CLI phrases it: Claude ("Claude usage limit
+# reached"), Gemini (quota exceeded / RESOURCE_EXHAUSTED), Codex (rate limit),
+# plus the bare HTTP shapes. This matches the CLI's own prose, which is
+# version-specific and WILL drift, so the failure mode is chosen deliberately: a
+# missed match degrades to exactly today's behavior (a generic ``ProviderError``
+# carrying the same text), never to a swallowed or mislabeled error. Kept narrow
+# for the same reason — a bare "limit reached" would also catch context/token
+# limits, which are a different problem with a different fix.
+_USAGE_LIMIT_RE = re.compile(
+    r"usage limit|rate limit|quota|resource[ _]exhausted|too many requests|\b429\b",
+    re.IGNORECASE,
+)
 
 
 def _clip(text: Optional[str], *, limit: int = 400) -> str:

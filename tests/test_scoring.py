@@ -244,6 +244,47 @@ def test_score_pending_aborts_on_repeated_provider_failure(monkeypatch):
     assert len(calls) < 12
 
 
+def test_score_pending_stops_immediately_on_a_usage_limit(monkeypatch):
+    """A usage limit arrives *mid-run* by nature — you spend the window on real work
+    and then hit the wall. The consecutive-failure breaker disarms as soon as
+    anything succeeds, so without a dedicated path every remaining job would spend
+    its own doomed CLI spawn re-confirming a limit that is already up."""
+    calls = []
+
+    def _run(provider, prompt, **k):
+        calls.append(prompt)
+        # One job scores, then the window closes.
+        if len(calls) > 1:
+            raise scoring.providers.ProviderUsageLimit(
+                "Claude usage limit reached. Your limit will reset at 3pm."
+            )
+        return CANNED
+
+    monkeypatch.setattr(scoring.providers, "run", _run)
+    e = _engine()
+    with Session(e) as s:
+        _seed_resume(s)
+        for i in range(12):
+            _seed_job(s, title=f"Engineer {i}")
+        # Batching would score several per call; force the single-job path so
+        # "stopped after the first failure" is unambiguous.
+        monkeypatch.setattr(scoring, "chunk_jobs", lambda js: [[j] for j in js])
+        with pytest.raises(scoring.ScoringAborted) as err:
+            scoring.score_pending(s, provider="claude", model="sonnet")
+
+        # Work already committed survives the abort — that is what makes stopping
+        # strictly better than grinding through the rest of the queue.
+        saved = s.exec(select(MatchScore)).all()
+        assert [row.score for row in saved] == [82]
+
+    # Stopped on the first limit rather than re-hitting it for all 12.
+    assert len(calls) == 2
+    msg = str(err.value)
+    assert "usage limit" in msg.lower()
+    # Nothing is misconfigured, so it must not send the user off to change a model.
+    assert "sonnet" not in msg
+
+
 def test_score_pending_provider_error_late_in_a_healthy_run_is_per_job(monkeypatch):
     """The breaker must not fire once scoring is demonstrably working — one bad job
     late in a good run is a per-job error, not a broken configuration."""

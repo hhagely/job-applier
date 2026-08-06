@@ -293,6 +293,42 @@ def test_run_nonzero_raises_with_stderr(monkeypatch):
         providers.run("claude", "hi")
 
 
+def test_usage_limit_is_classified_from_the_cli_message(monkeypatch):
+    """A plan limit is repaired by waiting, not by changing settings, so callers
+    need to tell it apart from a broken config. The CLIs only say so in prose —
+    and on stdout, with stderr empty."""
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/claude")
+    monkeypatch.setattr(
+        providers.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv,
+            1,
+            stdout="Claude usage limit reached. Your limit will reset at 3pm.",
+            stderr="",
+        ),
+    )
+    with pytest.raises(providers.ProviderUsageLimit, match="usage limit reached"):
+        providers.run("claude", "hi")
+
+
+def test_ordinary_failure_is_not_mistaken_for_a_usage_limit(monkeypatch):
+    # Misreading a real breakage as "just wait" would stall a run behind a wall
+    # that was never there. ProviderUsageLimit subclasses ProviderError, so the
+    # assertion has to be on the exact type.
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/claude")
+    monkeypatch.setattr(
+        providers.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 1, stdout="There's an issue with the selected model (x).", stderr=""
+        ),
+    )
+    with pytest.raises(providers.ProviderError) as err:
+        providers.run("claude", "hi")
+    assert not isinstance(err.value, providers.ProviderUsageLimit)
+
+
 # ---- extract_json ---------------------------------------------------------
 
 
