@@ -112,11 +112,25 @@
 						new resume.
 					</p>
 				{/if}
-				{#if form?.resume}
-					<p class="banner info" style="margin-top:12px">
-						Resume uploaded. Use the <a href="/search">search profile</a> page's Suggest-roles button to
-						refresh your recommendations.
-					</p>
+				<!-- Where to go after an upload. Which jobs even reach the scorer is
+				     decided by the search profile, so that's the next stop — and with a
+				     provider detected, it can be filled in from the resume just uploaded. -->
+				{#if form?.nextSteps}
+					<div class="banner info next-step" style="margin-top:12px">
+						<div>
+							<strong>Resume saved. Next: your search profile.</strong>
+							It's the filter that decides which jobs get ingested at all — role titles, seniority,
+							and required / excluded tech.
+							{#if form.aiCanSuggest}
+								Head there and hit <em>Suggest roles from resume</em> to have your AI provider read this
+								resume and propose criteria — nothing changes until you accept them.
+							{:else}
+								Set the criteria there by hand, or <a href="/settings">set up an AI provider</a> to have
+								them suggested from this resume.
+							{/if}
+						</div>
+						<a class="btn primary" href="/search">Open search profile</a>
+					</div>
 				{/if}
 			</div>
 		</div>
@@ -181,6 +195,20 @@
 		flex-direction: column;
 		align-items: flex-start;
 		gap: 10px;
+	}
+	.next-step {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		flex-wrap: wrap;
+	}
+	.next-step > div {
+		flex: 1;
+		min-width: 260px;
+		line-height: 1.55;
+	}
+	.next-step .btn {
+		flex: none;
 	}
 	.sc-actions {
 		display: flex;
