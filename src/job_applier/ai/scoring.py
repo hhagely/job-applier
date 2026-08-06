@@ -327,10 +327,20 @@ def _provider_failure_hint(
         # is waiting, and the reassurance matters as much as the cause: this run
         # stopped partway through a queue, and the user needs to know the scores it
         # did finish are banked.
+        #
+        # The reset time leads, in our own words, rather than being left inside the
+        # CLI's parenthetical: it's the one thing the user acts on, and in the epoch
+        # form the raw text is a bare unix timestamp they can't read. The raw
+        # message still trails for diagnostics.
+        when = (
+            f" Resets at {exc.resets_at}."
+            if exc.resets_at
+            else " The CLI didn't say when it resets."
+        )
         return (
-            f"Scoring stopped: {provider} has hit its usage limit ({exc}). Scores "
-            f"already saved are kept — run Score pending again once the limit "
-            f"resets and it will pick up where this left off."
+            f"Scoring stopped: {provider} has hit its usage limit.{when} Scores "
+            f"already saved are kept — run Score pending again after that and it "
+            f"will pick up where this left off. ({exc})"
         )
     if model:
         return (
