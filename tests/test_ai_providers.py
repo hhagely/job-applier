@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -291,6 +292,78 @@ def test_run_nonzero_raises_with_stderr(monkeypatch):
     )
     with pytest.raises(providers.ProviderError, match="kaboom"):
         providers.run("claude", "hi")
+
+
+def test_usage_limit_is_classified_from_the_cli_message(monkeypatch):
+    """A plan limit is repaired by waiting, not by changing settings, so callers
+    need to tell it apart from a broken config. The CLIs only say so in prose —
+    and on stdout, with stderr empty."""
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/claude")
+    monkeypatch.setattr(
+        providers.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv,
+            1,
+            stdout="Claude usage limit reached. Your limit will reset at 3pm.",
+            stderr="",
+        ),
+    )
+    with pytest.raises(providers.ProviderUsageLimit, match="usage limit reached"):
+        providers.run("claude", "hi")
+
+
+def test_ordinary_failure_is_not_mistaken_for_a_usage_limit(monkeypatch):
+    # Misreading a real breakage as "just wait" would stall a run behind a wall
+    # that was never there. ProviderUsageLimit subclasses ProviderError, so the
+    # assertion has to be on the exact type.
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/claude")
+    monkeypatch.setattr(
+        providers.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 1, stdout="There's an issue with the selected model (x).", stderr=""
+        ),
+    )
+    with pytest.raises(providers.ProviderError) as err:
+        providers.run("claude", "hi")
+    assert not isinstance(err.value, providers.ProviderUsageLimit)
+
+
+def test_reset_time_prose_form_is_echoed_as_the_cli_worded_it():
+    assert (
+        providers._parse_reset(
+            "Claude usage limit reached. Your limit will reset at 3pm (America/Chicago)."
+        )
+        == "3pm (America/Chicago)"
+    )
+
+
+def test_reset_time_epoch_form_is_rendered_readable():
+    # Raw, this form is a bare unix timestamp the user can do nothing with. Rendered
+    # in local time, so assert the shape rather than a fixed clock.
+    got = providers._parse_reset("Claude AI usage limit reached|1762345678")
+    assert got and re.match(r"^\d{1,2}:\d{2} (AM|PM) on \w{3} \d{2}$", got)
+
+
+def test_no_reset_info_yields_none_rather_than_a_guess():
+    # The caller prints "the CLI didn't say" — inventing a time the user would plan
+    # around is worse than admitting we don't know.
+    assert providers._parse_reset("Quota exceeded for this project.") is None
+
+
+def test_usage_limit_carries_the_reset_time(monkeypatch):
+    monkeypatch.setattr(providers.shutil, "which", lambda b: "/usr/bin/claude")
+    monkeypatch.setattr(
+        providers.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 1, stdout="Claude usage limit reached. Resets at 3pm.", stderr=""
+        ),
+    )
+    with pytest.raises(providers.ProviderUsageLimit) as err:
+        providers.run("claude", "hi")
+    assert err.value.resets_at == "3pm"
 
 
 # ---- extract_json ---------------------------------------------------------

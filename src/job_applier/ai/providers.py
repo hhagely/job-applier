@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -47,6 +48,25 @@ class ProviderNotFound(ProviderError):
 
 class ProviderTimeout(ProviderError):
     """The CLI didn't finish within the timeout."""
+
+
+class ProviderUsageLimit(ProviderError):
+    """The CLI reported a plan/usage/quota limit rather than a broken setup.
+
+    Split out from ``ProviderError`` because the repair is *waiting*, not changing
+    a setting — and because a caller working through a queue has to stop rather
+    than spend the remainder of it re-hitting a wall that is already up.
+
+    ``resets_at`` is a display-ready phrase ("3:00 PM on Nov 05"), or ``None`` when
+    the CLI didn't say. A string rather than a datetime because only one of the two
+    shapes we can read is an actual instant — the other is a bare local clock time
+    whose date we'd have to guess. Callers only print it. (If a countdown is ever
+    wanted, the epoch branch in ``_parse_reset`` is where a real instant exists.)
+    """
+
+    def __init__(self, message: str, *, resets_at: Optional[str] = None):
+        super().__init__(message)
+        self.resets_at = resets_at
 
 
 class ProviderJSONError(ProviderError):
@@ -450,9 +470,57 @@ def run(
         # not-logged-in CLI still passes `--version` detection, so this is the
         # first place the user ever learns about it). Prefer stderr, fall back to
         # stdout.
-        detail = (proc.stderr or "").strip() or _clip(proc.stdout)
-        raise ProviderError(detail or f"exit code {proc.returncode}")
+        detail = (
+            (proc.stderr or "").strip()
+            or _clip(proc.stdout)
+            or f"exit code {proc.returncode}"
+        )
+        if _USAGE_LIMIT_RE.search(detail):
+            raise ProviderUsageLimit(detail, resets_at=_parse_reset(detail))
+        raise ProviderError(detail)
     return (proc.stdout or "").strip()
+
+
+# Usage/quota exhaustion as each CLI phrases it: Claude ("Claude usage limit
+# reached"), Gemini (quota exceeded / RESOURCE_EXHAUSTED), Codex (rate limit),
+# plus the bare HTTP shapes. This matches the CLI's own prose, which is
+# version-specific and WILL drift, so the failure mode is chosen deliberately: a
+# missed match degrades to exactly today's behavior (a generic ``ProviderError``
+# carrying the same text), never to a swallowed or mislabeled error. Kept narrow
+# for the same reason — a bare "limit reached" would also catch context/token
+# limits, which are a different problem with a different fix.
+_USAGE_LIMIT_RE = re.compile(
+    r"usage limit|rate limit|quota|resource[ _]exhausted|too many requests|\b429\b",
+    re.IGNORECASE,
+)
+
+# "When can I run this again?" is the only question the user has the instant they
+# read a limit error, so it's worth digging out of the CLI's prose. Two shapes are
+# known: a trailing unix timestamp ("...usage limit reached|1762345678") and a
+# local clock time in words ("Your limit will reset at 3pm (America/Chicago)").
+# Both are best-effort and version-specific. A miss is harmless by construction —
+# every caller treats a ``None`` reset as "the CLI didn't say" and prints its
+# message unchanged, which is exactly the behavior before this existed.
+_RESET_EPOCH_RE = re.compile(r"\|\s*(\d{10})\b")
+_RESET_PHRASE_RE = re.compile(
+    r"reset(?:s|ting)?\s+(?:at|on)\s+([^\n]{1,48}?)\s*(?:[.;]|$)", re.IGNORECASE
+)
+
+
+def _parse_reset(text: str) -> Optional[str]:
+    """A display-ready reset time from a usage-limit message, or ``None``."""
+    epoch = _RESET_EPOCH_RE.search(text)
+    if epoch:
+        try:
+            # Local time: the user reads this to decide when to come back, and the
+            # raw epoch is useless to them.
+            when = datetime.fromtimestamp(int(epoch.group(1))).astimezone()
+        except (OSError, OverflowError, ValueError):
+            return None
+        # %-I isn't portable (Windows), so strip the leading zero by hand.
+        return when.strftime("%I:%M %p on %b %d").lstrip("0")
+    phrase = _RESET_PHRASE_RE.search(text)
+    return phrase.group(1).strip() if phrase else None
 
 
 def _clip(text: Optional[str], *, limit: int = 400) -> str:
