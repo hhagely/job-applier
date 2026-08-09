@@ -353,6 +353,14 @@ export const api = {
 	getJob: (fetchFn: FetchFn, base: string, id: number) =>
 		call<JobDetail>(fetchFn, base, `/api/jobs/${id}`),
 
+	/**
+	 * Free-text lookup over ingested postings by title or company name. Wider than
+	 * `listJobs` on purpose (archived + manual-review postings included) — it backs
+	 * the Ctrl/Cmd-K palette, where the user is looking for a job they know exists.
+	 */
+	searchJobs: (fetchFn: FetchFn, base: string, q: string, limit = 20) =>
+		call<Job[]>(fetchFn, base, `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+
 	getScoreHistory: (fetchFn: FetchFn, base: string, jobId: number) =>
 		call<Score[]>(fetchFn, base, `/api/jobs/${jobId}/score-history`),
 

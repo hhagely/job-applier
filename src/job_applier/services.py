@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
@@ -27,6 +28,7 @@ from job_applier.models.db import (
     Application,
     ApplicationStatus,
     BlacklistedCompany,
+    Company,
     FilterStatus,
     JobPosting,
     MatchScore,
@@ -235,6 +237,68 @@ def bulk_set_status(
         results.append(app_row)
     session.commit()
     return results
+
+
+# ---- posting search -------------------------------------------------------
+
+#: Below this a substring match is too noisy to be useful (and "a" would scan
+#: the whole table for nothing).
+SEARCH_MIN_TERM = 2
+
+
+def _like_contains(term: str) -> str:
+    """A LIKE pattern matching ``term`` anywhere, with wildcards escaped so a
+    query like "50%" or "back_end" is taken literally."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def search_jobs(session: Session, query: str, *, limit: int = 20) -> list[JobPosting]:
+    """Ingested postings whose title or company name contains ``query``.
+
+    Deliberately wider than the queue view: it spans every persisted posting
+    (passed *and* manual, archived included) because the point is to find a job
+    you know was ingested, not to browse the current queue. Hidden duplicates are
+    skipped so one role doesn't fill the list with its cross-source twins.
+
+    Results are ranked exact match -> prefix match -> substring; the SQL ordering
+    is recency and Python's sort is stable, so newest wins inside each band.
+    """
+    term = query.strip()
+    if len(term) < SEARCH_MIN_TERM:
+        return []
+    pattern = _like_contains(term)
+    stmt = (
+        select(JobPosting)
+        .join(Company, isouter=True)
+        .where(
+            JobPosting.duplicate_of.is_(None),  # type: ignore[union-attr]
+            or_(
+                JobPosting.title.ilike(pattern, escape="\\"),  # type: ignore[attr-defined]
+                Company.name.ilike(pattern, escape="\\"),  # type: ignore[attr-defined]
+            ),
+        )
+        .options(
+            selectinload(JobPosting.company),
+            selectinload(JobPosting.score),
+            selectinload(JobPosting.application),
+        )
+        .order_by(JobPosting.ingested_at.desc())  # type: ignore[union-attr]
+    )
+    jobs = list(session.exec(stmt).all())
+
+    needle = term.lower()
+
+    def rank(j: JobPosting) -> int:
+        fields = [j.title.lower(), (j.company.name if j.company else "").lower()]
+        if any(f == needle for f in fields):
+            return 0
+        if any(f.startswith(needle) for f in fields):
+            return 1
+        return 2
+
+    jobs.sort(key=rank)
+    return jobs[:limit]
 
 
 # ---- search profile -------------------------------------------------------

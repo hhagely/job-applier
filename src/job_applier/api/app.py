@@ -141,6 +141,24 @@ def list_jobs(
     return [_job_summary(j, resume_names, active_id) for j in jobs]
 
 
+@app.get("/api/search", response_model=list[JobOut])
+def search(
+    q: str = "",
+    limit: int = 20,
+    session: Session = Depends(get_session),
+):
+    """Free-text lookup over ingested postings by job title or company name.
+
+    Backs the Ctrl/Cmd-K palette, which is why it is a separate endpoint rather
+    than a `q` param on /api/jobs: it intentionally ignores the queue's filters
+    (archived and manual-review postings are findable too).
+    """
+    jobs = services.search_jobs(session, q, limit=max(1, min(limit, 50)))
+    resume_names = _resume_filename_map(session)
+    active_id = _active_resume_id(session)
+    return [_job_summary(j, resume_names, active_id) for j in jobs]
+
+
 @app.get("/api/jobs/{job_id}", response_model=JobDetail)
 def get_job(
     job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
