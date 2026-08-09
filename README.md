@@ -27,10 +27,12 @@ latest installer for your OS from the
 - **Linux** — `job-applier-<version>.AppImage` (`chmod +x` then run) or the
   `.deb` (`sudo apt install ./job-applier_<version>_amd64.deb`).
 - **macOS** — not built yet (avoids the paid Apple notarization); run from
-  source (**[Setup](#setup)**) if you're on a Mac.
+  source (**[Running from source](#running-from-source)**) if you're on a Mac.
 
 On first launch the app walks you through a short **onboarding** flow: pick an
-AI CLI, upload your resume, and pull the first batch of jobs.
+AI CLI, upload your resume, and pull the first batch of jobs. See
+**[Getting started](#getting-started)** for the same setup with the reasoning
+behind each step.
 
 **AI-CLI prerequisite (optional).** Scoring and drafting run through an AI CLI
 you install and log into — install **one** of
@@ -49,6 +51,165 @@ command palette. The installer is unsigned, so the same one-time SmartScreen app
 On Linux both packages self-update: the AppImage swaps itself, and the `.deb` installs
 through `dpkg` behind a password prompt (if neither `dpkg` nor `apt` is available, an
 error is shown instead).
+
+## Getting started
+
+The first launch opens a three-step **onboarding wizard** — pick an AI CLI, upload
+your resume, pull your first batch of jobs. You can skip any step and finish later;
+the app remembers and won't trap you back in the wizard. What follows is the same
+setup with the reasoning the wizard has no room for.
+
+### 1. Pick an AI CLI — optional, but do it first
+
+Scoring and drafting shell out to an AI CLI you install and log into yourself; the
+app never touches an API key. Install **one** and select it under **Settings**:
+
+- **Claude Code** (`claude`) or **Gemini CLI** (`gemini`) — recommended.
+- **Codex CLI** (`codex`) or **Ollama** (`ollama`, fully local, no subscription) — best-effort.
+
+Settings lists whichever CLIs are on your `PATH` and can run a live test against the
+one you pick, so you find out it works here rather than halfway through a scoring run.
+
+**Everything except scoring and drafting works with no provider at all** — ingest,
+filtering, browsing, status tracking, and follow-ups are provider-free, and the app
+simply hides the AI buttons. Do this step first anyway: step 3 has a "propose a
+profile from my resume" shortcut that needs a provider.
+
+### 2. Upload your resume
+
+**Resume** in the sidebar. Use the PDF you actually send to employers, and make sure
+it's a **text-based PDF rather than a scan** — the text is extracted with `pypdf`, and
+an image-only PDF extracts to nothing, which quietly ruins every score that follows.
+
+This one document does double duty: it's what every job is scored against, and the
+base that tailored drafts are rewritten from. It never leaves your machine.
+
+Uploading a **new** resume later invalidates every existing score at once. Staleness
+is an id comparison, not a content diff, so a typo fix reads exactly like a rewrite —
+which is why the page asks you to judge it, right then:
+
+- **Keep existing scores** — re-stamps them onto the new resume, no AI calls. Right
+  for a typo or a reworded bullet.
+- **Re-score** — spends AI calls to redo them. Right when you rewrote a section or
+  changed your titles or tech.
+
+### 3. Fill out your search profile
+
+**Search profile** in the sidebar. These fields drive the *hard filter*, which runs
+during ingest — a posting that fails is dropped before it ever reaches your queue.
+That makes this the highest-leverage screen in the app, and the easiest one to
+over-tighten.
+
+| Field | Effect |
+| --- | --- |
+| **Seniority terms** | The job title must contain one of these. The strictest rule here — `senior` alone excludes every `Staff` and `Principal` posting. |
+| **Required tech** | The posting body or tags must reference one. Tokens of ≤2 characters (`js`, `go`, `ml`) are too ambiguous to pass on their own, so on their own they route a posting to **Manual review** instead. |
+| **Excluded tech** | In the title, disqualifies outright. In the tags, disqualifies unless a competing required-tech framework is also tagged. Mentioned only in the description with no positive signal, it goes to **Manual review** so you decide. |
+| **State of residence** | Optional. Drops postings whose "we can only hire in X, Y, Z" list leaves your state out. **Unset skips the rule entirely** — no state is assumed. Used only for this filter, stored locally, never sent anywhere. |
+| **Role titles** | The roles you're targeting. Recorded on the profile and filled in by *Suggest roles*; descriptive rather than functional — seniority and tech do the actual filtering. |
+
+Click **Suggest roles from resume** (needs a provider from step 1) to have the model
+read your resume and propose a whole profile. It's saved as a *draft* and changes
+nothing until you review and accept it.
+
+**Start broader than feels right.** The filter is unforgiving and silent: a profile
+that's too narrow doesn't warn you, it just hands you an empty queue, and the
+postings it dropped are gone rather than waiting somewhere. Widen first, then tighten
+once you can see what's coming through. The **Manual review** tab on the queue is
+where the ambiguous calls land — worth a look, since a thin queue often means good
+roles are piling up there.
+
+Two more tools on the same page, both aimed at *which employers* get searched:
+
+- **Company blacklist** — employers you never want to see. Checked before every other
+  rule, so their postings are dropped without a row being written. Matching normalizes
+  the name, so `Meta`, `Meta Inc`, and `Meta, Inc.` are one entry however a source
+  spells it. Edits only affect future ingests, not rows you already have.
+- **Check a company** — name an employer to find out whether your scrapes already
+  cover them, and add their job board if not. About 1,300 company boards ship seeded,
+  so the usual answer is "already covered". See
+  [Managing the company slug list](#managing-the-company-slug-list) for what can and
+  can't be added by hand.
+
+### 4. Run your first scrape
+
+**Dashboard → Run scrape** (or ⌘/Ctrl-K → *Run scrape now*). It runs as a background
+task with a live progress bar, and you can navigate away while it works.
+
+Expect the first run to take a while: it walks roughly 1,300 seeded company boards
+plus the config-free aggregators. Only postings that survive the hard filter are
+saved, so a few thousand fetched postings can land as a queue of a few dozen. Failed
+sources log a warning and don't sink the run.
+
+### 5. Score the queue
+
+**Dashboard → Score pending (N)**. The backend pulls your active resume and scores
+each unscored job against its description via your AI CLI — batched into one call per
+group, with a per-job retry so a single bad response can't poison a batch. Another
+background task; scores land in the queue as they arrive.
+
+**Jobs scoring below 60 are auto-archived** to keep the queue readable. Only
+*untriaged* jobs are — anything you've already marked `interested`, `applied`, and so
+on keeps its status. Archived jobs aren't deleted: flip **Show archived** on the queue
+to audit what was dropped and why.
+
+Scores read as bands, not precise numbers: **80+** strong, **65–79** worth a look,
+**below 65** weak. Treat the rubric breakdown in the detail pane as the real output —
+it tells you *why*, which is what you need to decide whether to apply.
+
+### 6. Review the queue
+
+**Queue** (`/`) is a master–detail list: rows on the left, match breakdown on the
+right. Triage by setting a status — `interested`, `drafted`, `applied`, `screening`,
+`interviewing`, `rejected`, `archived`. Filter chips narrow by status, source, ease of
+applying, and minimum score, and your filter selection persists between sessions.
+
+Each posting also carries a **Mark used for unemployment** toggle, if you need a dated
+log of applications for a claim.
+
+### 7. Draft tailored applications
+
+Build up a **draft list**, then run it in one go. Add the selected job from the detail
+pane (**+ Add to draft list**), or tick several rows and use **Add to draft list** on
+the selection bar; the list follows you across the queue, job detail, and follow-up
+pages. Hit **Draft list (N)** on the queue to run it, or draft a single job from its
+detail page.
+
+Each run writes a tailored resume and cover letter as markdown, renders both to PDF,
+moves the job to `drafted`, and re-scores the tailored version so you get a
+`baseline → tailored` delta.
+
+The markdown is the master copy and it's editable: fix a line, then **Re-render PDFs
+from markdown**. No need to regenerate unless you want the model to rebuild it from
+the job description.
+
+Be selective. Drafting is the most expensive thing the app does, and a tailored
+application you didn't read is worse than a good generic one.
+
+### 8. Track follow-ups
+
+Applying sets a follow-up date automatically. **Follow-ups** collects applications
+past that date with no outcome recorded, so nothing goes quiet without you noticing.
+
+### The loop after setup
+
+Scrape → score → review → draft the few worth it → follow up. Scraping daily is
+plenty; sources don't turn over faster than that.
+
+### Finding things
+
+⌘/Ctrl-K opens the command palette, which searches your ingested postings by **job
+title or company** as well as running commands. It reaches archived and manual-review
+postings too, so it's the fastest way back to a job you remember seeing.
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘/Ctrl-K` or `/` | Command palette + job/company search |
+| `⌘/Ctrl-1…6` | Jump to Dashboard / Queue / Follow-ups / Resume / Search profile / Settings |
+| `J` / `K` | Next / previous job in the queue |
+| `⌘/Ctrl-J` | Toggle light / dark theme |
+| `?` | Show the in-app shortcut sheet |
+| `Esc` | Close any overlay |
 
 ## Architecture
 
@@ -75,70 +236,43 @@ descriptions are untrusted scraped text, so model output is treated as data).
 Each CLI authenticates via its own login, so there are no API keys to manage —
 and the app runs fully, minus the AI features, with no provider installed.
 
-## Setup
+## Running from source
+
+Only needed if you're on macOS (no packaged build yet) or working on the app
+itself. The **[Getting started](#getting-started)** walkthrough above applies
+either way — same UI, same flow.
 
 ```sh
 make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
 
-To use the AI features (scoring, drafting, role suggestions), install and log
-into **one** supported AI CLI, then select it at http://localhost:5174/settings:
+Then run the two halves in two terminals:
 
-- **Claude Code** (`claude`) or **Gemini CLI** (`gemini`) — recommended.
-- **Codex CLI** (`codex`) or **Ollama** (`ollama`, fully local, no subscription) — best-effort.
+```sh
+make api    # FastAPI  → http://127.0.0.1:8000
+make web    # SvelteKit → http://localhost:5174
+```
 
-The app detects whichever CLIs are on your `PATH`. Everything except the AI
-features works with no provider installed.
+Open http://localhost:5174 and follow the onboarding wizard. `make app-dev` is a
+one-command alternative that boots both on free ports and opens a browser.
+
+The day-to-day flow all lives in the UI, but some maintenance has no button:
+
+```sh
+make ingest             # same as Dashboard → Run scrape
+make diagnose-filter    # dry-run every source and report what the filter drops,
+                        #   persisting nothing — the tool to reach for when your
+                        #   queue looks thin and you can't tell whether it's
+                        #   sourcing or over-tight filter settings
+make prune              # lighten old/archived postings (keeps dedupe hashes)
+make dedupe-jd          # backfill JD SimHashes, soft-link near-duplicates
+```
 
 > **This is a single-user local tool.** The FastAPI server binds to `127.0.0.1`
 > and has no authentication. CORS is locked to the local SvelteKit origin. Do
 > not expose it on a public interface — anyone who can reach it can mutate your
 > queue, your resume, and your search profile.
-
-## Daily flow
-
-1. **Run the API + UI** in two terminals:
-   ```sh
-   make api    # http://127.0.0.1:8000
-   make web    # http://localhost:5174
-   ```
-2. **Upload your resume** at http://localhost:5174/resume — pick the PDF you
-   actually send to employers. The API extracts plain text via `pypdf` and stores
-   it as the active resume. Older uploads are kept but inactive.
-3. **Configure your search profile** at http://localhost:5174/search — set role
-   titles, seniority terms, required tech, and excluded tech. These drive the
-   hard filter at ingest. Click **Suggest roles from resume** on `/search` (needs
-   an AI provider selected in Settings) to have the model propose a profile from
-   your resume; you accept or edit it before it applies. The same page holds a
-   **company blacklist** — employers you never want surfaced; their postings are
-   dropped at ingest before they reach your queue — and its mirror, **check a
-   company**: name an employer to see whether your scrapes already cover them,
-   and if they don't, have their job board added and searched from the next
-   ingest on. Most well-known employers are already on the list, so the usual
-   answer is "already covered" rather than a new entry.
-4. **Ingest** new postings:
-   ```sh
-   make ingest
-   ```
-5. **Score the queue** — on `/dashboard`, click **Score pending (N)**. The
-   backend pulls the active resume, fetches unscored jobs (plus any whose score
-   is stale because the resume changed), and scores each against the JD via your
-   selected AI CLI. It runs as a background task with a live progress bar; the
-   scores appear in the queue as they land.
-6. **Review** in the UI — change a job's status to `interested`, `drafted`,
-   `applied`, `screening`, `interviewing`, `rejected`, etc. Status changes use
-   SvelteKit form actions, so they round-trip through the backend without
-   client-side fetch code. Add jobs to the draft cart from any row; the cart
-   persists across `/`, `/jobs/[id]`, and `/followups`.
-7. **Draft tailored applications** for the jobs you want to apply to — add them
-   to the draft cart from any row and click **Draft list (N)** on the queue, or
-   draft a single job from its `/jobs/[id]` page. Each run writes a tailored
-   resume + cover-letter markdown, renders both PDFs under `applications/<id>/`,
-   moves the job to `drafted`, and re-scores the tailored draft against the JD so
-   you see a `baseline → tailored` delta.
-8. **Track follow-ups** at http://localhost:5174/followups — applied jobs past
-   their follow-up date surface here so nothing goes silent.
 
 ## Project layout
 
@@ -203,6 +337,8 @@ fixed rules, always applied, are:
   stored locally, and never sent anywhere.
 - **Not a sales / pre-sales / biz-dev title** — `Senior Solutions Engineer`,
   `Head of Partnerships`, etc. are dropped even when they pass seniority.
+- **Not crypto / blockchain / web3** — matched against the whole posting, not just
+  the title.
 
 Then the per-profile rules:
 
@@ -216,11 +352,11 @@ Then the per-profile rules:
   signal there is surfaced as `manual` so you can decide.
 
 Defaults shipped for fresh installs: senior+/staff/principal/lead seniority,
-JS/TS family stacks, Angular excluded. Run `/suggest-roles` to have Claude Code
-propose a profile from your resume; the recommendation is saved as a draft on
-`SearchProfile.recommendations_draft` and applied only when you click through
-the UI. The filter falls back to the built-in defaults whenever no profile row
-exists or its required-tech list is empty.
+JS/TS family stacks, Angular excluded. **Suggest roles from resume** on `/search`
+has your selected AI CLI propose a profile from your resume; the recommendation is
+saved as a draft on `SearchProfile.recommendations_draft` and applied only when you
+accept it in the UI. The filter falls back to the built-in defaults whenever no
+profile row exists or its required-tech list is empty.
 
 ## Sources
 
@@ -349,7 +485,9 @@ so the `baseline → tailored` delta and prior-resume scores remain visible.
 | `make setup`             | `uv sync` + `npm install` for the web app                         |
 | `make api`               | Run FastAPI on `:8000` with auto-reload                           |
 | `make web`               | Run SvelteKit dev server on `:5174`                               |
+| `make app-dev`           | Boot API + built web server on free ports and open a browser      |
 | `make ingest`            | Pull jobs from configured sources                                 |
+| `make diagnose-filter`   | Dry-run every source and report what the hard filter drops        |
 | `make refresh-slugs`     | Discover new Greenhouse/Lever/Ashby/Workable/SmartRecruiters slugs from SimplifyJobs |
 | `make refresh-slugs-full`| Discover + re-verify existing slugs (auto-disables dead boards)   |
 | `make prune`             | Clear description/raw on old or archived postings (keeps hashes)  |
