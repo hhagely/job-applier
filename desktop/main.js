@@ -179,6 +179,15 @@ async function startWebServer(webPort, apiBase) {
 // when the page renders. Print in an isolated session that cancels every request other
 // than the top-document navigation, so no such subresource is ever fetched. Mirrors the
 // Playwright guard in src/job_applier/pdf.py. JS is disabled too (the HTML needs none).
+//
+// The no-filter onBeforeRequest(listener) form is load-bearing: Electron 35 changed
+// WebRequestFilter so `urls: []` no longer means "all URLs" (it needs an explicit
+// <all_urls>). Passing no filter at all still means every request, so do NOT "tidy"
+// this by adding a filter object — an empty one would silently stop intercepting
+// subresources and reopen the exfil channel. Re-verified against Electron 43 /
+// Chromium 150 by printing a page with <img>/<link>/background-image at a canary
+// host: zero requests reached it, while the same page without this guard fetched
+// all three.
 const PRINT_PARTITION = 'print-isolated';
 
 function configurePrintSession() {
@@ -550,6 +559,13 @@ app.whenReady()
 		app.quit();
 	});
 app.on('before-quit', shutdown);
+// Note for anyone reproducing the print path in a standalone script: printToPDF
+// spawns a short-lived BrowserWindow, and on the default (no handler) behavior
+// Electron quits once the last window closes. In the app that never bites because
+// mainWindow outlives every print window, but a harness with no main window will
+// see its FIRST print succeed and every later one fail with ERR_FAILED (-2) as the
+// app tears down. Add a no-op window-all-closed handler there; it is not an
+// Electron-version regression.
 app.on('window-all-closed', () => {
 	shutdown();
 	app.quit();

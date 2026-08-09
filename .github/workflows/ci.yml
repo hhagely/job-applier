@@ -10,10 +10,13 @@ jobs:
     name: Backend (lint + pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # Pinned to v7 deliberately: setup-uv stopped publishing floating major
+      # tags at v8, so @v8/@v9 don't resolve -- those require an exact version
+      # (e.g. @v9.0.0), which then never picks up patches on its own.
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
@@ -36,11 +39,15 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      # This is the Node the build/test steps run under, and is independent of
+      # the Node the runner uses to execute the actions above (that one is baked
+      # into each action's action.yml -- GitHub only offers node20 or node24
+      # there, never node22). 22 matches local dev and every dep's engines field.
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
 
