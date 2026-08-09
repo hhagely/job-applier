@@ -12,6 +12,8 @@ The user is learning SvelteKit on this project — prefer idiomatic SvelteKit pa
 
 The desktop shell (titlebar + sidebar + status bar + Cmd/Ctrl-K command palette + `?` shortcuts + keyboard nav) lives in [src/lib/shell/](src/lib/shell/) and is composed by [src/routes/+layout.svelte](src/routes/+layout.svelte); the sidebar count badges come from [src/routes/+layout.server.ts](src/routes/+layout.server.ts).
 
+The palette mixes two result kinds in one keyboard list: the static commands (filtered locally) and ingested postings matched by title or company, fetched from `GET /api/search` — one of the few browser-side `fetch`es in the app, because a typeahead can't go through a form action. It's debounced and guarded by a sequence number rather than `AbortController`, since `api.ts` retries failed GETs and would treat an abort as one. That endpoint is deliberately wider than the queue (archived + manual-review postings are findable), so a result row shows its score band and an `ARCHIVED` chip for context.
+
 Match-score band thresholds (green ≥80 / amber 65–79 / rose <65) are centralized in [src/lib/score.ts](src/lib/score.ts) + `ScoreBadge`.
 
 `/` is the Queue (master–detail: list + read-only match-breakdown pane; full mutations still on `/jobs/[id]`); `/dashboard` is the landing view.

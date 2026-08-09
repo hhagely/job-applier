@@ -1085,11 +1085,38 @@ select.input {
 .pcmd.active .pc-cat {
 	color: var(--accent);
 }
+/* Job-result extras: the company name (.pc-cat) must not push the score badge
+   off the row, so it truncates while the badge keeps its intrinsic width. */
+.pcmd .pc-t,
+.pcmd .pc-cat {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.pcmd .pc-cat {
+	max-width: 40%;
+	flex: none;
+}
+.pcmd .pc-flag {
+	flex: none;
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--faint);
+	border: 1px solid var(--border-2);
+	border-radius: 5px;
+	padding: 1px 5px;
+}
 .palette-empty {
 	padding: 20px;
 	text-align: center;
 	color: var(--faint);
 	font-size: 13px;
+}
+.palette-note {
+	padding: 7px 11px;
+	color: var(--faint);
+	font-size: 11.5px;
 }
 .sheet {
 	width: min(520px, 92vw);

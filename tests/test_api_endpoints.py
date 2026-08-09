@@ -231,3 +231,73 @@ def test_list_jobs_unscored_only_filter(client):
 
     unscored = c.get("/api/jobs", params={"unscored_only": True}).json()
     assert any(j["title"] == "Unscored Engineer" for j in unscored)
+
+
+# ---- posting search (Ctrl/Cmd-K palette) ----------------------------------
+
+
+def test_search_matches_title_and_company(client):
+    c, e = client
+    with Session(e) as s:
+        _seed_job(s, title="Staff Platform Engineer", source_id="s1", company="Acme")
+        _seed_job(s, title="Designer", source_id="s2", company="Globex")
+
+    by_title = c.get("/api/search", params={"q": "platform"}).json()
+    assert [j["title"] for j in by_title] == ["Staff Platform Engineer"]
+
+    # Company match is case-insensitive, and returns that company's postings.
+    by_company = c.get("/api/search", params={"q": "globex"}).json()
+    assert [j["company"]["name"] for j in by_company] == ["Globex"]
+
+
+def test_search_spans_archived_and_manual_postings(client):
+    """Wider than the queue on purpose: the point is to find a job you know was
+    ingested, even if it was archived or routed to manual review."""
+    c, e = client
+    with Session(e) as s:
+        archived = _seed_job(s, title="Archived Engineer", source_id="s1")
+        manual = _seed_job(s, title="Manual Engineer", source_id="s2", company="Manual Co")
+        manual.filter_status = FilterStatus.manual
+        s.add(manual)
+        s.add(Application(job_id=archived.id, status=ApplicationStatus.archived))
+        s.commit()
+
+    found = {j["title"] for j in c.get("/api/search", params={"q": "engineer"}).json()}
+    assert found == {"Archived Engineer", "Manual Engineer"}
+
+
+def test_search_hides_duplicates_and_short_queries(client):
+    c, e = client
+    with Session(e) as s:
+        canonical = _seed_job(s, title="Backend Engineer", source_id="s1")
+        dupe = _seed_job(s, title="Backend Engineer", source_id="s2", company="Acme Dupe")
+        dupe.duplicate_of = canonical.id
+        s.add(dupe)
+        s.commit()
+
+    assert len(c.get("/api/search", params={"q": "backend"}).json()) == 1
+    # Below the minimum term length the endpoint returns nothing rather than
+    # dumping the table into the palette.
+    assert c.get("/api/search", params={"q": "b"}).json() == []
+
+
+def test_search_treats_wildcards_literally(client):
+    c, e = client
+    with Session(e) as s:
+        _seed_job(s, title="Engineer, 50% travel", source_id="s1")
+        _seed_job(s, title="Designer", source_id="s2", company="Globex")
+
+    assert [j["title"] for j in c.get("/api/search", params={"q": "50%"}).json()] == [
+        "Engineer, 50% travel"
+    ]
+
+
+def test_search_ranks_exact_and_prefix_matches_first(client):
+    c, e = client
+    with Session(e) as s:
+        _seed_job(s, title="Senior Data Engineer", source_id="s1", company="Acme")
+        _seed_job(s, title="Data", source_id="s2", company="Globex")
+        _seed_job(s, title="Data Scientist", source_id="s3", company="Initech")
+
+    titles = [j["title"] for j in c.get("/api/search", params={"q": "data"}).json()]
+    assert titles == ["Data", "Data Scientist", "Senior Data Engineer"]
