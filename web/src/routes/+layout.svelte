@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { taskStream } from '$lib/taskStream.svelte';
+	import { toast } from '$lib/toast.svelte';
 	import Titlebar from '$lib/shell/Titlebar.svelte';
 	import Sidebar from '$lib/shell/Sidebar.svelte';
 	import StatusBar from '$lib/shell/StatusBar.svelte';
@@ -33,9 +34,27 @@
 	// One shared event stream for all background tasks. Opened once here (above the
 	// router) so progress survives navigation; refresh page data whenever a task
 	// settles so counts/scores/drafts pick up its results.
+	//
+	// The refresh can fail (a loader throwing because the backend is restarting
+	// right as a scrape finishes). Catch it: unhandled, the page silently keeps
+	// stale data and the user is never told why the numbers didn't move.
 	onMount(() => {
-		taskStream.connect(data.apiBase ?? '', () => invalidateAll());
+		taskStream.connect(data.apiBase ?? '', async () => {
+			try {
+				await invalidateAll();
+			} catch {
+				toast('Task finished, but this page could not refresh. Reload to see the results.');
+			}
+		});
 		return () => taskStream.disconnect();
+	});
+
+	// The event stream is the only thing that reports background progress, so once
+	// EventSource gives up reconnecting the UI would just sit there. Say so.
+	$effect(() => {
+		if (taskStream.connection === 'closed') {
+			toast('Lost the connection to the app server. Reload to keep tracking background tasks.');
+		}
 	});
 
 	function onKeydown(e: KeyboardEvent) {
