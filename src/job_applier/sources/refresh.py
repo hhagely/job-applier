@@ -19,7 +19,7 @@ from __future__ import annotations
 import concurrent.futures as cf
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -224,6 +224,17 @@ def refresh_slugs(
     ``progress_cb(done, total, label)`` is called after each verify pass so a
     caller (the API's background task) can report progress; the whole run is a
     handful of long network passes, so per-pass granularity is the useful unit.
+
+    **No DB session is open during any network call.** The run is one read phase
+    (snapshot the slugs we already store), a series of network verify passes with
+    nothing open, and a short write transaction per pass. Holding a session across
+    the passes is what made this a bug worth a fix: the first insert took SQLite's
+    single write lock, and the lock then stayed held for the minutes of HTTP that
+    followed, so every other write in the app — a status change, a note — blocked
+    on ``busy_timeout`` and failed with "database is locked" (surfaced as a 503).
+    Reads were never affected under WAL, which is why the app stayed navigable
+    while mutations did not. Same shape as ``ingest.run_ingest``'s per-batch
+    writes, and the same reason.
     """
     stats = RefreshStats()
     total = REFRESH_STEPS_REVERIFY if reverify_existing else REFRESH_STEPS
@@ -243,136 +254,169 @@ def refresh_slugs(
     stats.sr_candidates = len(candidates["smartrecruiters"])
     stats.ashby_candidates = len(candidates["ashby"])
 
-    with Session(engine()) as session:
-        existing_gh = _existing_by_slug(session, "greenhouse")
-        existing_lv = _existing_by_slug(session, "lever")
-        existing_wk = _existing_by_slug(session, "workable")
-        existing_sr = _existing_by_slug(session, "smartrecruiters")
-        existing_ashby = _existing_by_slug(session, "ashby")
+    # Read phase. Plain strings, not ORM rows: the working set has to outlive the
+    # session it came from, and re-verification re-reads its rows inside the
+    # transaction that writes them.
+    discovered_sources = ["greenhouse", "lever", "workable", "smartrecruiters", "ashby"]
+    existing = _existing_slugs(
+        discovered_sources + (["workday"] if reverify_existing else [])
+    )
 
-        new_gh = _new_slugs("greenhouse", candidates["greenhouse"], existing_gh)
-        new_lv = _new_slugs("lever", candidates["lever"], existing_lv)
-        new_wk = _new_slugs("workable", candidates["workable"], existing_wk)
-        new_sr = _new_slugs("smartrecruiters", candidates["smartrecruiters"], existing_sr)
-        new_ashby = _new_slugs("ashby", candidates["ashby"], existing_ashby)
+    new_gh = _new_slugs("greenhouse", candidates["greenhouse"], existing["greenhouse"])
+    new_lv = _new_slugs("lever", candidates["lever"], existing["lever"])
+    new_wk = _new_slugs("workable", candidates["workable"], existing["workable"])
+    new_sr = _new_slugs(
+        "smartrecruiters", candidates["smartrecruiters"], existing["smartrecruiters"]
+    )
+    new_ashby = _new_slugs("ashby", candidates["ashby"], existing["ashby"])
 
-        gh_results = _verify_many(new_gh, GH_VERIFY, max_workers)
-        _step(f"checked {len(new_gh)} new Greenhouse boards")
-        lv_results = _verify_many(new_lv, LV_VERIFY, max_workers)
-        _step(f"checked {len(new_lv)} new Lever boards")
-        wk_results = _verify_workable(new_wk, max_workers)
-        _step(f"checked {len(new_wk)} new Workable boards")
-        sr_results = _verify_many(new_sr, SR_VERIFY, max_workers)
-        _step(f"checked {len(new_sr)} new SmartRecruiters boards")
-        ashby_results = _verify_many(new_ashby, ASHBY_VERIFY, max_workers)
-        _step(f"checked {len(new_ashby)} new Ashby boards")
+    # Each pass: verify with no session open, then persist in its own short
+    # transaction. Failure isolation is therefore per pass — a pass that dies
+    # keeps what the passes before it committed.
+    gh_results = _verify_many(new_gh, GH_VERIFY, max_workers)
+    _insert_verified("greenhouse", gh_results, stats, "gh_added")
+    _step(f"checked {len(new_gh)} new Greenhouse boards")
 
-        now = datetime.now(timezone.utc)
+    lv_results = _verify_many(new_lv, LV_VERIFY, max_workers)
+    _insert_verified("lever", lv_results, stats, "lv_added")
+    _step(f"checked {len(new_lv)} new Lever boards")
 
-        def _insert_verified(source: str, results, stats_field: str) -> None:
-            """Store every result that ``board_exists`` accepts for ``source``."""
-            for slug, ok, count, _err in results:
-                if not board_exists(source, ok, count):
-                    continue
-                session.add(
-                    SourceSlug(
-                        source=source,
-                        slug=slug,
-                        last_fetched_at=now,
-                        last_job_count=count,
-                        updated_at=now,
-                    )
-                )
-                setattr(stats, stats_field, getattr(stats, stats_field) + 1)
+    wk_results = _verify_workable(new_wk, max_workers)
+    _insert_verified("workable", wk_results, stats, "wk_added")
+    _step(f"checked {len(new_wk)} new Workable boards")
 
-        _insert_verified("greenhouse", gh_results, "gh_added")
-        _insert_verified("lever", lv_results, "lv_added")
-        _insert_verified("workable", wk_results, "wk_added")
-        _insert_verified("smartrecruiters", sr_results, "sr_added")
-        _insert_verified("ashby", ashby_results, "ashby_added")
+    sr_results = _verify_many(new_sr, SR_VERIFY, max_workers)
+    _insert_verified("smartrecruiters", sr_results, stats, "sr_added")
+    _step(f"checked {len(new_sr)} new SmartRecruiters boards")
 
-        if reverify_existing:
-            existing_workday = _existing_by_slug(session, "workday")
+    ashby_results = _verify_many(new_ashby, ASHBY_VERIFY, max_workers)
+    _insert_verified("ashby", ashby_results, stats, "ashby_added")
+    _step(f"checked {len(new_ashby)} new Ashby boards")
 
-            _apply_reverify(
-                rows=existing_gh,
-                results=_verify_many(sorted(existing_gh), GH_VERIFY, max_workers),
-                now=now,
-                stats=stats,
-                reverified_field="gh_reverified",
-                disabled_field="gh_disabled",
-            )
-            _step(f"re-checked {len(existing_gh)} Greenhouse boards")
-            _apply_reverify(
-                rows=existing_lv,
-                results=_verify_many(sorted(existing_lv), LV_VERIFY, max_workers),
-                now=now,
-                stats=stats,
-                reverified_field="lv_reverified",
-                disabled_field="lv_disabled",
-            )
-            _step(f"re-checked {len(existing_lv)} Lever boards")
-            _apply_reverify(
-                rows=existing_ashby,
-                results=_verify_many(sorted(existing_ashby), ASHBY_VERIFY, max_workers),
-                now=now,
-                stats=stats,
-                reverified_field="ashby_reverified",
-                disabled_field="ashby_disabled",
-            )
-            _step(f"re-checked {len(existing_ashby)} Ashby boards")
-            _apply_reverify(
-                rows=existing_workday,
-                results=_verify_workday(sorted(existing_workday), max_workers),
-                now=now,
-                stats=stats,
-                reverified_field="workday_reverified",
-                disabled_field="workday_disabled",
-            )
-            _step(f"re-checked {len(existing_workday)} Workday boards")
-            _apply_reverify(
-                rows=existing_wk,
-                results=_verify_workable(sorted(existing_wk), max_workers),
-                now=now,
-                stats=stats,
-                reverified_field="wk_reverified",
-                disabled_field="wk_disabled",
-            )
-            _step(f"re-checked {len(existing_wk)} Workable boards")
-            _apply_reverify(
-                rows=existing_sr,
-                results=_verify_many(sorted(existing_sr), SR_VERIFY, max_workers),
-                now=now,
-                stats=stats,
-                reverified_field="sr_reverified",
-                disabled_field="sr_disabled",
-            )
-            _step(f"re-checked {len(existing_sr)} SmartRecruiters boards")
-
-        session.commit()
+    if reverify_existing:
+        _apply_reverify(
+            source="greenhouse",
+            results=_verify_many(sorted(existing["greenhouse"]), GH_VERIFY, max_workers),
+            stats=stats,
+            reverified_field="gh_reverified",
+            disabled_field="gh_disabled",
+        )
+        _step(f"re-checked {len(existing['greenhouse'])} Greenhouse boards")
+        _apply_reverify(
+            source="lever",
+            results=_verify_many(sorted(existing["lever"]), LV_VERIFY, max_workers),
+            stats=stats,
+            reverified_field="lv_reverified",
+            disabled_field="lv_disabled",
+        )
+        _step(f"re-checked {len(existing['lever'])} Lever boards")
+        _apply_reverify(
+            source="ashby",
+            results=_verify_many(sorted(existing["ashby"]), ASHBY_VERIFY, max_workers),
+            stats=stats,
+            reverified_field="ashby_reverified",
+            disabled_field="ashby_disabled",
+        )
+        _step(f"re-checked {len(existing['ashby'])} Ashby boards")
+        _apply_reverify(
+            source="workday",
+            results=_verify_workday(sorted(existing["workday"]), max_workers),
+            stats=stats,
+            reverified_field="workday_reverified",
+            disabled_field="workday_disabled",
+        )
+        _step(f"re-checked {len(existing['workday'])} Workday boards")
+        _apply_reverify(
+            source="workable",
+            results=_verify_workable(sorted(existing["workable"]), max_workers),
+            stats=stats,
+            reverified_field="wk_reverified",
+            disabled_field="wk_disabled",
+        )
+        _step(f"re-checked {len(existing['workable'])} Workable boards")
+        _apply_reverify(
+            source="smartrecruiters",
+            results=_verify_many(sorted(existing["smartrecruiters"]), SR_VERIFY, max_workers),
+            stats=stats,
+            reverified_field="sr_reverified",
+            disabled_field="sr_disabled",
+        )
+        _step(f"re-checked {len(existing['smartrecruiters'])} SmartRecruiters boards")
 
     return stats
 
 
+def _insert_verified(
+    source: str,
+    results: list["_VerifyResult"],
+    stats: RefreshStats,
+    stats_field: str,
+) -> None:
+    """Store every result that ``board_exists`` accepts for ``source``.
+
+    One short transaction, opened only once the network pass has finished. Rows
+    the user added by hand are never candidates here — they are already in the
+    table, so ``_new_slugs`` filtered them out before verification.
+    """
+    keep = [
+        (slug, count)
+        for slug, ok, count, _err in results
+        if board_exists(source, ok, count)
+    ]
+    if not keep:
+        return
+    now = datetime.now(timezone.utc)
+    with Session(engine()) as session:
+        session.add_all(
+            SourceSlug(
+                source=source,
+                slug=slug,
+                last_fetched_at=now,
+                last_job_count=count,
+                updated_at=now,
+            )
+            for slug, count in keep
+        )
+        session.commit()
+    setattr(stats, stats_field, getattr(stats, stats_field) + len(keep))
+
+
 def _apply_reverify(
     *,
-    rows: dict[str, SourceSlug],
-    results: list[tuple[str, bool, int | None, str | None]],
-    now: datetime,
+    source: str,
+    results: list["_VerifyResult"],
     stats: RefreshStats,
     reverified_field: str,
     disabled_field: str,
 ) -> None:
-    for slug, ok, count, err in results:
-        row = rows[slug]
-        row.last_fetched_at = now
-        row.last_job_count = count if ok else row.last_job_count
-        row.last_error = None if ok else err
-        if not ok and row.enabled:
-            row.enabled = False
-            setattr(stats, disabled_field, getattr(stats, disabled_field) + 1)
-        row.updated_at = now
-        setattr(stats, reverified_field, getattr(stats, reverified_field) + 1)
+    """Fold one re-verification pass's outcomes into ``source``'s rows.
+
+    Rows are re-read here rather than carried over from the read phase so the
+    write transaction opens *after* the network pass, and so a row the user
+    touched meanwhile (added, removed) is picked up as it stands now. Only the
+    verification columns are written — ``added_by_user`` and ``label`` are left
+    exactly as they were.
+    """
+    if not results:
+        return
+    outcomes = {slug: (ok, count, err) for slug, ok, count, err in results}
+    now = datetime.now(timezone.utc)
+    with Session(engine()) as session:
+        rows = session.exec(select(SourceSlug).where(SourceSlug.source == source)).all()
+        for row in rows:
+            outcome = outcomes.get(row.slug)
+            if outcome is None:  # added after the read phase — not checked this run
+                continue
+            ok, count, err = outcome
+            row.last_fetched_at = now
+            row.last_job_count = count if ok else row.last_job_count
+            row.last_error = None if ok else err
+            if not ok and row.enabled:
+                row.enabled = False
+                setattr(stats, disabled_field, getattr(stats, disabled_field) + 1)
+            row.updated_at = now
+            setattr(stats, reverified_field, getattr(stats, reverified_field) + 1)
+        session.commit()
 
 
 def _fetch_candidates_from_simplify() -> dict[str, set[str]]:
@@ -409,8 +453,25 @@ def _fetch_candidates_from_simplify() -> dict[str, set[str]]:
                 log.warning("simplify listings fetch failed for %s: %s", url, e)
                 continue
 
+            # The feed is community-maintained and fetched raw off a branch: an
+            # error document or a reshaped envelope still parses as JSON, and
+            # iterating one of those yields keys, not entries. Unguarded, the
+            # AttributeError escapes the whole refresh run before a single source
+            # is checked, so validate the shape rather than trust it.
+            if not isinstance(data, list):
+                log.warning(
+                    "simplify listings for %s is %s, expected a list; skipping",
+                    url,
+                    type(data).__name__,
+                )
+                continue
+
             for item in data:
-                u = item.get("url") or ""
+                if not isinstance(item, dict):
+                    continue
+                u = item.get("url")
+                if not isinstance(u, str):
+                    continue
                 for m in GH_URL_RE.finditer(u):
                     s = m.group(1).lower()
                     if not HEX_RE.match(s) and s != "embed":
@@ -441,7 +502,7 @@ def _fetch_candidates_from_simplify() -> dict[str, set[str]]:
 
 
 def _new_slugs(
-    source: str, candidates: set[str], existing: dict[str, SourceSlug]
+    source: str, candidates: set[str], existing: Collection[str]
 ) -> list[str]:
     """Candidates not already in the table, sorted for stable progress labels.
 
@@ -456,13 +517,23 @@ def _new_slugs(
     return sorted(candidates - set(existing))
 
 
-def _existing_by_slug(session: Session, source: str) -> dict[str, SourceSlug]:
-    """Map of ``slug -> row`` for every ``SourceSlug`` of ``source`` — the working
-    set for discovery diffs and re-verification."""
-    return {
-        r.slug: r
-        for r in session.exec(select(SourceSlug).where(SourceSlug.source == source)).all()
-    }
+def _existing_slugs(sources: list[str]) -> dict[str, set[str]]:
+    """``source -> set of slugs we already store`` — the working set for discovery
+    diffs and re-verification, read in one short transaction.
+
+    Deliberately strings rather than ORM rows: the caller uses this across the
+    network passes, with no session open, where a detached row would be unusable.
+    """
+    with Session(engine()) as session:
+        rows = session.exec(
+            select(SourceSlug.source, SourceSlug.slug).where(
+                SourceSlug.source.in_(sources)  # type: ignore[attr-defined]
+            )
+        ).all()
+    found: dict[str, set[str]] = {source: set() for source in sources}
+    for source, slug in rows:
+        found[source].add(slug)
+    return found
 
 
 # (slug, ok, job_count_or_None, error_str_or_None) — one verification outcome.
