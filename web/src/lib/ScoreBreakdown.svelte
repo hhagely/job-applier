@@ -10,11 +10,32 @@
 
 	let { score }: { score: Score | null | undefined } = $props();
 
-	function rubricEntries(rubric: Record<string, unknown> | undefined): [string, unknown][] {
-		return rubric ? Object.entries(rubric) : [];
+	type RubricBucket = { points: number; note: string | null };
+
+	let entries: [string, unknown][] = $derived(score?.rubric ? Object.entries(score.rubric) : []);
+
+	/**
+	 * The scoring prompts (ai/prompts/score.md + score_batch.md) emit each bucket as
+	 * `{"points": 26, "note": "..."}`, but rows scored before that shape — and older
+	 * MatchScoreHistory reads — hold a bare number, so both must render. Anything else
+	 * returns null and the caller shows the raw value, so a future prompt change
+	 * degrades visibly instead of silently drawing a wrong bar.
+	 */
+	function rubricBucket(value: unknown): RubricBucket | null {
+		if (typeof value === 'number') {
+			return inRange(value) ? { points: value, note: null } : null;
+		}
+		if (typeof value === 'object' && value !== null) {
+			const { points, note } = value as { points?: unknown; note?: unknown };
+			if (typeof points === 'number' && inRange(points)) {
+				const text = typeof note === 'string' ? note.trim() : '';
+				return { points, note: text || null };
+			}
+		}
+		return null;
 	}
-	function rubricNumber(value: unknown): number | null {
-		return typeof value === 'number' && value >= 0 && value <= 100 ? value : null;
+	function inRange(n: number): boolean {
+		return Number.isFinite(n) && n >= 0 && n <= 100;
 	}
 </script>
 
@@ -33,18 +54,19 @@
 		{#if score.resume_filename}· <span class="mono">{score.resume_filename}</span>{/if}
 	</p>
 	{#if score.reasoning}<div class="rationale">{score.reasoning}</div>{/if}
-	{#if rubricEntries(score.rubric).length > 0}
+	{#if entries.length > 0}
 		<details class="rubric">
 			<summary><Icon name="chevron" size={12} stroke={2.4} /> Rubric breakdown</summary>
-			{#each rubricEntries(score.rubric) as [label, value] (label)}
-				{@const num = rubricNumber(value)}
+			{#each entries as [label, value] (label)}
+				{@const bucket = rubricBucket(value)}
 				<div class="rub-row">
 					<div class="rr-l">{label}</div>
-					{#if num !== null}
+					{#if bucket}
 						<div class="meter">
-							<i style="width:{num}%;background:{scoreBandVar(num)}"></i>
+							<i style="width:{bucket.points}%;background:{scoreBandVar(bucket.points)}"></i>
 						</div>
-						<div class="rr-n">{num}</div>
+						<div class="rr-n">{bucket.points}</div>
+						{#if bucket.note}<div class="rr-note">{bucket.note}</div>{/if}
 					{:else}
 						<div class="rr-v">
 							{typeof value === 'object' ? JSON.stringify(value) : String(value)}
@@ -128,5 +150,13 @@
 		font-family: var(--mono);
 		font-size: 11.5px;
 		color: var(--muted);
+	}
+	/* the model's one-line justification for the bucket, under its bar */
+	.rub-row .rr-note {
+		grid-column: 2 / 4;
+		font-size: 11.5px;
+		line-height: 1.35;
+		color: var(--faint);
+		margin-top: 2px;
 	}
 </style>
