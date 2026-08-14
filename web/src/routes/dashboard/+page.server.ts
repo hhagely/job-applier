@@ -1,4 +1,4 @@
-import { api } from '$lib/api';
+import { api, errorReason } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { activeJobs, isUnreviewed } from '$lib/jobFilters';
 import { scoreBand } from '$lib/score';
@@ -77,7 +77,7 @@ export const actions: Actions = {
 			return { ok: true, task_id };
 		} catch (e) {
 			// The API returns 409 when no provider is selected / no active resume.
-			return fail(409, { error: (e as Error).message });
+			return fail(409, { error: errorReason(e) });
 		}
 	},
 
@@ -87,7 +87,7 @@ export const actions: Actions = {
 			const { task_id } = await api.startIngest(fetch, serverApiBase());
 			return { ok: true, task_id, kind: 'ingest' };
 		} catch (e) {
-			return fail(500, { error: (e as Error).message });
+			return fail(500, { error: errorReason(e) });
 		}
 	}
 };

@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { api, getApiBase } from './api';
+import { api, errorReason, getApiBase } from './api';
 
 const TEST_BASE = 'http://127.0.0.1:8000';
 
@@ -100,6 +100,100 @@ describe('api blacklist', () => {
 	it('throws on a non-404 delete error', async () => {
 		const fetchFn = vi.fn().mockResolvedValue(new Response('boom', { status: 500 }));
 		await expect(api.removeBlacklist(fetchFn, TEST_BASE, 7)).rejects.toThrow(/500.*boom/);
+	});
+});
+
+describe('errorReason', () => {
+	it("prefers FastAPI's detail over the raw `API <path> -> <status>` envelope", async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValue(jsonResponse({ detail: 'The database is busy.' }, { status: 503 }));
+		const err = await api.listJobs(fetchFn, TEST_BASE).catch((e) => e);
+		expect(errorReason(err)).toBe('The database is busy.');
+	});
+
+	it('handles a detail containing quotes, and falls back when there is no detail', async () => {
+		// Quotes are why this reads the parsed `detail` field: the regex this
+		// replaced scraped `{"detail":"..."}` out of the message text and handed
+		// back the JSON-escaped form.
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValue(jsonResponse({ detail: 'Unknown state "MO, Missouri".' }, { status: 422 }));
+		const err = await api.listJobs(fetchFn, TEST_BASE).catch((e) => e);
+		expect(errorReason(err)).toBe('Unknown state "MO, Missouri".');
+
+		expect(errorReason(new Error('connect ECONNREFUSED'))).toBe('connect ECONNREFUSED');
+		expect(errorReason(null)).toBe('request failed');
+	});
+});
+
+// The retry policy is what keeps a dropped socket from replaying a mutation, so
+// it gets pinned here. Every wait below is a fake timer — nothing in this block
+// sleeps on the wall clock.
+describe('fetchWithRetry policy', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** What fetch() does when no HTTP response is ever produced. */
+	const netFail = () => new TypeError('fetch failed');
+
+	it('retries a GET that never got a response, after backing off', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockRejectedValueOnce(netFail())
+			.mockResolvedValueOnce(jsonResponse([{ id: 1 }]));
+
+		const pending = api.listJobs(fetchFn, TEST_BASE);
+		await vi.advanceTimersByTimeAsync(0); // let the first rejection settle
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(249); // the first backoff is 250ms
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+		await expect(pending).resolves.toEqual([{ id: 1 }]);
+	});
+
+	it('does not retry a PATCH — it may have been applied before the socket dropped', async () => {
+		const fetchFn = vi.fn().mockRejectedValue(netFail());
+		const pending = api.setStatus(fetchFn, TEST_BASE, 7, 'applied');
+		const settled = expect(pending).rejects.toThrow('fetch failed');
+		await vi.runAllTimersAsync();
+		await settled;
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not retry the DELETE behind removeBlacklist', async () => {
+		const fetchFn = vi.fn().mockRejectedValue(netFail());
+		const pending = api.removeBlacklist(fetchFn, TEST_BASE, 7);
+		const settled = expect(pending).rejects.toThrow('fetch failed');
+		await vi.runAllTimersAsync();
+		await settled;
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
+	it('gives up on a GET after the configured attempts and rethrows the last error', async () => {
+		const fetchFn = vi.fn().mockRejectedValue(netFail());
+		const pending = api.listJobs(fetchFn, TEST_BASE);
+		const settled = expect(pending).rejects.toThrow('fetch failed');
+		await vi.runAllTimersAsync();
+		await settled;
+		// The initial attempt plus one per configured backoff delay.
+		expect(fetchFn).toHaveBeenCalledTimes(5);
+	});
+
+	it('never retries a response it received, even a 5xx', async () => {
+		// The server produced the response, so the request *was* processed —
+		// replaying it would be a second write, not a recovery.
+		const fetchFn = vi.fn().mockResolvedValue(new Response('busy', { status: 503 }));
+		await expect(api.listJobs(fetchFn, TEST_BASE)).rejects.toThrow(/503/);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
 	});
 });
 

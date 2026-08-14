@@ -5,7 +5,7 @@
 	// description + draft are fetched per selection. Extracted from the Queue page's
 	// +page.svelte to keep that component to list + bulk-action concerns.
 	import { invalidateAll } from '$app/navigation';
-	import { api, type Draft, type Job, type JobDetail } from '$lib/api';
+	import { api, errorReason, type Draft, type Job, type JobDetail } from '$lib/api';
 	import { relTime } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -48,7 +48,7 @@
 					detailDraft = dr;
 				}
 			} catch (e) {
-				if (!cancelled) detailErr = (e as Error).message;
+				if (!cancelled) detailErr = errorReason(e);
 			}
 		})();
 		return () => {

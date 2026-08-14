@@ -15,18 +15,12 @@ const { api } = vi.hoisted(() => ({
 		startDraft: vi.fn()
 	}
 }));
-vi.mock('$lib/api', () => ({
-	api,
-	APPLICATION_STATUSES: [
-		'new',
-		'interested',
-		'drafted',
-		'applied',
-		'screening',
-		'interviewing',
-		'rejected',
-		'archived'
-	]
+// Only `api` is faked — APPLICATION_STATUSES and errorReason come from the real
+// module (it's browser-safe and side-effect free), so these tests exercise the
+// shared errorReason rather than a stand-in for it.
+vi.mock('$lib/api', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/api')>()),
+	api
 }));
 
 import { jobActions, parseFollowup } from './jobActions.server';

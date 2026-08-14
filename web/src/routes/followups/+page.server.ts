@@ -1,4 +1,4 @@
-import { api } from '$lib/api';
+import { api, errorReason } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
@@ -30,7 +30,7 @@ export const actions: Actions = {
 			await api.setFollowup(fetch, serverApiBase(), id, { next_followup_at });
 			return { ok: true };
 		} catch (e) {
-			return fail(400, { error: (e as Error).message });
+			return fail(400, { error: errorReason(e) });
 		}
 	},
 
@@ -46,7 +46,7 @@ export const actions: Actions = {
 			});
 			return { ok: true };
 		} catch (e) {
-			return fail(400, { error: (e as Error).message });
+			return fail(400, { error: errorReason(e) });
 		}
 	},
 
@@ -60,7 +60,7 @@ export const actions: Actions = {
 			await api.setStatus(fetch, serverApiBase(), id, 'rejected', { outcome: 'rejected' });
 			return { ok: true };
 		} catch (e) {
-			return fail(400, { error: (e as Error).message });
+			return fail(400, { error: errorReason(e) });
 		}
 	},
 
@@ -74,7 +74,7 @@ export const actions: Actions = {
 			await api.setFollowup(fetch, serverApiBase(), id, { outcome });
 			return { ok: true };
 		} catch (e) {
-			return fail(400, { error: (e as Error).message });
+			return fail(400, { error: errorReason(e) });
 		}
 	}
 };

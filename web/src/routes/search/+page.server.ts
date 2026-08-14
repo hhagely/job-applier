@@ -1,4 +1,4 @@
-import { api, type SearchProfileBody } from '$lib/api';
+import { api, errorReason, type SearchProfileBody } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
@@ -13,15 +13,6 @@ export const load: PageServerLoad = async ({ fetch }) => {
 	]);
 	return { profile, hasResume: resume !== null, blacklist, coverage, watched };
 };
-
-/** FastAPI HTTPException bodies come back as `{"detail": "..."}` wrapped in the
- * api client's `API <path> -> <status>: <body>` message. Pull the detail out so
- * the UI shows a clean sentence instead of the raw envelope. */
-function cleanError(e: unknown): string {
-	const msg = (e as Error).message ?? 'request failed';
-	const match = msg.match(/\{"detail":"(.+?)"\}/);
-	return match ? match[1] : msg;
-}
 
 function splitList(raw: FormDataEntryValue | null): string[] {
 	if (typeof raw !== 'string') return [];
@@ -50,7 +41,7 @@ export const actions: Actions = {
 			const profile = await api.saveSearchProfile(fetch, serverApiBase(), readProfile(form));
 			return { ok: true, profile, message: 'Saved.' };
 		} catch (e) {
-			return fail(422, { error: cleanError(e) });
+			return fail(422, { error: errorReason(e) });
 		}
 	},
 
@@ -61,7 +52,7 @@ export const actions: Actions = {
 			return { ok: true, profile, message: 'Recommendations ready — review below.' };
 		} catch (e) {
 			// 409 when no provider / no resume; 502 on a provider failure.
-			return fail(422, { error: (e as Error).message });
+			return fail(422, { error: errorReason(e) });
 		}
 	},
 
@@ -113,7 +104,7 @@ export const actions: Actions = {
 			const profile = await api.clearRecommendations(fetch, serverApiBase());
 			return { ok: true, profile, message: 'Recommendations applied.' };
 		} catch (e) {
-			return fail(422, { error: (e as Error).message });
+			return fail(422, { error: errorReason(e) });
 		}
 	},
 
@@ -122,7 +113,7 @@ export const actions: Actions = {
 			const profile = await api.clearRecommendations(fetch, serverApiBase());
 			return { ok: true, profile, message: 'Recommendations dismissed.' };
 		} catch (e) {
-			return fail(422, { error: (e as Error).message });
+			return fail(422, { error: errorReason(e) });
 		}
 	},
 
@@ -135,7 +126,7 @@ export const actions: Actions = {
 			await api.addBlacklist(fetch, serverApiBase(), name, reason);
 			return { blacklistOk: true, blacklistMessage: `Blacklisted ${name}.` };
 		} catch (e) {
-			return fail(422, { blacklistError: cleanError(e) });
+			return fail(422, { blacklistError: errorReason(e) });
 		}
 	},
 
@@ -149,7 +140,7 @@ export const actions: Actions = {
 			const { task_id } = await api.startCompanyRefresh(fetch, serverApiBase(), reverify);
 			return { ok: true, task_id };
 		} catch (e) {
-			return fail(500, { coverageError: cleanError(e) });
+			return fail(500, { coverageError: errorReason(e) });
 		}
 	},
 
@@ -169,7 +160,7 @@ export const actions: Actions = {
 				companyMessage: result.message
 			};
 		} catch (e) {
-			return fail(422, { companyError: cleanError(e) });
+			return fail(422, { companyError: errorReason(e) });
 		}
 	},
 
@@ -181,7 +172,7 @@ export const actions: Actions = {
 			await api.removeWatchedCompany(fetch, serverApiBase(), id);
 			return { companyOk: true, companyAlready: false, companyMessage: '' };
 		} catch (e) {
-			return fail(400, { companyError: cleanError(e) });
+			return fail(400, { companyError: errorReason(e) });
 		}
 	},
 
@@ -193,7 +184,7 @@ export const actions: Actions = {
 			await api.removeBlacklist(fetch, serverApiBase(), id);
 			return { blacklistOk: true };
 		} catch (e) {
-			return fail(400, { blacklistError: cleanError(e) });
+			return fail(400, { blacklistError: errorReason(e) });
 		}
 	}
 };

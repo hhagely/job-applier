@@ -3,26 +3,12 @@
 // difference is where the target id comes from: /jobs/[id] reads the route
 // param, the queue pane reads a hidden `job_id` field. Everything else was
 // duplicated verbatim, so it lives here and each route spreads in one variant.
-import { api, APPLICATION_STATUSES, type ApplicationStatus } from '$lib/api';
+import { api, APPLICATION_STATUSES, errorReason, type ApplicationStatus } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { fail, type RequestEvent } from '@sveltejs/kit';
 
 /** Where a route locates the target job id. */
 export type JobIdSource = 'param' | 'field';
-
-/** The reason to show the user for a failed call: the API's own sentence when
- *  there is one (e.g. "The database is busy with a background job"), else the
- *  raw error text. These messages are surfaced verbatim — StatusTrackingCard
- *  toasts them — so the bare `API <path> -> <status>: {...}` form won't do.
- *
- *  Reads `detail` structurally rather than testing `instanceof ApiError`: the
- *  class identity isn't guaranteed to be shared across the server/client module
- *  boundary (or a test's module mock), and a duck-typed read degrades to the raw
- *  message instead of throwing. */
-function reason(e: unknown): string {
-	const detail = (e as { detail?: unknown } | null)?.detail;
-	return typeof detail === 'string' && detail ? detail : (e as Error).message;
-}
 
 function resolveId(source: JobIdSource, event: RequestEvent, form: FormData): number {
 	return source === 'param' ? Number(event.params.id) : Number(form.get('job_id'));
@@ -56,7 +42,7 @@ export function jobActions(source: JobIdSource) {
 				await api.setStatus(event.fetch, serverApiBase(), id, status, { notes, next_followup_at });
 				return { ok: true };
 			} catch (e) {
-				return fail(400, { error: reason(e) });
+				return fail(400, { error: errorReason(e) });
 			}
 		},
 
@@ -69,7 +55,7 @@ export function jobActions(source: JobIdSource) {
 				await api.setNotes(event.fetch, serverApiBase(), id, notes);
 				return { ok: true };
 			} catch (e) {
-				return fail(400, { error: reason(e) });
+				return fail(400, { error: errorReason(e) });
 			}
 		},
 
@@ -82,7 +68,7 @@ export function jobActions(source: JobIdSource) {
 				await api.setUnemployment(event.fetch, serverApiBase(), id, used);
 				return { ok: true };
 			} catch (e) {
-				return fail(400, { error: reason(e) });
+				return fail(400, { error: errorReason(e) });
 			}
 		},
 
@@ -94,7 +80,7 @@ export function jobActions(source: JobIdSource) {
 				await api.renderDraft(event.fetch, serverApiBase(), id);
 				return { ok: true };
 			} catch (e) {
-				return fail(400, { error: reason(e) });
+				return fail(400, { error: errorReason(e) });
 			}
 		},
 
@@ -109,7 +95,7 @@ export function jobActions(source: JobIdSource) {
 				return { ok: true, task_id, kind: 'draft' as const };
 			} catch (e) {
 				// 409 when no provider selected / no active resume.
-				return fail(409, { error: reason(e) });
+				return fail(409, { error: errorReason(e) });
 			}
 		}
 	};
