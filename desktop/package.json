@@ -15,7 +15,7 @@
 		"dev": "concurrently -k -n api,web,app -c blue,green,magenta \"npm:dev:api\" \"npm:dev:web\" \"npm:dev:app\"",
 		"dev:api": "node dev-backend.mjs",
 		"dev:web": "cd ../web && cross-env JOB_APPLIER_API_BASE=http://127.0.0.1:8000 npm run dev -- --host 127.0.0.1",
-		"dev:app": "wait-on tcp:127.0.0.1:5174 tcp:127.0.0.1:8000 && cross-env JOB_APPLIER_DEV_URL=http://127.0.0.1:5174 JOB_APPLIER_API_BASE=http://127.0.0.1:8000 electronmon ."
+		"dev:app": "wait-on tcp:127.0.0.1:5174 tcp:127.0.0.1:8000 && node dev-app.mjs"
 	},
 	"devDependencies": {
 		"concurrently": "^9.1.2",
