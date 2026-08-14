@@ -44,6 +44,18 @@ describe('api.listJobs', () => {
 		const fetchFn = vi.fn().mockResolvedValue(new Response('boom', { status: 500 }));
 		await expect(api.listJobs(fetchFn, TEST_BASE)).rejects.toThrow(/500.*boom/);
 	});
+
+	it("attaches FastAPI's `detail` so the UI can show a sentence, not a status line", async () => {
+		// `message` stays the full form for logs; `detail` is what a form action
+		// surfaces to the user (jobActions.server reads it structurally).
+		const fetchFn = vi.fn().mockResolvedValue(
+			jsonResponse({ detail: 'The database is busy.' }, { status: 503 })
+		);
+		const err = await api.listJobs(fetchFn, TEST_BASE).catch((e) => e);
+		expect(err.detail).toBe('The database is busy.');
+		expect(err.status).toBe(503);
+		expect(err.message).toMatch(/503/);
+	});
 });
 
 describe('api.getCurrentResume', () => {

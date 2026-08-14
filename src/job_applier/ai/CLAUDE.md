@@ -8,7 +8,7 @@ This package is the **canonical** home for everything the LLM does.
 
 - [providers.py](providers.py) — the CLI registry + sandboxed runner (the single point of per-provider flag drift).
 - [scoring.py](scoring.py), [drafting.py](drafting.py), [suggest.py](suggest.py) — the three flows.
-- [tasks.py](tasks.py) — the in-process background-task runner the API polls for progress.
+- [tasks.py](tasks.py) — the in-process background-task runner the API polls for progress. Two **lanes**, each a single worker: the `ai` lane (scoring, drafting) serializes on purpose, since concurrent CLI spawns race one provider login and subscription window; the `net` lane (`ingest`, `refresh_companies`) exists so a multi-minute scrape doesn't queue the user's scoring/drafting behind it. `NET_KINDS` / `lane_for()` decide which is which — a new task kind defaults to the `ai` lane, so add it to `NET_KINDS` if it never shells out to a provider.
 - [bans.py](bans.py) — enforces the ATS character bans **and** strips draft exfil vectors (images/links/URLs) server-side.
 - [prompt_safety.py](prompt_safety.py) — fences untrusted scraped text (job descriptions, profile blobs) in per-call nonce-marked delimiters so a prompt-injected posting can't escape its block.
 

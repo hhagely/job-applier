@@ -113,6 +113,30 @@ describe('jobActions("param").setStatus', () => {
 	});
 });
 
+describe('jobActions error messages', () => {
+	it('surfaces the API detail rather than the raw "API <path> -> <status>" text', async () => {
+		// StatusTrackingCard toasts this string verbatim, so a failed status change
+		// has to read as a sentence. api.ts attaches `detail` from the JSON body.
+		const err = Object.assign(
+			new Error('API /api/jobs/7/status -> 503: {"detail":"The database is busy."}'),
+			{ status: 503, detail: 'The database is busy.' }
+		);
+		api.setStatus.mockRejectedValueOnce(err);
+		const r = (await jobActions('field').setStatus(
+			event({ job_id: '7', status: 'applied' })
+		)) as { status: number; data: { error: string } };
+		expect(r.data.error).toBe('The database is busy.');
+	});
+
+	it('falls back to the raw message when there is no detail', async () => {
+		api.setStatus.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+		const r = (await jobActions('field').setStatus(
+			event({ job_id: '7', status: 'applied' })
+		)) as { status: number; data: { error: string } };
+		expect(r.data.error).toBe('connect ECONNREFUSED');
+	});
+});
+
 describe('jobActions("field").generateDraft', () => {
 	it('maps a provider/resume failure to fail(409)', async () => {
 		api.startDraft.mockRejectedValueOnce(new Error('no active resume'));

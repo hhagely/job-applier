@@ -9,6 +9,8 @@
 	import { enhance } from '$app/forms';
 	import { APPLICATION_STATUSES, type Application, type ApplicationStatus } from '$lib/api';
 	import { fmtDate, defaultFollowupDate } from '$lib/date';
+	import { toast } from '$lib/toast.svelte';
+	import type { ActionResult } from '@sveltejs/kit';
 
 	let {
 		jobId,
@@ -40,16 +42,30 @@
 			: defaultFollowupDate();
 	});
 
+	const SAVE_FAILED = 'Could not save that change.';
+
 	// Refresh the host's list/loader on success without clearing inputs.
+	//
+	// Failures are toasted rather than dropped: neither host renders `form.error`,
+	// so a rejected mutation used to be completely silent — `update()` would
+	// re-invalidate and the control would just snap back to its old value, which
+	// reads as "the app ignored my click" rather than "that didn't save".
 	function onSaved() {
 		return async ({
 			result,
 			update
 		}: {
-			result: { type: string };
+			result: ActionResult;
 			update: (opts?: { reset?: boolean }) => Promise<void>;
 		}) => {
-			if (result.type === 'success') await onChange?.();
+			if (result.type === 'success') {
+				await onChange?.();
+			} else if (result.type === 'failure') {
+				const err = result.data?.error;
+				toast(typeof err === 'string' && err ? err : SAVE_FAILED);
+			} else if (result.type === 'error') {
+				toast(result.error instanceof Error ? result.error.message : SAVE_FAILED);
+			}
 			await update({ reset: false });
 		};
 	}

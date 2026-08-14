@@ -101,13 +101,20 @@ def _is_stale(posted_at: datetime | None, now: datetime) -> bool:
     return (now - posted_at) > timedelta(days=STALE_AFTER_DAYS)
 
 
-def _upsert_company(session: Session, name: str) -> Company:
-    company = session.exec(select(Company).where(Company.name == name)).first()
-    if company is None:
+def _upsert_company(session: Session, name: str, caches: "_IngestCaches") -> tuple[int, bool]:
+    """Resolve ``name`` to ``(company_id, is_blocked)``, inserting on first sight.
+
+    Reads through ``caches.companies``, so the common case (a company we have seen
+    before) costs no query at all.
+    """
+    entry = caches.companies.get(name)
+    if entry is None:
         company = Company(name=name)
         session.add(company)
-        session.flush()
-    return company
+        session.flush()  # assign the PK so postings in this batch can reference it
+        entry = (company.id, company.is_blocked)
+        caches.companies[name] = entry
+    return entry
 
 
 def load_blacklisted_names(session: Session) -> frozenset[str]:
@@ -120,6 +127,75 @@ def load_blacklisted_names(session: Session) -> frozenset[str]:
     return frozenset(rows)
 
 
+# How many raw jobs to accumulate from a source before opening a write
+# transaction to persist them. Bounding this is half of what keeps a scrape from
+# freezing the rest of the app; see ``run_ingest``.
+INGEST_BATCH_SIZE = 100
+
+
+@dataclass
+class _IngestCaches:
+    """In-memory mirrors of the dedupe lookups ``ingest_one`` would otherwise run
+    as a fresh query per raw job.
+
+    Built once per run and updated in place as rows are inserted, which reduces
+    the write transaction to (near enough) pure INSERTs. That matters for more
+    than speed: the transaction holds SQLite's single write lock, and for as long
+    as it is open every *other* writer in the app — a status change from the
+    queue, a note, a follow-up date — blocks on ``busy_timeout`` and then fails
+    with "database is locked".
+
+    The JD scan is the reason this exists rather than being a nice-to-have: it
+    used to load every fingerprinted posting from the lookback window *per
+    incoming job*, so the cost of a batch grew with the product of the two.
+    """
+
+    # JobPosting.dedupe_hash for every posting.
+    hashes: set[str]
+    # Non-null JobPosting.cross_source_hash for every posting.
+    cross: set[str]
+    # (source, company_id, normalized title) for every posting.
+    titles: set[tuple[str, int, str]]
+    # (canonical posting id, fingerprint) for postings recent enough to match a
+    # near-duplicate JD against. Canonical means the row's ``duplicate_of`` when
+    # it is itself a dup, so a later match never links to a link.
+    jd: list[tuple[int, str]]
+    # company name -> (id, is_blocked)
+    companies: dict[str, tuple[int, bool]]
+
+    @classmethod
+    def load(cls, session: Session, *, now: datetime | None = None) -> "_IngestCaches":
+        """Snapshot the dedupe state from the DB. Four queries, once per run."""
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=JD_LOOKBACK_DAYS)
+        rows = session.exec(
+            select(
+                JobPosting.source,
+                JobPosting.company_id,
+                JobPosting.title,
+                JobPosting.location,
+                JobPosting.dedupe_hash,
+                JobPosting.cross_source_hash,
+            )
+        ).all()
+        jd_rows = session.exec(
+            select(JobPosting.id, JobPosting.duplicate_of, JobPosting.jd_fingerprint)
+            .where(JobPosting.jd_fingerprint.is_not(None))  # type: ignore[union-attr]
+            .where(JobPosting.ingested_at >= cutoff)
+        ).all()
+        company_rows = session.exec(
+            select(Company.id, Company.name, Company.is_blocked)
+        ).all()
+        return cls(
+            hashes={r[4] for r in rows},
+            cross={r[5] for r in rows if r[5] is not None},
+            titles={
+                (r[0], r[1], normalize_title(r[2], r[3])) for r in rows if r[1] is not None
+            },
+            jd=[(dup_of or pid, fp) for pid, dup_of, fp in jd_rows],
+            companies={name: (cid, blocked) for cid, name, blocked in company_rows},
+        )
+
+
 def ingest_one(
     session: Session,
     raw: RawJob,
@@ -127,7 +203,18 @@ def ingest_one(
     *,
     filter_config: FilterConfig | None = None,
     blacklist: frozenset[str] | None = None,
+    caches: "_IngestCaches | None" = None,
 ) -> None:
+    """Dedupe, filter, and (if it survives) persist one raw job into ``session``.
+
+    ``caches`` carries the dedupe state across calls; ``run_ingest`` builds it
+    once per run. When omitted it is loaded from ``session`` on every call, which
+    keeps this callable standalone at the cost of a reload per job — fine for the
+    handful of rows a test or a one-off script pushes through, not for a real run.
+    """
+    if caches is None:
+        caches = _IngestCaches.load(session)
+
     stats.fetched += 1
 
     # User company blacklist: drop before any other work so a blacklisted
@@ -140,8 +227,7 @@ def ingest_one(
 
     h = dedupe_hash(raw)
 
-    existing = session.exec(select(JobPosting).where(JobPosting.dedupe_hash == h)).first()
-    if existing is not None:
+    if h in caches.hashes:
         stats.skipped_duplicate += 1
         return
 
@@ -154,50 +240,32 @@ def ingest_one(
         stats.dropped_filter += 1
         return
 
-    company = _upsert_company(session, raw.company_name)
-    if company.is_blocked:
+    company_id, is_blocked = _upsert_company(session, raw.company_name, caches)
+    if is_blocked:
         stats.dropped_filter += 1
         return
 
     # Some employers post the same role under one source_id per city. Treat any
     # existing posting from the same source + company with the same normalized
     # title as a duplicate so we don't flood the queue.
-    norm = normalize_title(raw.title, raw.location)
-    existing_dup = session.exec(
-        select(JobPosting).where(
-            JobPosting.source == raw.source,
-            JobPosting.company_id == company.id,
-        )
-    ).all()
-    if any(normalize_title(p.title, p.location) == norm for p in existing_dup):
+    title_key = (raw.source, company_id, normalize_title(raw.title, raw.location))
+    if title_key in caches.titles:
         stats.skipped_duplicate += 1
         return
 
     cross_h = cross_source_hash(raw)
-    if cross_h is not None:
-        cross_match = session.exec(
-            select(JobPosting).where(JobPosting.cross_source_hash == cross_h)
-        ).first()
-        if cross_match is not None:
-            stats.skipped_cross_source += 1
-            return
+    if cross_h is not None and cross_h in caches.cross:
+        stats.skipped_cross_source += 1
+        return
 
     jd_fp = jd_simhash(raw.description)
     duplicate_of: int | None = None
     if jd_fp is not None:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=JD_LOOKBACK_DAYS)
-        recent = session.exec(
-            select(JobPosting)
-            .where(JobPosting.jd_fingerprint.is_not(None))  # type: ignore[union-attr]
-            .where(JobPosting.ingested_at >= cutoff)
-        ).all()
-        for candidate in recent:
-            if candidate.jd_fingerprint is None:
-                continue
-            if jd_hamming_distance(jd_fp, candidate.jd_fingerprint) <= JD_HAMMING_THRESHOLD:
-                # First-ingested wins — chase the canonical chain so we don't
-                # link to a row that's itself flagged as a dup.
-                duplicate_of = candidate.duplicate_of or candidate.id
+        for candidate_id, candidate_fp in caches.jd:
+            if jd_hamming_distance(jd_fp, candidate_fp) <= JD_HAMMING_THRESHOLD:
+                # First-ingested wins, and the cache already stores the canonical
+                # id, so we never link to a row that's itself flagged as a dup.
+                duplicate_of = candidate_id
                 break
 
     posting = JobPosting(
@@ -215,7 +283,7 @@ def ingest_one(
         jd_fingerprint=jd_fp,
         duplicate_of=duplicate_of,
         raw=raw.raw,
-        company_id=company.id,
+        company_id=company_id,
     )
     if duplicate_of is not None:
         stats.flagged_jd_similar += 1
@@ -228,24 +296,102 @@ def ingest_one(
         stats.manual_review += 1
 
     session.add(posting)
+    if jd_fp is not None and duplicate_of is None:
+        # Flush to get the assigned PK: this row becomes the canonical target for
+        # any later near-duplicate JD, so the cache needs a real id to link to.
+        session.flush()
+
+    # Keep the caches level with the session, so rows added earlier in this run
+    # dedupe against rows added later exactly as they would have via a re-query.
+    caches.hashes.add(h)
+    if cross_h is not None:
+        caches.cross.add(cross_h)
+    caches.titles.add(title_key)
+    if jd_fp is not None:
+        caches.jd.append((duplicate_of or posting.id, jd_fp))
+
     stats.inserted += 1
+
+
+def _batched(items, size: int):
+    """Yield ``items`` in lists of at most ``size``.
+
+    If the underlying iterable raises part-way (a source generator hitting a bad
+    payload mid-sweep), the partly-filled batch is discarded along with the
+    exception — it never reaches a session, matching the "a failed source's
+    unwritten rows are dropped" contract.
+    """
+    batch = []
+    for item in items:
+        batch.append(item)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _write_batch(
+    batch: list[RawJob],
+    stats: IngestStats,
+    *,
+    filter_config: FilterConfig | None,
+    blacklist: frozenset[str] | None,
+    caches: _IngestCaches,
+) -> None:
+    """Persist one batch in its own short-lived session + transaction.
+
+    Rolls the batch's stats back alongside its rows if the write fails, then
+    re-raises so the caller can abandon the source.
+    """
+    snapshot = copy.copy(stats)
+    with Session(engine()) as session:
+        try:
+            for raw in batch:
+                ingest_one(
+                    session,
+                    raw,
+                    stats,
+                    filter_config=filter_config,
+                    blacklist=blacklist,
+                    caches=caches,
+                )
+            session.commit()
+        except Exception:
+            session.rollback()
+            stats.__dict__.update(snapshot.__dict__)
+            raise
 
 
 def run_ingest(
     sources: list[SourceAdapter] | None = None,
     progress_cb: Callable[[int, int, str, IngestStats], None] | None = None,
+    *,
+    batch_size: int = INGEST_BATCH_SIZE,
 ) -> IngestStats:
     """Fetch, dedupe, filter, and persist from every source.
 
     ``progress_cb(done, total, source_name, cumulative_stats)`` is invoked after
-    each source finishes (optional; when omitted, behavior is identical to before).
+    each source finishes (optional).
 
-    One shared session, committed per source: a single source raising (a bad
-    payload, a network blip) is logged and skipped so it can't discard every other
-    source's rows. Cross-source dedupe is unaffected — the shared session's
-    autoflush makes already-ingested rows visible to later sources regardless of
-    commit timing. On failure the partial source's uncommitted rows are rolled back
-    and its stats are restored so the summary stays truthful.
+    **No DB transaction is ever held across network I/O.** Adapters fetch lazily —
+    one HTTP request per company slug — so writing as we consume the generator
+    would pin SQLite's single write lock for the entire multi-minute sweep of a
+    several-hundred-slug board, and every status change the user made meanwhile
+    would block on ``busy_timeout`` and then fail with "database is locked".
+    Instead each source is drained ``batch_size`` jobs at a time with no session
+    open, and each batch is written in its own short transaction. Reads were never
+    affected (WAL lets them run alongside a writer), which is why the app stayed
+    navigable while mutations did not.
+
+    Failure isolation is per batch rather than per source: a source raising is
+    logged and skipped so it can't abort the run, but the batches it already
+    committed are kept — a network blip 400 jobs into a board no longer throws
+    those 400 away. Only the in-flight batch's rows and stats are dropped.
+
+    Cross-source dedupe is unaffected: batches commit before the next one reads,
+    so later sources see earlier rows the same way the old shared session's
+    autoflush made them visible.
     """
     stats = IngestStats()
     with Session(engine()) as session:
@@ -253,25 +399,28 @@ def run_ingest(
         blacklist = load_blacklisted_names(session)
         if sources is None:
             sources = get_all_sources(filter_config=filter_config)
-        total = len(sources)
-        for i, source in enumerate(sources):
-            snapshot = copy.copy(stats)
-            try:
-                for raw in source.fetch():
-                    ingest_one(
-                        session,
-                        raw,
-                        stats,
-                        filter_config=filter_config,
-                        blacklist=blacklist,
-                    )
-                session.commit()
-            except Exception as exc:  # noqa: BLE001 - one source can't abort the run
-                session.rollback()
-                stats.__dict__.update(snapshot.__dict__)
-                log.warning("source %s failed during ingest, skipping: %s", source.name, exc)
-            if progress_cb is not None:
-                progress_cb(i + 1, total, source.name, stats)
+        caches = _IngestCaches.load(session)
+
+    total = len(sources)
+    for i, source in enumerate(sources):
+        try:
+            for batch in _batched(source.fetch(), batch_size):
+                _write_batch(
+                    batch,
+                    stats,
+                    filter_config=filter_config,
+                    blacklist=blacklist,
+                    caches=caches,
+                )
+        except Exception as exc:  # noqa: BLE001 - one source can't abort the run
+            log.warning("source %s failed during ingest, skipping: %s", source.name, exc)
+            # A rolled-back batch leaves the caches holding rows that were never
+            # committed, which would make the next source skip real jobs as
+            # duplicates. Reload from what actually landed.
+            with Session(engine()) as session:
+                caches = _IngestCaches.load(session)
+        if progress_cb is not None:
+            progress_cb(i + 1, total, source.name, stats)
     return stats
 
 

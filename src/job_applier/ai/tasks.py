@@ -1,12 +1,22 @@
 """Background task execution + a tiny in-process pub/sub, kept minimal and
 dependency-free.
 
-Execution: a stdlib ``ThreadPoolExecutor`` with ``max_workers=1``. Single worker
-gives a serialized queue for free — starting a second batch while one runs queues
-it instead of racing the AI CLI / subscription. The executor is created lazily and
-``shutdown()`` (wired to app teardown so Electron closing cancels in-flight work)
-drops it so the next ``start_task`` recreates it — which also keeps the module
-singleton reusable across the test suite's many app-lifespan cycles.
+Execution: one stdlib ``ThreadPoolExecutor`` with ``max_workers=1`` per *lane*.
+A single worker within a lane gives a serialized queue for free — starting a
+second batch while one runs queues it instead of racing.
+
+There are two lanes, because the reason to serialize only applies to one of them.
+AI tasks (scoring, drafting) share a worker on purpose: concurrent CLI spawns race
+the same provider login and burn the same subscription window. Network tasks
+(``ingest``, ``refresh_companies``) have no such constraint, and putting them in
+the AI lane meant a multi-minute scrape blocked the user from scoring or drafting
+anything until it finished. They now get their own worker, so the two kinds of
+work overlap.
+
+Executors are created lazily per lane and ``shutdown()`` (wired to app teardown so
+Electron closing cancels in-flight work) drops them all so the next ``start_task``
+recreates what it needs — which also keeps the module singleton reusable across
+the test suite's many app-lifespan cycles.
 
 Progress: an in-memory registry plus a subscriber list. Workers ``publish`` a
 snapshot on start, on every progress step, and on the terminal transition; the SSE
@@ -30,24 +40,38 @@ TaskStatus = Literal["running", "done", "error"]
 # A serialized JSON-safe view of a TaskState, as pushed to subscribers.
 TaskSnapshot = dict
 
-_executor: Optional[ThreadPoolExecutor] = None
+# Task kinds that only touch the network + DB, never an AI CLI. These get their
+# own worker so a long scrape doesn't hold up scoring/drafting; everything else
+# shares the AI lane, where serializing is the point (see the module docstring).
+NET_KINDS = frozenset({"ingest", "refresh_companies"})
+AI_LANE = "ai"
+NET_LANE = "net"
+
+# lane name -> its single-worker executor, created on demand.
+_executors: "dict[str, ThreadPoolExecutor]" = {}
 _tasks: "dict[str, TaskState]" = {}
 # Subscribers are callbacks the SSE endpoint registers; each forwards a snapshot
-# to one connected client. Guarded by ``_lock`` alongside ``_tasks``/``_executor``.
+# to one connected client. Guarded by ``_lock`` alongside ``_tasks``/``_executors``.
 _subscribers: "set[Callable[[TaskSnapshot], None]]" = set()
 _lock = threading.Lock()
 
 
-def _get_executor() -> ThreadPoolExecutor:
-    """Return the shared single-worker executor, creating it on first use (and
+def lane_for(kind: str) -> str:
+    """Which lane a task ``kind`` runs in."""
+    return NET_LANE if kind in NET_KINDS else AI_LANE
+
+
+def _get_executor(lane: str) -> ThreadPoolExecutor:
+    """Return ``lane``'s single-worker executor, creating it on first use (and
     after a prior ``shutdown()``)."""
-    global _executor
     with _lock:
-        if _executor is None:
-            _executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="job-applier-task"
+        executor = _executors.get(lane)
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"job-applier-{lane}"
             )
-        return _executor
+            _executors[lane] = executor
+        return executor
 
 
 @dataclass
@@ -129,7 +153,7 @@ def start_task(
     # Announce the task immediately so an already-connected client sees it appear
     # before the first progress step.
     publish(state)
-    _get_executor().submit(_run, state, fn)
+    _get_executor(lane_for(kind)).submit(_run, state, fn)
     return tid
 
 
@@ -167,11 +191,12 @@ def active_snapshots() -> "list[TaskSnapshot]":
 
 
 def shutdown() -> None:
-    """Cancel queued work and drop the executor (idempotent). Wired to app
-    teardown so Electron closing tears the worker down; the next ``start_task``
-    lazily recreates it, so this is safe to call between app-lifespan cycles."""
-    global _executor
+    """Cancel queued work and drop every lane's executor (idempotent). Wired to app
+    teardown so Electron closing tears the workers down; the next ``start_task``
+    lazily recreates the lane it needs, so this is safe to call between
+    app-lifespan cycles."""
     with _lock:
-        executor, _executor = _executor, None
-    if executor is not None:
+        executors = list(_executors.values())
+        _executors.clear()
+    for executor in executors:
         executor.shutdown(wait=False, cancel_futures=True)

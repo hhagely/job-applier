@@ -301,6 +301,32 @@ async function fetchWithRetry(fetchFn: FetchFn, url: string, init?: RequestInit)
 	throw lastErr;
 }
 
+/** Thrown by `call` on a non-2xx.
+ *
+ *  `message` keeps the full `API <path> -> <status>: <body>` form, so logs and
+ *  existing call sites are unchanged; `detail` carries FastAPI's human-facing
+ *  sentence on its own, for the UI that shows a failure reason to the user.
+ */
+export class ApiError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+		readonly detail?: string
+	) {
+		super(message);
+	}
+}
+
+/** FastAPI puts the human-facing reason in `detail`; pull it out when present. */
+function parseDetail(body: string): string | undefined {
+	try {
+		const parsed = JSON.parse(body);
+		return typeof parsed?.detail === 'string' ? parsed.detail : undefined;
+	} catch {
+		return undefined; // not JSON — callers fall back to the raw message
+	}
+}
+
 async function call<T>(
 	fetchFn: FetchFn,
 	base: string,
@@ -313,7 +339,7 @@ async function call<T>(
 	});
 	if (!res.ok) {
 		const body = await res.text();
-		throw new Error(`API ${path} -> ${res.status}: ${body}`);
+		throw new ApiError(`API ${path} -> ${res.status}: ${body}`, res.status, parseDetail(body));
 	}
 	return res.json() as Promise<T>;
 }
