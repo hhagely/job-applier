@@ -4,7 +4,7 @@
 	// pane and /jobs/[id] so the two can't drift. Renders nothing when unscored —
 	// the parent owns the "not scored yet" empty state and the surrounding card.
 	import Icon from '$lib/Icon.svelte';
-	import { scoreBandVar } from '$lib/score';
+	import { rubricPercent, rubricWeight, scoreBandVar } from '$lib/score';
 	import { fmtDateTime } from '$lib/date';
 	import type { Score } from '$lib/api';
 
@@ -62,10 +62,15 @@
 				<div class="rub-row">
 					<div class="rr-l">{label}</div>
 					{#if bucket}
-						<div class="meter">
-							<i style="width:{bucket.points}%;background:{scoreBandVar(bucket.points)}"></i>
+						{@const max = rubricWeight(label)}
+						{@const pct = rubricPercent(bucket.points, max)}
+						<!-- Fill and band are the bucket's share of ITS weight, not of 100:
+						     hard_requirements maxes out at 10, so raw points would draw a
+						     perfect score as a 10% rose sliver. -->
+						<div class="meter" title="{bucket.points} of {max} ({pct}%)">
+							<i style="width:{pct}%;background:{scoreBandVar(pct)}"></i>
 						</div>
-						<div class="rr-n">{bucket.points}</div>
+						<div class="rr-n">{bucket.points}<span class="rr-max">/{max}</span></div>
 						{#if bucket.note}<div class="rr-note">{bucket.note}</div>{/if}
 					{:else}
 						<div class="rr-v">
@@ -130,7 +135,7 @@
 	}
 	.rub-row {
 		display: grid;
-		grid-template-columns: 150px 1fr 34px;
+		grid-template-columns: 150px 1fr 52px;
 		gap: 10px;
 		align-items: center;
 		margin-top: 11px;
@@ -144,6 +149,11 @@
 		font-size: 12px;
 		text-align: right;
 		color: var(--muted);
+	}
+	/* the bucket's weight, so "10" reads as full marks rather than a low number */
+	.rub-row .rr-n .rr-max {
+		color: var(--faint);
+		font-size: 11px;
 	}
 	.rub-row .rr-v {
 		grid-column: 2 / 4;

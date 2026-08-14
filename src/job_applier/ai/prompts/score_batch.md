@@ -7,7 +7,8 @@ candidate spends time tailoring that application. Do not sandbag and do not over
 
 <!-- SYNC: the rubric + hard rules below MUST match prompts/score.md (single-job). If you
      change the rubric or thresholds, edit BOTH files (and bans.py is unrelated - scoring
-     has no character bans). -->
+     has no character bans). The bucket WEIGHTS are mirrored a third time in
+     web/src/lib/score.ts (RUBRIC_WEIGHTS), which the UI uses to size each rubric bar. -->
 
 ## Candidate resume (plain text)
 
