@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import atexit
+import signal
+import subprocess
+import time
+import webbrowser
+
+import pytest
+import typer
 import uvicorn
 from fastapi.testclient import TestClient
 
@@ -100,3 +108,90 @@ def test_free_port_is_usable():
     # Nothing else grabbed it; we can bind it right after.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", port))
+
+
+# ---- app-dev launcher supervision loop -------------------------------------
+
+
+class _FakeProc:
+    """Stand-in for a spawned child: alive until `exits_after` poll() calls."""
+
+    def __init__(self, exits_after: int | None = None) -> None:
+        self.exits_after = exits_after
+        self.polls = 0
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        self.polls += 1
+        if self.exits_after is not None and self.polls > self.exits_after:
+            return 0
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+    def kill(self) -> None:  # pragma: no cover - only on a wait() timeout
+        self.terminated = True
+
+
+def _stub_app_dev(monkeypatch, tmp_path, *, procs, sleep) -> list:
+    """Run `app-dev` against fake children, with no `signal.pause` available.
+
+    Deleting `signal.pause` reproduces Windows, where the attribute genuinely does
+    not exist — so the supervision loop has to idle some other way on every
+    platform this suite runs on. Returns the list of atexit hooks the launcher
+    registered (captured instead of really registered, so pytest's own exit
+    doesn't run them).
+    """
+    monkeypatch.delattr(signal, "pause", raising=False)
+    (tmp_path / "web" / "build").mkdir(parents=True)
+    (tmp_path / "web" / "build" / "index.js").write_text("// built web server")
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+
+    spawned = iter(procs)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: next(spawned))
+    monkeypatch.setattr(cli, "_wait_for_health", lambda *a, **k: True)
+    monkeypatch.setattr(webbrowser, "open", lambda url: True)
+    # Don't leave the launcher's SIGINT handler / atexit hook installed in the
+    # pytest process.
+    monkeypatch.setattr(signal, "signal", lambda *a, **k: None)
+    hooks: list = []
+    monkeypatch.setattr(atexit, "register", lambda fn: hooks.append(fn) or fn)
+    monkeypatch.setattr(time, "sleep", sleep)
+    return hooks
+
+
+def test_app_dev_supervises_children_without_signal_pause(monkeypatch, tmp_path):
+    """The loop must idle with a sleep, not `signal.pause()` (Unix-only): on
+    Windows the first pass raised AttributeError, which escaped the
+    `except KeyboardInterrupt` and tore down the servers the launcher had just
+    opened a browser tab against."""
+    naps: list[float] = []
+    api = _FakeProc()
+    web = _FakeProc(exits_after=2)
+    hooks = _stub_app_dev(monkeypatch, tmp_path, procs=[api, web], sleep=naps.append)
+
+    with pytest.raises(typer.Exit) as exc:
+        cli.app_dev()
+
+    # Survived several passes, then noticed the dead child and shut down.
+    assert exc.value.exit_code == 1
+    assert naps and all(0 < n <= 2 for n in naps)
+    # Teardown at process exit still reaps the child that is still running.
+    for hook in hooks:
+        hook()
+    assert api.terminated
+
+
+def test_app_dev_exits_cleanly_on_ctrl_c(monkeypatch, tmp_path):
+    def _interrupt(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    api = _FakeProc()
+    web = _FakeProc()
+    _stub_app_dev(monkeypatch, tmp_path, procs=[api, web], sleep=_interrupt)
+
+    cli.app_dev()  # Ctrl-C during the nap is a normal quit, not a traceback.

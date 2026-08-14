@@ -5,11 +5,16 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from job_applier.api.app import app
 from job_applier.models import JobPosting
-from job_applier.models.db import FilterStatus, get_session
+from job_applier.models.db import (
+    Application,
+    ApplicationStatus,
+    FilterStatus,
+    get_session,
+)
 
 
 @pytest.fixture
@@ -135,13 +140,31 @@ def test_bulk_empty_ids_returns_422(client):
     assert res.status_code == 422
 
 
-def test_bulk_unknown_job_returns_404(client):
+@pytest.mark.parametrize("preexisting_application", [False, True])
+def test_bulk_unknown_job_returns_404_without_partial_write(
+    client, preexisting_application
+):
+    """All-or-nothing: a bad id anywhere in the selection leaves every other job
+    untouched, so a retry after fixing the request can't double-report jobs that
+    were quietly flagged by the failed call."""
     c, engine = client
     j1 = _seed_job(engine, source_id="u-b5")
+    if preexisting_application:
+        with Session(engine) as s:
+            s.add(Application(job_id=j1, status=ApplicationStatus.applied))
+            s.commit()
+
     res = c.post(
         "/api/jobs/bulk-unemployment", json={"job_ids": [j1, 9999], "used": True}
     )
     assert res.status_code == 404
+
+    with Session(engine) as s:
+        rows = s.exec(select(Application).where(Application.job_id == j1)).all()
+    # The valid job in the batch is neither flagged nor given a new application row.
+    assert len(rows) == (1 if preexisting_application else 0)
+    assert all(not r.used_for_unemployment for r in rows)
+    assert all(r.used_for_unemployment_at is None for r in rows)
 
 
 def test_migration_adds_unemployment_columns_on_existing_db(tmp_path, monkeypatch):

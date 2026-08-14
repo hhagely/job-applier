@@ -5,13 +5,17 @@ regression net for the api/app.py router split.
 
 from __future__ import annotations
 
+import sqlite3
+from datetime import datetime
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from job_applier import resume_io
-from job_applier.api.app import app
+from job_applier import resume_io, services
+from job_applier.api.app import COMPANY_CHECKED_KEY, app
 from job_applier.config import settings
 from job_applier.models.db import (
     Application,
@@ -21,6 +25,7 @@ from job_applier.models.db import (
     JobPosting,
     Resume,
     get_session,
+    set_setting,
 )
 
 
@@ -301,3 +306,91 @@ def test_search_ranks_exact_and_prefix_matches_first(client):
 
     titles = [j["title"] for j in c.get("/api/search", params={"q": "data"}).json()]
     assert titles == ["Data", "Data Scientist", "Senior Data Engineer"]
+
+
+# ---- SQLite busy-lock -> 503 handler --------------------------------------
+
+
+@pytest.fixture
+def quiet_client():
+    """Like `client`, but returns 500 responses instead of re-raising server
+    errors — so the handler's re-raise branch is observable as a response."""
+    e = _engine()
+
+    def _dep():
+        with Session(e) as s:
+            yield s
+
+    app.dependency_overrides[get_session] = _dep
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+def _raise_operational(message: str):
+    def _boom(*_a, **_k):
+        raise OperationalError(
+            "SELECT jobposting.id FROM jobposting", {}, sqlite3.OperationalError(message)
+        )
+
+    return _boom
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # SQLITE_BUSY: another connection holds the write lock.
+        "database is locked",
+        # SQLITE_LOCKED: a shared-cache table lock. Different wording, same
+        # "come back in a moment" meaning — it used to fall through to a 500.
+        "database table is locked",
+    ],
+)
+def test_busy_database_returns_retryable_503(quiet_client, monkeypatch, message):
+    monkeypatch.setattr(services, "search_jobs", _raise_operational(message))
+
+    r = quiet_client.get("/api/search", params={"q": "engineer"})
+    assert r.status_code == 503
+    assert r.headers["Retry-After"] == "2"
+    assert "try again" in r.json()["detail"].lower()
+
+
+def test_non_lock_database_error_is_not_masked_as_503(quiet_client, monkeypatch):
+    """A schema/query bug must stay a 500. Reporting it as "the database is busy,
+    try again" would send the user round a retry loop that can never succeed."""
+    monkeypatch.setattr(services, "search_jobs", _raise_operational("no such table: jobposting"))
+
+    r = quiet_client.get("/api/search", params={"q": "engineer"})
+    assert r.status_code == 500
+    assert "Retry-After" not in r.headers
+
+
+# ---- company coverage (a /search page-load dependency) ---------------------
+
+
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        ("2026-08-01T12:00:00+00:00", "2026-08-01T12:00:00Z"),
+        # Garbage in the free-form setting (hand-edited DB, a half-written row, a
+        # future format change) degrades to "never checked" instead of 500ing the
+        # endpoint — /search fetches it on load, so a failure here would lock the
+        # user out of the page that resets the company list.
+        ("last tuesday", None),
+        ("", None),
+    ],
+)
+def test_company_coverage_tolerates_unparseable_checked_at(client, stored, expected):
+    c, e = client
+    with Session(e) as s:
+        set_setting(s, COMPANY_CHECKED_KEY, stored)
+
+    r = c.get("/api/company-coverage")
+    assert r.status_code == 200, r.text
+    last = r.json()["last_checked_at"]
+    if expected is None:
+        assert last is None
+    else:
+        assert datetime.fromisoformat(last.replace("Z", "+00:00")) == datetime.fromisoformat(
+            expected.replace("Z", "+00:00")
+        )

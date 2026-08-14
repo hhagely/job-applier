@@ -140,6 +140,11 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+# How long ``app-dev`` naps between child-process liveness checks. Short enough
+# that a crashed child is noticed promptly, long enough not to busy-spin.
+_APP_DEV_POLL_SECONDS = 0.5
+
+
 def _wait_for_health(base: str, timeout: float = 30.0) -> bool:
     """Poll ``{base}/api/health`` until it answers or the timeout elapses."""
     import time
@@ -172,6 +177,7 @@ def app_dev() -> None:
     import signal
     import subprocess
     import sys
+    import time
     import webbrowser
 
     web_build = REPO_ROOT / "web" / "build" / "index.js"
@@ -202,6 +208,9 @@ def app_dev() -> None:
 
     atexit.register(_shutdown)
     signal.signal(signal.SIGINT, lambda *a: (_shutdown(), sys.exit(0)))
+    # Accepted on Windows but never delivered there (no POSIX SIGTERM), so this
+    # handler is effectively Unix-only. `atexit` + the SIGINT handler cover the
+    # Windows teardown paths.
     signal.signal(signal.SIGTERM, lambda *a: (_shutdown(), sys.exit(0)))
 
     api_env = {**os.environ, "JOB_APPLIER_API_PORT": str(api_port)}
@@ -234,7 +243,12 @@ def app_dev() -> None:
                 if p.poll() is not None:
                     typer.secho("A child process exited; shutting down.", fg=typer.colors.YELLOW)
                     raise typer.Exit(code=1)
-            signal.pause()
+            # Sleep-poll rather than `signal.pause()`: pause() doesn't exist on
+            # Windows (AttributeError on the first pass, killing both children the
+            # launcher just started). The loop already polls each child, so a short
+            # sleep is all the idling needed — and Ctrl-C interrupts it on both
+            # platforms.
+            time.sleep(_APP_DEV_POLL_SECONDS)
     except KeyboardInterrupt:
         pass
 
