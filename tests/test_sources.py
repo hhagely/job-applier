@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from xml.etree import ElementTree as ET
 
+import pytest
+
 from job_applier.contracts import html_to_text
+from job_applier.sources import oracle as oracle_mod
+from job_applier.sources import smartrecruiters as smartrecruiters_mod
+from job_applier.sources import workable as workable_mod
+from job_applier.sources import workday as workday_mod
 from job_applier.sources.ashby import _normalize as ashby_normalize
 from job_applier.sources.base import looks_remote, parse_date_multi, parse_iso_date
 from job_applier.sources.greenhouse import _normalize as greenhouse_normalize
@@ -25,6 +31,7 @@ from job_applier.sources.oracle import (
     _derive_company as oracle_derive_company,
 )
 from job_applier.sources.oracle import _combine_description as oracle_combine_description
+from job_applier.sources.oracle import _first_item as oracle_first_item
 from job_applier.sources.oracle import _normalize as oracle_normalize
 from job_applier.sources.oracle import _parse_list as oracle_parse_list
 from job_applier.sources.oracle import parse_slug as oracle_parse_slug
@@ -1051,3 +1058,336 @@ class TestYCombinator:
         ld = _extract_jobposting_ld(html)
         assert ld is not None
         assert ld["title"] == "Staff Engineer"
+
+
+class _FakeResp:
+    """Same stub shape as ``TestSlugDiscoveryParsing.FakeResp``, plus the
+    ``status_code`` the paging adapters check. A payload that *is* an exception
+    is raised from ``json()`` — that's how a non-JSON body is simulated."""
+
+    def __init__(self, payload, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _RoutedClient:
+    """``httpx.Client`` stand-in that answers by URL fragment.
+
+    Routes are matched in order and the first hit wins, so register the more
+    specific fragment first when a detail URL extends its list URL.
+    """
+
+    def __init__(self, routes: list[tuple[str, object]]):
+        self.routes = routes
+        self.urls: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, **kwargs):
+        return self._respond(url)
+
+    def post(self, url, **kwargs):
+        return self._respond(url)
+
+    def _respond(self, url: str) -> _FakeResp:
+        self.urls.append(url)
+        for fragment, payload in self.routes:
+            if fragment in url:
+                return _FakeResp(payload)
+        raise AssertionError(f"unrouted URL in test: {url}")
+
+
+@pytest.fixture
+def routed_client(monkeypatch):
+    """Install a ``_RoutedClient`` over an adapter module's ``httpx.Client``.
+
+    Also no-ops the politeness ``sleep`` so a fetch-level test stays instant.
+    """
+
+    def install(module, routes: list[tuple[str, object]]) -> _RoutedClient:
+        client = _RoutedClient(routes)
+        monkeypatch.setattr(module.httpx, "Client", lambda **kw: client)
+        if hasattr(module, "time"):
+            monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+        return client
+
+    return install
+
+
+_ORACLE_BAD_SLUG = "bad.example.com|CX_1|https://bad.example.com/jobs|Bad"
+_ORACLE_GOOD_SLUG = "good.example.com|CX_2|https://good.example.com/jobs|Good"
+_ORACLE_GOOD_LIST = {
+    "items": [
+        {
+            "TotalJobsCount": 1,
+            "requisitionList": [{"Id": "9", "Title": "Senior Software Engineer"}],
+        }
+    ]
+}
+_ORACLE_GOOD_DETAIL = {
+    "items": [
+        {
+            "Id": "9",
+            "Title": "Senior Software Engineer",
+            "ExternalDescriptionStr": "<p>Build systems.</p>",
+            "PrimaryLocation": "United States",
+        }
+    ]
+}
+
+
+class TestOracleMalformedPayloads:
+    """Ingest isolates failures per *batch*, not per source, so an exception
+    escaping an adapter generator silently drops every slug it hadn't reached
+    yet. Malformed scraped JSON therefore has to cost one site, never the run."""
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param([], id="list-where-dict-expected"),
+            pytest.param("<html>blocked</html>", id="bare-string"),
+            pytest.param(None, id="null"),
+            pytest.param({"items": "nope"}, id="items-not-a-list"),
+            pytest.param({"items": [None]}, id="null-item"),
+            pytest.param({"items": ["not-a-dict"]}, id="non-dict-item"),
+        ],
+    )
+    def test_parse_list_tolerates_malformed_payloads(self, data):
+        assert oracle_parse_list(data) == ([], None)
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param([], id="list-where-dict-expected"),
+            pytest.param("<html>blocked</html>", id="bare-string"),
+            pytest.param(None, id="null"),
+            pytest.param({"items": ["not-a-dict"]}, id="non-dict-item"),
+            pytest.param({}, id="no-items-no-id"),
+        ],
+    )
+    def test_first_item_tolerates_malformed_payloads(self, data):
+        assert oracle_first_item(data) is None
+
+    @pytest.mark.parametrize(
+        ("total", "expected"),
+        [
+            pytest.param(7, 7, id="int"),
+            pytest.param("7", 7, id="numeric-string"),
+            pytest.param("many", None, id="unparseable-string"),
+            pytest.param(None, None, id="missing"),
+        ],
+    )
+    def test_parse_list_coerces_the_total_count(self, total, expected):
+        # An unvalidated string here used to raise TypeError on the
+        # `offset >= total` pagination check.
+        data = {
+            "items": [{"TotalJobsCount": total, "requisitionList": [{"Id": "1"}]}]
+        }
+        _, parsed = oracle_parse_list(data)
+        assert parsed == expected
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            pytest.param([], id="list-where-dict-expected"),
+            pytest.param("<html>blocked</html>", id="bare-string"),
+            pytest.param({"items": "nope"}, id="items-not-a-list"),
+            pytest.param({"items": ["not-a-dict"]}, id="non-dict-item"),
+            pytest.param(
+                {
+                    "items": [
+                        {"requisitionList": ["not-a-dict"], "TotalJobsCount": "7"}
+                    ]
+                },
+                id="non-dict-posting-and-string-total",
+            ),
+            pytest.param(ValueError("not json"), id="non-json-body"),
+        ],
+    )
+    def test_a_broken_site_does_not_abort_the_remaining_sites(
+        self, routed_client, malformed
+    ):
+        routed_client(
+            oracle_mod,
+            [
+                ("bad.example.com", malformed),
+                ("good.example.com/hcmRestApi/resources/latest/"
+                 "recruitingCEJobRequisitionDetails", _ORACLE_GOOD_DETAIL),
+                ("good.example.com/hcmRestApi/resources/latest/"
+                 "recruitingCEJobRequisitions", _ORACLE_GOOD_LIST),
+            ],
+        )
+        source = oracle_mod.OracleSource([_ORACLE_BAD_SLUG, _ORACLE_GOOD_SLUG])
+        assert [j.source_id for j in source.fetch()] == ["good.example.com:9"]
+
+    def test_a_non_json_page_is_logged_not_silently_truncated(
+        self, routed_client, caplog
+    ):
+        routed_client(oracle_mod, [("bad.example.com", ValueError("not json"))])
+        with caplog.at_level("WARNING"):
+            jobs = list(oracle_mod.OracleSource([_ORACLE_BAD_SLUG]).fetch())
+        assert jobs == []
+        assert "non-JSON" in caplog.text
+
+
+_WORKABLE_LIST = {
+    "results": [{"shortcode": "ABC", "title": "Senior Software Engineer"}]
+}
+_WORKABLE_DETAIL = {
+    "shortcode": "ABC",
+    "title": "Senior Software Engineer",
+    "description": "<p>We use TypeScript.</p>",
+    "remote": True,
+    "location": {"city": "Remote", "country": "United States"},
+}
+
+
+class TestWorkableMalformedPayloads:
+    @pytest.mark.parametrize(
+        "item",
+        [
+            pytest.param([], id="list-where-dict-expected"),
+            pytest.param("nope", id="bare-string"),
+            pytest.param(None, id="null"),
+            pytest.param(42, id="number"),
+        ],
+    )
+    def test_normalize_tolerates_a_non_dict_item(self, item):
+        assert workable_normalize("co", item) is None
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            pytest.param([], id="list-where-dict-expected"),
+            pytest.param("<html>blocked</html>", id="bare-string"),
+            pytest.param({"results": {"a": 1}}, id="results-not-a-list"),
+            pytest.param({"results": ["nope", 42]}, id="non-dict-results"),
+            pytest.param(ValueError("not json"), id="non-json-body"),
+        ],
+    )
+    def test_a_broken_slug_does_not_abort_the_remaining_slugs(
+        self, routed_client, malformed
+    ):
+        routed_client(
+            workable_mod,
+            [
+                ("accounts/bad/jobs", malformed),
+                ("accounts/good/jobs/ABC", _WORKABLE_DETAIL),
+                ("accounts/good/jobs", _WORKABLE_LIST),
+            ],
+        )
+        source = workable_mod.WorkableSource(["bad", "good"])
+        assert [j.source_id for j in source.fetch()] == ["good:ABC"]
+
+
+_SR_LIST = {
+    "content": [{"id": "1", "name": "Senior Software Engineer"}],
+    "totalFound": 1,
+}
+_SR_DETAIL = {
+    "id": "1",
+    "name": "Senior Software Engineer",
+    "company": {"name": "Good"},
+    "location": {"remote": True, "fullLocation": "Remote, US"},
+    "jobAd": {"sections": {}},
+    "postingUrl": "https://jobs.smartrecruiters.com/Good/1",
+}
+
+
+class TestSmartRecruitersMalformedPayloads:
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            pytest.param([], id="list-where-dict-expected"),
+            pytest.param("<html>blocked</html>", id="bare-string"),
+            pytest.param({"content": {"id": "1"}}, id="content-not-a-list"),
+            pytest.param(
+                {"content": ["nope", 42], "totalFound": "2"},
+                id="non-dict-content-and-string-total",
+            ),
+            pytest.param(
+                {
+                    "content": [{"id": "1", "name": "Senior Software Engineer"}],
+                    "totalFound": "lots",
+                },
+                id="unparseable-total",
+            ),
+            pytest.param(ValueError("not json"), id="non-json-body"),
+        ],
+    )
+    def test_a_broken_slug_does_not_abort_the_remaining_slugs(
+        self, routed_client, malformed
+    ):
+        routed_client(
+            smartrecruiters_mod,
+            [
+                ("companies/Bad/postings", malformed),
+                ("companies/Good/postings/1", _SR_DETAIL),
+                ("companies/Good/postings", _SR_LIST),
+            ],
+        )
+        source = smartrecruiters_mod.SmartRecruitersSource(["Bad", "Good"])
+        assert [j.source_id for j in source.fetch()] == ["Good:1"]
+
+
+_WD_LIST = {
+    "jobPostings": [
+        {"externalPath": "/job/1", "title": "Senior Software Engineer"}
+    ]
+}
+_WD_DETAIL = {
+    "jobPostingInfo": {
+        "title": "Senior Software Engineer",
+        "jobDescription": "<p>We use TypeScript.</p>",
+        "jobReqId": "R1",
+        "location": "Remote, US",
+        "remoteType": "remote",
+    }
+}
+
+
+class TestWorkdayMalformedPayloads:
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            pytest.param([], id="list-where-dict-expected"),
+            pytest.param("<html>blocked</html>", id="bare-string"),
+            pytest.param({"jobPostings": {"a": 1}}, id="postings-not-a-list"),
+            pytest.param({"jobPostings": ["nope", 42]}, id="non-dict-postings"),
+            pytest.param(ValueError("not json"), id="non-json-body"),
+        ],
+    )
+    def test_a_broken_tenant_does_not_abort_the_remaining_tenants(
+        self, routed_client, malformed
+    ):
+        routed_client(
+            workday_mod,
+            [
+                ("bad.wd1", malformed),
+                ("good.wd1.myworkdayjobs.com/wday/cxs/good/Site/job/1", _WD_DETAIL),
+                ("good.wd1.myworkdayjobs.com/wday/cxs/good/Site/jobs", _WD_LIST),
+            ],
+        )
+        source = workday_mod.WorkdaySource(["bad|wd1|Site", "good|wd1|Site"])
+        assert [j.source_id for j in source.fetch()] == ["good:R1"]
+
+    def test_a_non_json_page_is_logged_not_silently_truncated(
+        self, routed_client, caplog
+    ):
+        routed_client(workday_mod, [("bad.wd1", ValueError("not json"))])
+        with caplog.at_level("WARNING"):
+            jobs = list(workday_mod.WorkdaySource(["bad|wd1|Site"]).fetch())
+        assert jobs == []
+        assert "non-JSON" in caplog.text

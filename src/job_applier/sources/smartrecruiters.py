@@ -99,18 +99,32 @@ class SmartRecruitersSource:
             if not isinstance(payload, dict):
                 log.warning("smartrecruiters[%s] returned non-object payload, skipping", slug)
                 return
-            content = payload.get("content") or []
-            if not content:
+            content = payload.get("content")
+            if not isinstance(content, list) or not content:
                 return
             for item in content:
-                yield item
                 pulled += 1
+                # Non-dict entries would blow up the caller's ``.get`` and
+                # abandon every remaining slug, so drop them here.
+                if isinstance(item, dict):
+                    yield item
                 if pulled >= MAX_JOBS_PER_SLUG:
                     return
-            total_found = payload.get("totalFound") or 0
+            # ``totalFound`` is untrusted scraped JSON: ``or 0`` covers a
+            # missing value but not a string one, which would make the
+            # comparison below raise ``TypeError``.
+            total_found = _as_int(payload.get("totalFound")) or 0
             offset += len(content)
             if offset >= total_found:
                 return
+
+
+def _as_int(value: object) -> int | None:
+    """Coerce a scraped count to ``int``; ``None`` when it isn't numeric."""
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize(company_slug: str, item: dict) -> RawJob | None:
