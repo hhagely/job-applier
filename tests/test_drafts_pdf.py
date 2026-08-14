@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from job_applier import drafts, pdf
+from job_applier.ai import bans
 from job_applier.api.app import app
 from job_applier.config import settings
 from job_applier.models import JobPosting
@@ -85,6 +86,58 @@ def test_render_print_html_cover_letter_uses_cover_css_and_soft_breaks():
     assert "margin: 1in 1in" in html  # _COVER_LETTER_CSS @page marker
     # Cover letters render soft newlines as <br> (signature block stays intact).
     assert "<br" in html
+
+
+# --- no clickable links in print HTML --------------------------------------
+
+# `strip_exfil_vectors` flattens links to plain text on purpose, so the URLs it
+# leaves behind are exactly the text a linkifying renderer would re-link. Assert the
+# *property* (no anchor in the print HTML), not the renderer config that currently
+# delivers it, so these keep holding if markdown-it's preset or dependencies change.
+
+
+@pytest.mark.parametrize("kind", ["resume", "cover_letter"])
+def test_flattened_link_never_renders_as_clickable_anchor(kind):
+    stripped = bans.strip_exfil_vectors(
+        "Portfolio: [my work](https://attacker.example/p?d=jane%40example.com)\n"
+    )
+    # Precondition: the strip really did flatten the link to plain text.
+    assert "https://attacker.example/p?d=jane%40example.com" in stripped
+    assert "](" not in stripped
+
+    html = drafts.render_print_html(stripped, kind)
+    assert "<a " not in html
+    assert "href=" not in html
+    # ...and the URL still reads as text, so a genuine contact link survives.
+    assert "https://attacker.example/p?d=jane%40example.com" in html
+
+
+@pytest.mark.parametrize("kind", ["resume", "cover_letter"])
+def test_bare_urls_in_draft_markdown_stay_plain_text(kind):
+    md = (
+        "# Jane Dev\n\n"
+        "https://attacker.example/beacon?d=PII\n"
+        "www.attacker.example/beacon\n"
+        "jane@example.com\n"
+    )
+    html = drafts.render_print_html(md, kind)
+    assert "<a " not in html
+    assert "href=" not in html
+    assert "mailto:" not in html
+
+
+@pytest.mark.parametrize("kind", ["resume", "cover_letter"])
+def test_markdown_link_reaching_renderer_loses_its_anchor(kind):
+    """Belt-and-braces: even markdown that never passed through `save_markdown`
+    (so never met `strip_exfil_vectors`) cannot produce a clickable link."""
+    html = drafts.render_print_html(
+        "[click me](https://attacker.example/p?d=PII)\n\n"
+        "<https://attacker.example/autolink>\n",
+        kind,
+    )
+    assert "<a " not in html
+    assert "href=" not in html
+    assert "click me" in html  # label survives as plain text
 
 
 # --- print.html endpoint ---------------------------------------------------
