@@ -1341,6 +1341,32 @@ class TestSmartRecruitersMalformedPayloads:
         source = smartrecruiters_mod.SmartRecruitersSource(["Bad", "Good"])
         assert [j.source_id for j in source.fetch()] == ["Good:1"]
 
+    @pytest.mark.parametrize(
+        ("total_found", "expected_list_calls"),
+        [
+            # A known total that the first page satisfies: stop after one page.
+            pytest.param(100, 1, id="numeric-total-stops-paging"),
+            # An unknown total must not read as 0 -- `offset >= 0` is always
+            # true, which would silently truncate the board to its first page.
+            pytest.param("lots", 2, id="unparseable-total-keeps-paging"),
+        ],
+    )
+    def test_an_unparseable_total_does_not_truncate_the_board(
+        self, routed_client, total_found, expected_list_calls
+    ):
+        # Entries carry no id, so none of them costs a detail fetch and the
+        # only thing being counted is how many list pages were asked for.
+        # MAX_JOBS_PER_SLUG (200) stops the full-page case at two.
+        page = {
+            "content": [{"name": "Warehouse Associate"} for _ in range(100)],
+            "totalFound": total_found,
+        }
+        client = routed_client(
+            smartrecruiters_mod, [("companies/Good/postings", page)]
+        )
+        list(smartrecruiters_mod.SmartRecruitersSource(["Good"]).fetch())
+        assert len(client.urls) == expected_list_calls
+
 
 _WD_LIST = {
     "jobPostings": [

@@ -128,7 +128,14 @@ class WorkableSource:
                 )
                 return
             results = payload.get("results")
-            if not isinstance(results, list) or not results:
+            if not isinstance(results, list):
+                # Distinct from the empty-page case below: this abandons the
+                # whole board, so it can't be silent.
+                log.warning(
+                    "workable[%s] list has a non-array 'results', skipping", slug
+                )
+                return
+            if not results:
                 return
             for item in results:
                 pulled += 1

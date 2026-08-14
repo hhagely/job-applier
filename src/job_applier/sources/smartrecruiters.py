@@ -100,7 +100,14 @@ class SmartRecruitersSource:
                 log.warning("smartrecruiters[%s] returned non-object payload, skipping", slug)
                 return
             content = payload.get("content")
-            if not isinstance(content, list) or not content:
+            if not isinstance(content, list):
+                # Distinct from the empty-page case below: this abandons the
+                # whole board, so it can't be silent.
+                log.warning(
+                    "smartrecruiters[%s] list has a non-array 'content', skipping", slug
+                )
+                return
+            if not content:
                 return
             for item in content:
                 pulled += 1
@@ -110,12 +117,22 @@ class SmartRecruitersSource:
                     yield item
                 if pulled >= MAX_JOBS_PER_SLUG:
                     return
-            # ``totalFound`` is untrusted scraped JSON: ``or 0`` covers a
-            # missing value but not a string one, which would make the
-            # comparison below raise ``TypeError``.
-            total_found = _as_int(payload.get("totalFound")) or 0
+            # ``totalFound`` is untrusted scraped JSON, so it's coerced. An
+            # unknown total must not collapse to 0 -- ``offset >= 0`` is always
+            # true, which would truncate the board to its first page and read
+            # exactly like "this company has 100 jobs". Unknown means "keep
+            # paging"; the empty-page check above and MAX_JOBS_PER_SLUG bound it.
+            raw_total = payload.get("totalFound")
+            total_found = _as_int(raw_total)
+            if total_found is None and raw_total is not None:
+                log.warning(
+                    "smartrecruiters[%s] non-numeric totalFound %r, "
+                    "paging until the board runs out",
+                    slug,
+                    raw_total,
+                )
             offset += len(content)
-            if offset >= total_found:
+            if total_found is not None and offset >= total_found:
                 return
 
 

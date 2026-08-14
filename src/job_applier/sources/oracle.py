@@ -263,7 +263,7 @@ def _fetch_site(client: httpx.Client, site: OracleSite) -> Iterable[RawJob]:
             )
             break
 
-        postings, total = _parse_list(data)
+        postings, total = _parse_list(data, site.api_host)
         if not postings:
             break
 
@@ -297,7 +297,7 @@ def _fetch_site(client: httpx.Client, site: OracleSite) -> Iterable[RawJob]:
         time.sleep(0.05)
 
 
-def _parse_list(data: object) -> tuple[list[dict], int | None]:
+def _parse_list(data: object, label: str = "?") -> tuple[list[dict], int | None]:
     """Pull the requisition list and total count out of a CE list response.
 
     The payload shape is ``{"items": [{"TotalJobsCount": N,
@@ -307,18 +307,34 @@ def _parse_list(data: object) -> tuple[list[dict], int | None]:
     Every level is shape-checked: a tenant behind a WAF can answer with a JSON
     array or a bare string, and an unguarded ``.get`` there would raise out of
     the generator and abandon every remaining Oracle site for the run.
+
+    A malformed shape returns no postings, which the caller can't tell apart
+    from a site with no openings -- so the malformed branches log. An empty
+    ``requisitionList`` is the genuinely-empty case and stays quiet.
     """
     if not isinstance(data, dict):
         return [], None
     items = data.get("items")
     if isinstance(items, list) and items:
-        first = items[0] if isinstance(items[0], dict) else {}
+        if not isinstance(items[0], dict):
+            log.warning("oracle[%s] list 'items[0]' is not an object, skipping site", label)
+            return [], None
+        first = items[0]
         postings = first.get("requisitionList") or []
         total = _as_int(first.get("TotalJobsCount"))
-        return (postings if isinstance(postings, list) else []), total
+        if not isinstance(postings, list):
+            log.warning(
+                "oracle[%s] 'requisitionList' is not an array, skipping site", label
+            )
+            return [], total
+        return postings, total
     top = data.get("requisitionList")
     if isinstance(top, list):
         return top, _as_int(data.get("TotalJobsCount"))
+    if items is not None:
+        log.warning(
+            "oracle[%s] list payload has no usable 'items' array, skipping site", label
+        )
     return [], None
 
 

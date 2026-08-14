@@ -144,7 +144,18 @@ def _fetch_board(client: httpx.Client, board: WorkdayBoard) -> Iterable[RawJob]:
                 break
 
             postings = data.get("jobPostings")
-            if not isinstance(postings, list) or not postings:
+            if not isinstance(postings, list):
+                # Distinct from the empty-page case below, which is just how
+                # a search term runs out: this abandons the tenant.
+                log.warning(
+                    "workday[%s] search %r has a non-array 'jobPostings' at "
+                    "offset %d, stopping pagination",
+                    board.tenant,
+                    term,
+                    offset,
+                )
+                break
+            if not postings:
                 break
 
             for p in postings:
