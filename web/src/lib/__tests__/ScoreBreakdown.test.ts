@@ -4,10 +4,15 @@ import { describe, expect, it } from 'vitest';
 import type { Score } from '$lib/api';
 import ScoreBreakdown from '../ScoreBreakdown.svelte';
 
+// Mirrors what the scoring prompts actually emit: each bucket is an object with
+// `points` + a one-line `note` (see src/job_applier/ai/prompts/score.md).
 function score(overrides: Partial<Score> = {}): Score {
 	return {
 		score: 82,
-		rubric: { skills_overlap: 26, experience_match: 22 },
+		rubric: {
+			skills_overlap: { points: 26, note: 'TS/React strong; Rust light' },
+			experience_match: { points: 22, note: 'Staff-level scope matches' }
+		},
 		reasoning: 'Strong overlap.',
 		scored_by: 'claude-cli',
 		scored_at: '2026-04-02T21:00:55Z',
@@ -27,6 +32,65 @@ describe('ScoreBreakdown', () => {
 		expect(screen.getByText('resume.pdf')).toBeInTheDocument();
 		expect(screen.getByText('skills_overlap')).toBeInTheDocument();
 		expect(screen.getByText('experience_match')).toBeInTheDocument();
+	});
+
+	it('renders a bar, the points over the bucket weight, and the note', () => {
+		const { container } = render(ScoreBreakdown, { props: { score: score() } });
+		expect(container.querySelectorAll('.meter')).toHaveLength(2);
+		expect(screen.getByText('26')).toBeInTheDocument();
+		expect(screen.getByText('/30')).toBeInTheDocument();
+		expect(screen.getByText('TS/React strong; Rust light')).toBeInTheDocument();
+		expect(screen.getByText('Staff-level scope matches')).toBeInTheDocument();
+		expect(screen.queryByText(/"points"/)).not.toBeInTheDocument();
+	});
+
+	// Each bucket is scored out of its own weight, so the fill is points/weight —
+	// drawing raw points against a full-width track made full marks on the small
+	// buckets (hard_requirements, max 10) read as a near-empty "weak" bar.
+	it('fills each bar to the bucket share of its own weight, not of 100', () => {
+		const { container } = render(ScoreBreakdown, {
+			props: {
+				score: score({
+					rubric: {
+						hard_requirements: { points: 10, note: 'remote US-OK' },
+						domain_fit: { points: 10, note: 'adjacent' }
+					}
+				})
+			}
+		});
+		const fills = [...container.querySelectorAll<HTMLElement>('.meter i')].map(
+			(el) => el.style.width
+		);
+		expect(fills).toEqual(['100%', '67%']);
+	});
+
+	it('still renders a bar for the legacy bare-number bucket shape', () => {
+		const { container } = render(ScoreBreakdown, {
+			props: { score: score({ rubric: { skills_overlap: 26 } }) }
+		});
+		expect(container.querySelectorAll('.meter')).toHaveLength(1);
+		expect(screen.getByText('26')).toBeInTheDocument();
+		expect(screen.getByText('/30')).toBeInTheDocument();
+	});
+
+	// An unrecognized bucket has no known weight, so it falls back to /100 rather
+	// than guessing a denominator that would overstate the bar.
+	it('falls back to /100 for a bucket the weight table does not know', () => {
+		const { container } = render(ScoreBreakdown, {
+			props: { score: score({ rubric: { culture_fit: { points: 8, note: 'new bucket' } } }) }
+		});
+		// Scoped to the row — the score hero carries its own "/100" denominator.
+		expect(container.querySelector('.rub-row .rr-max')?.textContent).toBe('/100');
+		expect(container.querySelector<HTMLElement>('.meter i')?.style.width).toBe('8%');
+	});
+
+	it('falls back to the raw value for an unexpected bucket shape', () => {
+		const { container } = render(ScoreBreakdown, {
+			props: { score: score({ rubric: { skills_overlap: { score: 'high' } } }) }
+		});
+		expect(container.querySelector('.meter')).toBeNull();
+		expect(screen.getByText('skills_overlap')).toBeInTheDocument();
+		expect(screen.getByText('{"score":"high"}')).toBeInTheDocument();
 	});
 
 	it('shows the stale banner only when the score is stale', () => {

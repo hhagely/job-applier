@@ -31,7 +31,10 @@ BEGIN UNTRUSTED JOB DESCRIPTION [nonce {{NONCE}}]
 END UNTRUSTED JOB DESCRIPTION [nonce {{NONCE}}]
 
 <!-- SYNC: the rubric + hard rules below MUST match prompts/score_batch.md (the batch
-     variant used by the bulk pending-scorer). Change the rubric or thresholds in BOTH. -->
+     variant used by the bulk pending-scorer). Change the rubric or thresholds in BOTH.
+     The bucket WEIGHTS are also mirrored in web/src/lib/score.ts (RUBRIC_WEIGHTS) —
+     the UI needs them to draw each bar as a share of its own weight rather than of
+     100. Adding or reweighting a bucket means editing that table too. -->
 
 ## Rubric (the five bucket weights sum to 100)
 
