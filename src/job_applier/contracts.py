@@ -1,12 +1,15 @@
-"""Framework-free shared contracts for the ingest pipeline.
+"""Framework-free shared contracts.
 
 ``RawJob`` is the vocabulary that *sources* produce, *filters* evaluate, and
 *ingest* persists — it belongs to none of them in particular, so it lives here.
-The date parsers are shared source-adapter helpers with the same property. This
-module deliberately has ZERO intra-package dependencies (only stdlib), so both
-``job_applier.sources`` and ``job_applier.filters`` can import it without forming
-the ``sources -> filters -> sources`` import cycle that used to require a
-``TYPE_CHECKING`` guard in the filter and a lazy import in the source registry.
+The date parsers are shared source-adapter helpers with the same property. The
+``AppSetting`` key names for the AI configuration live here for the same reason:
+three routers read them and none owns them. This module deliberately has ZERO
+intra-package dependencies (only stdlib), so both ``job_applier.sources`` and
+``job_applier.filters`` can import it without forming the
+``sources -> filters -> sources`` import cycle that used to require a
+``TYPE_CHECKING`` guard in the filter and a lazy import in the source registry —
+and so the API routers can import the setting keys without dragging anything in.
 """
 
 from __future__ import annotations
@@ -16,6 +19,45 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+
+# ---- AppSetting keys for the AI configuration ------------------------------
+#
+# The AI selection is persisted in the ``AppSetting`` key/value table and read
+# from three routers (``api/ai.py``, ``api/deps.py``, ``api/drafts.py``). Defined
+# once here because a hardcoded copy is invisible to a rename: ``get_setting``
+# answers a missing key with its default, so a stale literal doesn't raise — it
+# quietly reports "nothing configured" forever.
+
+#: Selected AI CLI (``"claude"``, ``"gemini"``, ``"codex"``, ``"ollama"``).
+AI_PROVIDER_KEY = "ai_provider"
+
+#: Override for the baseline (bulk) scoring model. When unset, the resolver falls
+#: back to the provider's built-in lighter default, then the generation model.
+AI_SCORING_MODEL_KEY = "ai_scoring_model"
+
+#: Prefix for the per-provider generation model — see ``ai_model_key``.
+AI_MODEL_KEY_PREFIX = "ai_model:"
+
+#: Pre-namespacing key: one global generation model shared by every provider.
+#: Read-only now, and only for ``LEGACY_AI_MODEL_PROVIDER`` (see ``ai_model_key``).
+AI_MODEL_KEY_LEGACY = "ai_model"
+
+#: The provider a legacy ``ai_model`` value belongs to. Settings only ever
+#: rendered that input for Ollama, so that is who typed it.
+LEGACY_AI_MODEL_PROVIDER = "ollama"
+
+
+def ai_model_key(provider: str) -> str:
+    """Setting key holding ``provider``'s generation model (drafting, suggest-roles,
+    tailored re-scoring, the Test round-trip).
+
+    Namespaced per provider on purpose: a model name is only meaningful to the CLI
+    it was typed for, so one shared key let a value chosen for one CLI be handed to
+    the next one selected — ``claude -p ... --model llama3.1`` exits non-zero and
+    every generation flow breaks at once.
+    """
+    return f"{AI_MODEL_KEY_PREFIX}{provider}"
+
 
 _HTML_BLOCK_TAG = re.compile(r"<\s*/?(p|div|li|h[1-6])\s*>", re.IGNORECASE)
 _HTML_BR_TAG = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)

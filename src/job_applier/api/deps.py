@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException
 from sqlmodel import Session
 
 from job_applier import services
+from job_applier.contracts import AI_PROVIDER_KEY
 from job_applier.models.db import JobPosting, get_session, get_setting
 
 
@@ -27,7 +28,7 @@ def require_job(job_id: int, session: Session = Depends(get_session)) -> JobPost
 def require_ai_ready(session: Session = Depends(get_session)) -> str:
     """Ensure an AI provider is selected and an active resume exists, returning the
     provider name. Raises 409 (provider first, then resume) otherwise."""
-    provider = get_setting(session, "ai_provider")
+    provider = get_setting(session, AI_PROVIDER_KEY)
     if not provider:
         raise HTTPException(409, "no AI provider selected — pick one in Settings")
     if services.active_resume(session) is None:

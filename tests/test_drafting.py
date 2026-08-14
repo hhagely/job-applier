@@ -5,11 +5,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from job_applier import services
+from job_applier import drafts as drafts_mod
+from job_applier import pdf, services
 from job_applier.ai import bans, drafting, providers, suggest
+from job_applier.ai import tasks as ai_tasks
 from job_applier.api.app import app
 from job_applier.api.schemas import SearchProfileRecommendationIn
 from job_applier.config import settings
+from job_applier.contracts import AI_MODEL_KEY_LEGACY, ai_model_key
 from job_applier.models.db import (
     ApplicationStatus,
     FilterStatus,
@@ -347,6 +350,107 @@ def test_draft_endpoint_requires_resume(client):
 def test_draft_endpoint_404_for_missing_job(client):
     c, _e = client
     assert c.post("/api/jobs/9999/ai/draft", json={}).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        # Nothing stored for Claude -> the CLI's own default, even though another
+        # provider has a model saved. This is the bug: drafting used to read one
+        # global `ai_model`, so an Ollama model chosen earlier reached
+        # `claude -p ... --model llama3.1` and every draft run died.
+        ({"ai_model:ollama": "llama3.1"}, None),
+        ({AI_MODEL_KEY_LEGACY: "llama3.1"}, None),  # pre-namespacing install
+        ({"ai_model:claude": "opus"}, "opus"),  # Claude's own choice is honored
+        ({}, None),
+    ],
+)
+def test_ai_draft_runs_with_the_selected_providers_own_model(
+    client, monkeypatch, stored, expected
+):
+    c, e = client
+    with Session(e) as s:
+        set_setting(s, "ai_provider", "claude")
+        for key, value in stored.items():
+            set_setting(s, key, value)
+        _seed_resume(s)
+        job = _seed_job(s)
+        jid = job.id
+
+    started: dict = {}
+    monkeypatch.setattr(
+        ai_tasks,
+        "start_task",
+        lambda kind, total, fn, ref=None: started.update(fn=fn) or "t-1",
+    )
+    assert c.post(f"/api/jobs/{jid}/ai/draft", json={}).status_code == 200
+    assert started["fn"].keywords["model"] == expected
+
+
+def test_draft_batch_runs_with_the_selected_providers_own_model(client, monkeypatch):
+    from job_applier.api import ai as ai_mod
+
+    c, e = client
+    with Session(e) as s:
+        set_setting(s, "ai_provider", "claude")
+        set_setting(s, ai_model_key("ollama"), "llama3.1")
+        _seed_resume(s)
+        job = _seed_job(s)
+        jid = job.id
+
+    started: dict = {}
+    monkeypatch.setattr(
+        ai_mod.tasks,
+        "start_task",
+        lambda kind, total, fn, ref=None: started.update(fn=fn) or "t-1",
+    )
+    assert c.post("/api/ai/draft-batch", json={"job_ids": [jid]}).status_code == 200
+    assert started["fn"].keywords["model"] is None
+
+
+# ---- draft save / render failure modes ------------------------------------
+
+
+def _raise_oserror(*_a, **_kw):
+    raise OSError(28, "No space left on device")
+
+
+@pytest.mark.parametrize("path", ["draft", "draft/render"])
+def test_pdf_write_failure_is_a_503_that_keeps_the_markdown(client, monkeypatch, path):
+    """A full or read-only disk fails inside ``drafts.render_pdf``, not in the
+    renderer, so it used to escape as an opaque 500 — the same outcome the
+    ``PdfRendererUnavailable`` branch already reported deliberately as a 503."""
+    c, e = client
+    with Session(e) as s:
+        job = _seed_job(s)
+        jid = job.id
+    drafts_mod.save_markdown(jid, "# Jane Dev\n", None)  # render needs markdown
+
+    monkeypatch.setattr(pdf, "render_to_pdf", lambda _url: b"%PDF fake")
+    monkeypatch.setattr(drafts_mod, "render_pdf", _raise_oserror)
+
+    body = {"resume_md": "# Jane Dev\n"} if path == "draft" else {}
+    r = c.post(f"/api/jobs/{jid}/{path}", json=body)
+    assert r.status_code == 503
+    assert "resume PDF" in r.json()["detail"]
+    # The contract the 503 asserts: only the PDF step failed.
+    assert drafts_mod.read_markdown(jid, "resume") is not None
+
+
+def test_markdown_write_failure_says_nothing_was_saved(client, monkeypatch):
+    # The other half of the same contract: when the markdown write itself fails the
+    # draft is NOT persisted, so the response must not claim otherwise (and must
+    # still be a 503, not a 500).
+    c, e = client
+    with Session(e) as s:
+        job = _seed_job(s)
+        jid = job.id
+    monkeypatch.setattr(drafts_mod, "save_markdown", _raise_oserror)
+
+    r = c.post(f"/api/jobs/{jid}/draft", json={"resume_md": "# Jane Dev\n"})
+    assert r.status_code == 503
+    assert "nothing was written" in r.json()["detail"]
+    assert drafts_mod.read_markdown(jid, "resume") is None
 
 
 # ---- batch draft (Draft-list header button) -------------------------------

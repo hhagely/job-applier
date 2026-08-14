@@ -36,15 +36,20 @@ from job_applier.api.schemas import (
     TaskOut,
 )
 from job_applier.ai.tasks import TaskState
+from job_applier.contracts import (
+    AI_MODEL_KEY_LEGACY,
+    AI_PROVIDER_KEY,
+    AI_SCORING_MODEL_KEY,
+    LEGACY_AI_MODEL_PROVIDER,
+    ai_model_key,
+)
 from job_applier.models.db import JobPosting, get_session, get_setting, set_setting
 
-router = APIRouter(prefix="/api/ai", tags=["ai"])
+# The AppSetting key names live in ``job_applier.contracts`` (dependency-free) so
+# api/deps.py and api/drafts.py read the same constants instead of re-typing the
+# literals; importing them above keeps this module's call sites unchanged.
 
-AI_PROVIDER_KEY = "ai_provider"
-AI_MODEL_KEY = "ai_model"
-# Persisted override for the baseline (bulk) scoring model. When unset, the resolver
-# falls back to the provider's built-in lighter default, then the generation model.
-AI_SCORING_MODEL_KEY = "ai_scoring_model"
+router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 # Fixed, side-effect-free prompt for the "Test" round-trip.
 _TEST_PROMPT = "Respond with exactly the word: pong"
@@ -104,6 +109,28 @@ def _validate_scoring_model(provider: str, model: str) -> None:
         ) from exc
 
 
+def generation_model(session: Session, provider: str) -> str | None:
+    """``provider``'s configured generation model — used by drafting, suggest-roles,
+    tailored re-scoring and the Test round-trip — or ``None`` for the CLI's default.
+
+    Reads the per-provider key, never a global one: a model name only means
+    something to the CLI it was typed for, so a single shared setting let a value
+    chosen for one provider survive a switch and reach the next one (``claude -p
+    ... --model llama3.1`` exits non-zero, breaking every generation flow at once,
+    with nothing in the UI able to clear it). Keying on the provider makes that
+    unreachable *and* keeps each provider's choice across a round trip.
+    """
+    value = get_setting(session, ai_model_key(provider))
+    if value is None and provider == LEGACY_AI_MODEL_PROVIDER:
+        # Installs predating the namespacing kept one un-suffixed ``ai_model`` row.
+        # Settings only ever rendered that input for Ollama, so the value is
+        # Ollama's and is honored for Ollama alone — which is precisely what stops
+        # it leaking to a newly-selected CLI. Superseded the next time an Ollama
+        # model is saved.
+        value = get_setting(session, AI_MODEL_KEY_LEGACY)
+    return value or None
+
+
 def resolve_scoring_model(session: Session, provider: str) -> str | None:
     """The model to use for baseline (bulk) scoring: the user's persisted override,
     else the provider's lighter built-in default (Sonnet on Claude), else the
@@ -117,12 +144,13 @@ def resolve_scoring_model(session: Session, provider: str) -> str | None:
     default = providers.default_scoring_model(provider)
     if default:
         return default
-    return get_setting(session, AI_MODEL_KEY)
+    return generation_model(session, provider)
 
 
 def _providers_out(session: Session) -> ProvidersOut:
     infos = providers.detect_all()
-    selected = get_setting(session, AI_PROVIDER_KEY)
+    persisted = get_setting(session, AI_PROVIDER_KEY)
+    selected = persisted
     # If the previously-selected provider is no longer available, don't report it
     # as selected (the UI should prompt for a new choice).
     available_names = {i.name for i in infos if i.available}
@@ -152,7 +180,16 @@ def _providers_out(session: Session) -> ProvidersOut:
             for i in infos
         ],
         selected=selected,
-        model=get_setting(session, AI_MODEL_KEY, providers.DEFAULT_OLLAMA_MODEL),
+        # Prefills Settings' Model input, which is rendered for Ollama only. Keyed on
+        # the *persisted* provider rather than ``selected`` (blanked when the CLI has
+        # gone missing) so a temporarily-undetected Ollama still shows its model, and
+        # falling back to Ollama's own so switching away and back doesn't silently
+        # reset a locally-pulled model to the placeholder default.
+        model=(
+            (generation_model(session, persisted) if persisted else None)
+            or generation_model(session, "ollama")
+            or providers.DEFAULT_OLLAMA_MODEL
+        ),
         scoring_model=get_setting(session, AI_SCORING_MODEL_KEY),
         scoring_model_default=(
             providers.default_scoring_model(selected) if selected else None
@@ -194,8 +231,12 @@ def select_provider(
         _validate_scoring_model(body.name, scoring)
 
     set_setting(session, AI_PROVIDER_KEY, body.name)
-    if body.model:
-        set_setting(session, AI_MODEL_KEY, body.model)
+    # Stored under the provider it was typed for. Settings only renders the Model
+    # input for Ollama, so a global key kept feeding an Ollama model to whatever CLI
+    # was selected next, with no field on the page able to clear it. ``""`` clears
+    # this provider's model (back to the CLI's own default); absent leaves it alone.
+    if body.model is not None:
+        set_setting(session, ai_model_key(body.name), body.model.strip())
     # ``scoring_model`` present (even as "") means the user submitted the field: store
     # it, where "" clears the override so the resolver reverts to the provider default.
     if scoring is not None:
@@ -211,7 +252,7 @@ def test_provider(
     if not selected:
         raise HTTPException(400, "no AI provider selected")
     prompt = (body.prompt or _TEST_PROMPT).strip() or _TEST_PROMPT
-    model = get_setting(session, AI_MODEL_KEY)
+    model = generation_model(session, selected)
     try:
         output = providers.run(selected, prompt, timeout=60, model=model)
         return AiTestOut(ok=True, output=output, error=None)
@@ -253,13 +294,25 @@ def start_score_pending(
     if existing is not None:
         return StartTaskOut(task_id=existing.id)
 
-    pending = services.select_pending_jobs(
-        session, limit=200, include_stale=body.include_stale
-    )
     if body.job_ids:
-        wanted = set(body.job_ids)
-        pending = [j for j in pending if j.id in wanted]
-    ids = [j.id for j in pending]
+        # Explicit ids are a targeted re-score, so honor them as given — the same
+        # contract `scoring.score_pending` documents. Intersecting them with the
+        # pending queue instead silently dropped every id that already had a fresh
+        # score (or fell outside the 200-row window): the request 200'd with a task
+        # that settled `done 0/0`, reporting success for work that never happened.
+        # Dedupe preserving order and keep only ids that resolve, as draft-batch does.
+        ids = [
+            jid
+            for jid in dict.fromkeys(body.job_ids)
+            if session.get(JobPosting, jid) is not None
+        ]
+        if not ids:
+            raise HTTPException(400, "no valid jobs to score")
+    else:
+        pending = services.select_pending_jobs(
+            session, limit=200, include_stale=body.include_stale
+        )
+        ids = [j.id for j in pending]
 
     # Baseline scoring uses the (cheaper) scoring model, not the generation model that
     # drafting/tailored re-scoring use.
@@ -410,7 +463,7 @@ def start_draft_batch(
     if not ids:
         raise HTTPException(400, "no valid jobs to draft")
 
-    model = get_setting(session, AI_MODEL_KEY)
+    model = generation_model(session, provider)
     fn = functools.partial(
         _run_draft_batch, provider=provider, model=model, job_ids=ids
     )
@@ -423,7 +476,7 @@ def suggest_roles_endpoint(
     session: Session = Depends(get_session),
     provider: str = Depends(require_ai_ready),
 ) -> SearchProfileOut:
-    model = get_setting(session, AI_MODEL_KEY)
+    model = generation_model(session, provider)
     try:
         profile = suggest.suggest_roles(session, provider, model=model)
     except HTTPException:
