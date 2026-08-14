@@ -2,9 +2,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import Integer, cast, func
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
@@ -89,6 +91,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(OperationalError)
+async def _database_locked(_request: Request, exc: OperationalError):
+    """Turn a lost race for SQLite's write lock into an actionable 503.
+
+    SQLite allows exactly one writer at a time. Nothing here should hold the lock
+    long enough for a UI mutation to exhaust ``busy_timeout`` — ingest writes in
+    short batches with no transaction open across its network I/O, precisely so
+    it doesn't — but this is the backstop: if some future long-running writer
+    reintroduces the problem, the user gets "try again" rather than an opaque 500,
+    and the cause is named in the response instead of only in a traceback.
+    """
+    if "database is locked" not in str(exc).lower():
+        raise exc
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "2"},
+        content={
+            "detail": "The database is busy with a background job. Please try again."
+        },
+    )
+
 
 # AI provider + task endpoints, and the per-concern routers split out of this
 # module (resume upload, search profile, tailored drafts).

@@ -77,7 +77,9 @@ def test_run_ingest_reports_per_source_progress(monkeypatch):
 
 def test_run_ingest_isolates_a_failing_source(monkeypatch):
     """One source raising mid-fetch is logged and skipped — the sources before and
-    after it still persist, and the failed source's partial rows/stats are dropped."""
+    after it still persist, and the failed source's *unwritten* rows/stats are
+    dropped. Here the boom source fails within its first batch, so nothing of its
+    survives; see the test below for a failure past a batch boundary."""
     e = _engine()
     monkeypatch.setattr(ingest, "engine", lambda: e)
     seen = []
@@ -98,6 +100,61 @@ def test_run_ingest_isolates_a_failing_source(monkeypatch):
     assert companies == {"Alpha Co", "Gamma Co"}
     # Stats reflect only the two good rows (the failed source's counts were restored).
     assert stats.inserted == 2
+
+
+def test_run_ingest_keeps_batches_committed_before_a_source_fails(monkeypatch):
+    """A source that dies part-way keeps the batches it already committed.
+
+    Writing in batches (so the write lock is never held across the source's
+    network I/O) narrows failure isolation from per-source to per-batch: a blip
+    late in a several-hundred-slug board no longer discards everything pulled
+    before it. Only the in-flight batch is lost.
+    """
+    e = _engine()
+    monkeypatch.setattr(ingest, "engine", lambda: e)
+
+    class _LateBoom:
+        name = "late-boom"
+
+        def fetch(self):
+            for i in range(5):
+                yield _raw(f"late-{i}", company=f"Late Co {i}")
+            raise ValueError("died after the first batches committed")
+
+    stats = ingest.run_ingest(sources=[_LateBoom()], batch_size=2)
+
+    # Two full batches (4 rows) committed; the 5th row was still in the unwritten
+    # partial batch when the source raised, so it is dropped along with its stats.
+    with Session(e) as s:
+        companies = {j.company.name for j in s.exec(select(JobPosting)).all()}
+    assert companies == {f"Late Co {i}" for i in range(4)}
+    assert stats.inserted == 4
+
+
+def test_run_ingest_dedupes_across_sources_when_batched(monkeypatch):
+    """Cross-source dedupe survives the switch from one shared session to
+    per-batch sessions: batches commit before the next reads, so a later source
+    still sees an earlier source's rows."""
+    e = _engine()
+    monkeypatch.setattr(ingest, "engine", lambda: e)
+
+    def _from(source, sid):
+        # Same company + title from two *different* sources, which is what the
+        # cross-source hash keys on (the same-source title rule would otherwise
+        # catch it first and never exercise this path).
+        raw = _raw(sid, title="Senior Software Engineer", company="Acme")
+        raw.source = source
+        return raw
+
+    sources = [
+        FakeSource("alpha", [_from("greenhouse", "a1")]),
+        FakeSource("beta", [_from("lever", "b1")]),
+    ]
+    stats = ingest.run_ingest(sources=sources, batch_size=1)
+
+    assert stats.fetched == 2
+    assert stats.inserted == 1
+    assert stats.skipped_cross_source == 1
 
 
 def test_run_ingest_without_cb_is_unchanged(monkeypatch):
