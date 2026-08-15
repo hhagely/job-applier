@@ -1,4 +1,4 @@
-import { api } from '$lib/api';
+import { api, errorReason } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
@@ -30,7 +30,7 @@ export const actions: Actions = {
 			const ai = await api.selectProvider(fetch, serverApiBase(), name, model, scoringModel);
 			return { ok: true, ai, message: `Selected ${name}.` };
 		} catch (e) {
-			return fail(422, { error: (e as Error).message });
+			return fail(422, { error: errorReason(e) });
 		}
 	},
 
@@ -45,7 +45,7 @@ export const actions: Actions = {
 			const ai = await api.selectProvider(fetch, serverApiBase(), name, undefined, '');
 			return { ok: true, ai, message: 'Scoring model reset to the provider default.' };
 		} catch (e) {
-			return fail(422, { error: (e as Error).message });
+			return fail(422, { error: errorReason(e) });
 		}
 	},
 
@@ -56,7 +56,7 @@ export const actions: Actions = {
 			const test = await api.testProvider(fetch, serverApiBase(), prompt);
 			return { ok: true, test };
 		} catch (e) {
-			return fail(400, { error: (e as Error).message });
+			return fail(400, { error: errorReason(e) });
 		}
 	}
 };

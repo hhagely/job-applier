@@ -23,6 +23,7 @@
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { sourceInfo, type Ease } from '$lib/sources';
+	import { toast } from '$lib/toast.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -106,6 +107,13 @@
 	let selected = $state<Set<number>>(new Set());
 	let bulkStatus = $state<ApplicationStatus>('interested');
 	let submitting = $state(false);
+
+	// Fallback for a bulk action that fails without a reason. Same reasoning as
+	// StatusTrackingCard: this page never renders `form.error`, so a rejected
+	// bulk apply was completely silent — the button just went back to "Apply"
+	// with the selection intact, which reads as "the app ignored my click"
+	// rather than "the database is busy, try again".
+	const BULK_FAILED = 'Could not apply that to the selected jobs.';
 	let copied = $state(false);
 	let copyTimer: ReturnType<typeof setTimeout> | null = null;
 	let selectedId = $state<number | null>(null);
@@ -500,6 +508,11 @@
 				if (result.type === 'success') {
 					selected = new Set();
 					await invalidateAll();
+				} else if (result.type === 'failure') {
+					const err = result.data?.error;
+					toast(typeof err === 'string' && err ? err : BULK_FAILED);
+				} else if (result.type === 'error') {
+					toast(result.error instanceof Error ? result.error.message : BULK_FAILED);
 				}
 				await update({ reset: false });
 			};

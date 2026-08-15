@@ -1,4 +1,4 @@
-import { api } from '$lib/api';
+import { api, errorReason } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
@@ -35,7 +35,7 @@ export const actions: Actions = {
 			const canSuggest = await aiCanSuggest(fetch);
 			return { ok: true, resume, staleCount, nextSteps: true, aiCanSuggest: canSuggest };
 		} catch (e) {
-			return fail(422, { error: (e as Error).message });
+			return fail(422, { error: errorReason(e) });
 		}
 	},
 
@@ -51,7 +51,7 @@ export const actions: Actions = {
 			const canSuggest = await aiCanSuggest(fetch);
 			return { ok: true, kept: count, nextSteps: true, aiCanSuggest: canSuggest };
 		} catch (e) {
-			return fail(409, { error: (e as Error).message });
+			return fail(409, { error: errorReason(e) });
 		}
 	},
 
@@ -66,7 +66,7 @@ export const actions: Actions = {
 			return { ok: true, task_id, nextSteps: true, aiCanSuggest: true };
 		} catch (e) {
 			// 409 when no provider is selected / no active resume.
-			return fail(409, { error: (e as Error).message });
+			return fail(409, { error: errorReason(e) });
 		}
 	}
 };

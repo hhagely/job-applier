@@ -317,6 +317,22 @@ export class ApiError extends Error {
 	}
 }
 
+/** The reason to show the user for a failed call: the API's own sentence when
+ *  there is one (e.g. "The database is busy with a background job"), else the
+ *  raw error text. These messages are surfaced verbatim — form results toast
+ *  them — so the bare `API <path> -> <status>: {...}` envelope won't do.
+ *
+ *  Reads `detail` structurally rather than testing `instanceof ApiError`: the
+ *  class identity isn't guaranteed to be shared across the server/client module
+ *  boundary (or a test's module mock), and a duck-typed read degrades to the raw
+ *  message instead of throwing. */
+export function errorReason(e: unknown): string {
+	const detail = (e as { detail?: unknown } | null)?.detail;
+	if (typeof detail === 'string' && detail) return detail;
+	const message = (e as { message?: unknown } | null)?.message;
+	return typeof message === 'string' && message ? message : 'request failed';
+}
+
 /** FastAPI puts the human-facing reason in `detail`; pull it out when present. */
 function parseDetail(body: string): string | undefined {
 	try {

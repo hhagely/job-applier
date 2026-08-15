@@ -1,4 +1,10 @@
-import { api, APPLICATION_STATUSES, type ApplicationStatus, type FilterStatus } from '$lib/api';
+import {
+	api,
+	APPLICATION_STATUSES,
+	errorReason,
+	type ApplicationStatus,
+	type FilterStatus
+} from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { activeJobs } from '$lib/jobFilters';
 import { jobActions, parseFollowup } from '$lib/jobActions.server';
@@ -46,7 +52,7 @@ export const actions: Actions = {
 			await api.bulkSetStatus(fetch, serverApiBase(), ids, status, { next_followup_at });
 			return { ok: true, count: ids.length, status };
 		} catch (e) {
-			return fail(400, { error: (e as Error).message });
+			return fail(400, { error: errorReason(e) });
 		}
 	},
 	bulkUnemployment: async ({ request, fetch }) => {
@@ -63,7 +69,7 @@ export const actions: Actions = {
 			await api.bulkSetUnemployment(fetch, serverApiBase(), ids, used);
 			return { ok: true, count: ids.length };
 		} catch (e) {
-			return fail(400, { error: (e as Error).message });
+			return fail(400, { error: errorReason(e) });
 		}
 	},
 
@@ -81,7 +87,7 @@ export const actions: Actions = {
 			return { ok: true, task_id, kind: 'draft' };
 		} catch (e) {
 			// 409 when no provider selected / no active resume.
-			return fail(409, { error: (e as Error).message });
+			return fail(409, { error: errorReason(e) });
 		}
 	},
 
