@@ -24,8 +24,10 @@ from job_applier.models import Application, ApplicationStatus, JobPosting, engin
 
 # Postings that match prune criteria have their description + raw blob cleared
 # to keep the DB small. The dedupe columns (source/source_id/dedupe_hash/
-# cross_source_hash) and the normalized-title inputs (title/location/company)
-# stay intact so future ingests still see these as duplicates.
+# cross_source_hash/jd_fingerprint) and the normalized-title inputs
+# (title/location/company) stay intact so future ingests still see these as
+# duplicates. The description is the *input* to the JD SimHash, so prune
+# fingerprints the row on its way out (see _preserve_jd_fingerprint).
 PRUNE_POSTED_AFTER_DAYS = 30
 PRUNE_INGESTED_AFTER_DAYS = 14
 
@@ -35,6 +37,21 @@ class PruneStats:
     scanned: int = 0
     lightened: int = 0
     bytes_freed: int = 0
+
+
+def _preserve_jd_fingerprint(posting: JobPosting) -> None:
+    """Compute the JD SimHash before the description that produces it is cleared.
+
+    ``dedupe_jd_backfill`` derives ``jd_fingerprint`` from ``description``, and
+    ``ingest_one`` is INSERT-only — nothing ever re-populates a description that
+    prune blanked. So a user who runs ``prune`` before ``dedupe-jd`` would drop
+    every pruned posting out of the JD near-duplicate layer permanently. One
+    cheap hash per lightened row keeps them in it. Rows already fingerprinted
+    are left alone (the value is stable), and a description too thin to
+    fingerprint stays NULL exactly as the backfill would have left it.
+    """
+    if posting.jd_fingerprint is None:
+        posting.jd_fingerprint = jd_simhash(posting.description or "")
 
 
 def prune_old_postings(session: Session, now: datetime | None = None) -> PruneStats:
@@ -47,7 +64,8 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
       applied to
 
     Dedupe still works against these rows because the hash columns and the
-    normalized-title inputs are untouched.
+    normalized-title inputs are untouched, and because each row is
+    fingerprinted (if it wasn't already) *before* its description is cleared.
     """
     now = now or datetime.now(timezone.utc)
     posted_cutoff = now - timedelta(days=PRUNE_POSTED_AFTER_DAYS)
@@ -94,6 +112,7 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
                 stats.bytes_freed += len(json.dumps(p.raw))
             except (TypeError, ValueError):
                 pass
+        _preserve_jd_fingerprint(p)
         p.description = ""
         p.raw = {}
         session.add(p)
