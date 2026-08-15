@@ -43,6 +43,7 @@ from job_applier.api.schemas import (
     UnemploymentUpdate,
 )
 from job_applier.config import settings
+from job_applier.contracts import parse_iso_date
 from job_applier.models.db import (
     Application,
     ApplicationStatus,
@@ -102,8 +103,13 @@ async def _database_locked(_request: Request, exc: OperationalError):
     it doesn't — but this is the backstop: if some future long-running writer
     reintroduces the problem, the user gets "try again" rather than an opaque 500,
     and the cause is named in the response instead of only in a traceback.
+
+    Matches on ``is locked`` because SQLite has two busy errors with two different
+    messages: ``SQLITE_BUSY`` -> "database is locked" and ``SQLITE_LOCKED`` ->
+    "database table is locked". Anything else (a missing table, a bad column) is a
+    real bug and is re-raised so it stays a 500 rather than a misleading "retry".
     """
-    if "database is locked" not in str(exc).lower():
+    if "is locked" not in str(exc).lower():
         raise exc
     return JSONResponse(
         status_code=503,
@@ -347,14 +353,18 @@ def set_unemployment_bulk(
     if not body.job_ids:
         raise HTTPException(422, "job_ids must not be empty")
     now = datetime.now(timezone.utc)
-    results: list[Application] = []
+    # Resolve every id BEFORE touching a single row: a 404 half-way through a
+    # selection must leave nothing marked, so the user can fix the request and
+    # retry without wondering which jobs already got flagged.
+    jobs: list[JobPosting] = []
     for job_id in body.job_ids:
         job = session.get(JobPosting, job_id)
         if job is None:
             raise HTTPException(404, f"job {job_id} not found")
-        app_row = _mark_unemployment(job, used=body.used, now=now)
+        jobs.append(job)
+    results = [_mark_unemployment(j, used=body.used, now=now) for j in jobs]
+    for app_row in results:
         session.add(app_row)
-        results.append(app_row)
     session.commit()
     return [_application_out(a) for a in results]
 
@@ -540,12 +550,16 @@ def company_coverage(session: Session = Depends(get_session)):
         ).group_by(SourceSlug.source)
     ).all()
     by_source = {source: int(n) for source, n, _ in rows}
-    last = get_setting(session, COMPANY_CHECKED_KEY)
+    # The checked-at setting is a free-form string column, so parse it leniently:
+    # a hand-edited or half-written value must degrade to "never checked", not 500
+    # this endpoint. /search loads it as a page dependency, so a hard failure here
+    # would lock the user out of the very page that resets the list.
+    last = parse_iso_date(get_setting(session, COMPANY_CHECKED_KEY))
     return CompanyCoverageOut(
         total=sum(by_source.values()),
         enabled=sum(int(en or 0) for _, _, en in rows),
         by_source=dict(sorted(by_source.items(), key=lambda kv: -kv[1])),
-        last_checked_at=datetime.fromisoformat(last) if last else None,
+        last_checked_at=last,
     )
 
 
