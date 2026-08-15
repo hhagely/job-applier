@@ -41,12 +41,41 @@ export interface TaskRunner {
 	setError(message: string | null): void;
 }
 
+/** How long a successful start may go without its first stream snapshot before
+ *  we stop believing one is coming. Generous enough for a slow first snapshot,
+ *  short enough that a dead stream doesn't disable the button all session. */
+const FIRST_SNAPSHOT_TIMEOUT_MS = 8000;
+
 export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 	let starting = $state(false);
 	let error = $state<string | null>(null);
+	let startTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function currentRef(): string | undefined {
 		return typeof opts.ref === 'function' ? opts.ref() : opts.ref;
+	}
+
+	function clearStartTimer(): void {
+		if (startTimer === null) return;
+		clearTimeout(startTimer);
+		startTimer = null;
+	}
+
+	// The task started fine, so `starting` waits for the stream to confirm it. If
+	// the stream is dead (backend restart, proxy reap, EventSource out of retries)
+	// that confirmation never comes and `busy` used to latch true until a full
+	// reload. Time it out instead and say so: the task itself is still running
+	// server-side, we just stopped being able to watch it.
+	function armStartTimer(): void {
+		clearStartTimer();
+		startTimer = setTimeout(() => {
+			startTimer = null;
+			if (!starting) return;
+			starting = false;
+			error = taskStream.streamDown
+				? 'Lost the connection to the app server. The task is probably still running — reload to see its result.'
+				: 'Started, but no progress arrived. The task is probably still running — reload to see its result.';
+		}, FIRST_SNAPSHOT_TIMEOUT_MS);
 	}
 
 	// Clear the optimistic "starting" flag once the stream has picked up the task,
@@ -54,13 +83,21 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 	let lastStatus: TaskSnapshot['status'] | undefined;
 	$effect(() => {
 		const snap = taskStream.latest(opts.kind, currentRef());
-		if (starting && snap) starting = false;
+		if (starting && snap) {
+			starting = false;
+			clearStartTimer();
+		}
 		const status = snap?.status;
 		if (status && status !== 'running' && lastStatus === 'running') {
 			void opts.onSettled?.(snap!);
 		}
 		lastStatus = status;
 	});
+
+	// Reads nothing reactive, so it runs once: its teardown is just "drop the
+	// pending timer when the owning component goes away". Kept out of the effect
+	// above, whose teardown would fire on every re-run and disarm a live timer.
+	$effect(() => clearStartTimer);
 
 	return {
 		get snap() {
@@ -75,6 +112,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 		dismiss() {
 			const snap = taskStream.latest(opts.kind, currentRef());
 			if (snap) taskStream.dismiss(snap.id);
+			clearStartTimer();
 			error = null;
 		},
 		setError(message: string | null) {
@@ -86,10 +124,13 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 			return async ({ result }) => {
 				if (result.type === 'success' && result.data?.task_id) {
 					// Task is live on the stream now; the $effect clears `starting`
-					// once its first snapshot arrives (no poll, no flicker).
+					// once its first snapshot arrives (no poll, no flicker) — and the
+					// timer clears it if the stream never delivers one.
+					armStartTimer();
 					return;
 				}
 				starting = false;
+				clearStartTimer();
 				if (result.type === 'failure') {
 					error = (result.data?.error as string) ?? opts.failMessage ?? 'action failed';
 				}
