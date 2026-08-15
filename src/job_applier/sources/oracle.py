@@ -244,14 +244,32 @@ def _fetch_site(client: httpx.Client, site: OracleSite) -> Iterable[RawJob]:
 
         try:
             data = resp.json()
-        except ValueError:
+        except ValueError as e:
+            log.warning(
+                "oracle[%s] list returned non-JSON at offset %d, "
+                "stopping pagination: %s",
+                site.api_host,
+                offset,
+                e,
+            )
             break
 
-        postings, total = _parse_list(data)
+        if not isinstance(data, dict):
+            log.warning(
+                "oracle[%s] list returned non-object payload at offset %d, "
+                "skipping site",
+                site.api_host,
+                offset,
+            )
+            break
+
+        postings, total = _parse_list(data, site.api_host)
         if not postings:
             break
 
         for p in postings:
+            if not isinstance(p, dict):
+                continue
             req_id = str(p.get("Id") or "").strip()
             if not req_id or req_id in seen_ids:
                 continue
@@ -279,23 +297,58 @@ def _fetch_site(client: httpx.Client, site: OracleSite) -> Iterable[RawJob]:
         time.sleep(0.05)
 
 
-def _parse_list(data: dict) -> tuple[list[dict], int | None]:
+def _parse_list(data: object, label: str = "?") -> tuple[list[dict], int | None]:
     """Pull the requisition list and total count out of a CE list response.
 
     The payload shape is ``{"items": [{"TotalJobsCount": N,
     "requisitionList": [...]}]}``. We tolerate the list also appearing at the
     top level in case a tenant flattens it.
+
+    Every level is shape-checked: a tenant behind a WAF can answer with a JSON
+    array or a bare string, and an unguarded ``.get`` there would raise out of
+    the generator and abandon every remaining Oracle site for the run.
+
+    A malformed shape returns no postings, which the caller can't tell apart
+    from a site with no openings -- so the malformed branches log. An empty
+    ``requisitionList`` is the genuinely-empty case and stays quiet.
     """
+    if not isinstance(data, dict):
+        return [], None
     items = data.get("items")
     if isinstance(items, list) and items:
-        first = items[0] or {}
+        if not isinstance(items[0], dict):
+            log.warning("oracle[%s] list 'items[0]' is not an object, skipping site", label)
+            return [], None
+        first = items[0]
         postings = first.get("requisitionList") or []
-        total = first.get("TotalJobsCount")
-        return (postings if isinstance(postings, list) else []), total
+        total = _as_int(first.get("TotalJobsCount"))
+        if not isinstance(postings, list):
+            log.warning(
+                "oracle[%s] 'requisitionList' is not an array, skipping site", label
+            )
+            return [], total
+        return postings, total
     top = data.get("requisitionList")
     if isinstance(top, list):
-        return top, data.get("TotalJobsCount")
+        return top, _as_int(data.get("TotalJobsCount"))
+    if items is not None:
+        log.warning(
+            "oracle[%s] list payload has no usable 'items' array, skipping site", label
+        )
     return [], None
+
+
+def _as_int(value: object) -> int | None:
+    """Coerce a scraped count to ``int``; ``None`` when it isn't numeric.
+
+    ``TotalJobsCount`` is untrusted scraped JSON -- a tenant returning it as a
+    string would otherwise blow up the ``offset >= total`` pagination check
+    with a ``TypeError``.
+    """
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
 
 
 def _fetch_detail(
@@ -325,10 +378,15 @@ def _fetch_detail(
     return _normalize(site, posting, detail)
 
 
-def _first_item(data: dict) -> dict | None:
+def _first_item(data: object) -> dict | None:
+    # Shape-checked for the same reason as ``_parse_list``: this runs outside
+    # the caller's try/except, so a non-dict detail payload would escape the
+    # generator rather than costing us one posting.
+    if not isinstance(data, dict):
+        return None
     items = data.get("items")
     if isinstance(items, list) and items:
-        return items[0] or {}
+        return items[0] if isinstance(items[0], dict) else None
     # Some tenants return the detail object at the top level.
     if data.get("Id"):
         return data

@@ -120,17 +120,47 @@ def _fetch_board(client: httpx.Client, board: WorkdayBoard) -> Iterable[RawJob]:
 
             try:
                 data = resp.json()
-            except ValueError:
+            except ValueError as e:
+                # Log it: a silent break here truncates the tenant mid-page,
+                # and "40 of 800 jobs" is indistinguishable from "40 jobs".
+                log.warning(
+                    "workday[%s] search %r returned non-JSON at offset %d, "
+                    "stopping pagination: %s",
+                    board.tenant,
+                    term,
+                    offset,
+                    e,
+                )
                 break
 
             if not isinstance(data, dict):
+                log.warning(
+                    "workday[%s] search %r returned non-object payload at "
+                    "offset %d, stopping pagination",
+                    board.tenant,
+                    term,
+                    offset,
+                )
                 break
 
-            postings = data.get("jobPostings") or []
+            postings = data.get("jobPostings")
+            if not isinstance(postings, list):
+                # Distinct from the empty-page case below, which is just how
+                # a search term runs out: this abandons the tenant.
+                log.warning(
+                    "workday[%s] search %r has a non-array 'jobPostings' at "
+                    "offset %d, stopping pagination",
+                    board.tenant,
+                    term,
+                    offset,
+                )
+                break
             if not postings:
                 break
 
             for p in postings:
+                if not isinstance(p, dict):
+                    continue
                 path = p.get("externalPath")
                 if not path or path in seen_paths:
                     continue

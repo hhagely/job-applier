@@ -119,12 +119,28 @@ class WorkableSource:
             )
             if payload is None:
                 return
-            results = payload.get("results") or []
+            # Untrusted scraped JSON: a board answering with an array (or a
+            # WAF interstitial) would otherwise raise out of this generator and
+            # take every remaining slug down with it.
+            if not isinstance(payload, dict):
+                log.warning(
+                    "workable[%s] list returned non-object payload, skipping", slug
+                )
+                return
+            results = payload.get("results")
+            if not isinstance(results, list):
+                # Distinct from the empty-page case below: this abandons the
+                # whole board, so it can't be silent.
+                log.warning(
+                    "workable[%s] list has a non-array 'results', skipping", slug
+                )
+                return
             if not results:
                 return
             for item in results:
-                yield item
                 pulled += 1
+                if isinstance(item, dict):
+                    yield item
                 if pulled >= MAX_JOBS_PER_SLUG:
                     return
             next_token = payload.get("nextPage")
@@ -188,6 +204,8 @@ class WorkableSource:
 
 
 def _normalize(company_slug: str, item: dict) -> RawJob | None:
+    if not isinstance(item, dict):
+        return None
     title = (item.get("title") or "").strip()
     shortcode = item.get("shortcode")
     if not title or not shortcode:
