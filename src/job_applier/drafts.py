@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Literal
 
 from markdown_it import MarkdownIt
+from markdown_it.renderer import RendererHTML
 
 from job_applier.config import settings
 
@@ -64,16 +65,45 @@ a { color: #2257a5; text-decoration: none; }
 strong { font-weight: 600; }
 """
 
+
+class _NoAnchorRenderer(RendererHTML):
+    """HTML renderer that emits link *text* but never an ``<a href>`` element.
+
+    Last gate on the guarantee ``ai/bans.strip_exfil_vectors`` sets up: a draft is
+    physically sent to an employer, and job descriptions are untrusted scraped text,
+    so a prompt-injected draft must not reach the recipient carrying a clickable
+    tracking link. ``strip_exfil_vectors`` flattens links to plain text at the
+    ``save_markdown`` choke point; dropping the anchor tokens here means the print
+    HTML holds no clickable link even if markdown reaches this renderer by some other
+    path (a future writer that bypasses the choke point, or a link shape the strip
+    regexes don't cover). Note the risk this closes is a *human* clicking the link in
+    the delivered PDF, not a fetch during rendering: ``<a href>`` is not fetched at
+    print time, and ``pdf.py``'s route guard blocks every subresource anyway.
+    """
+
+    def link_open(self, tokens, idx, options, env) -> str:
+        return ""
+
+    def link_close(self, tokens, idx, options, env) -> str:
+        return ""
+
+
 # Soft newlines become <br> so single-line-break constructs keep their layout:
 # on the resume, each Skills category and the three-line per-role header sit on their
 # own source line with no blank line between them, and would otherwise collapse into
 # one run-on paragraph; on the letter, the salutation/signature lines.
+#
+# `linkify` is deliberately NOT enabled: it would turn the bare URLs that
+# `strip_exfil_vectors` deliberately produced (it flattens `[text](url)` to plain
+# text precisely so the URL is not clickable) straight back into `<a href>` links,
+# undoing the strip. Do not re-enable it as a convenience. `_NoAnchorRenderer` is the
+# belt to that braces, so the outcome no longer depends on this option's value.
+_MD_OPTIONS = {"html": False, "breaks": True}
+
 _md = MarkdownIt(
-    "commonmark", {"linkify": True, "html": False, "breaks": True}
+    "commonmark", _MD_OPTIONS, renderer_cls=_NoAnchorRenderer
 ).enable("table")
-_md_letter = MarkdownIt(
-    "commonmark", {"linkify": True, "html": False, "breaks": True}
-)
+_md_letter = MarkdownIt("commonmark", _MD_OPTIONS, renderer_cls=_NoAnchorRenderer)
 
 _RENDER: dict[DraftKind, tuple[MarkdownIt, str]] = {
     "resume": (_md, _PRINT_CSS),
