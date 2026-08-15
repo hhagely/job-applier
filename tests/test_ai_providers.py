@@ -10,9 +10,20 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from job_applier import services
 from job_applier.ai import providers
 from job_applier.api.app import app
-from job_applier.models.db import AppSetting, get_session, get_setting, set_setting
+from job_applier.contracts import AI_MODEL_KEY_LEGACY, ai_model_key
+from job_applier.models.db import (
+    AppSetting,
+    FilterStatus,
+    JobPosting,
+    MatchScore,
+    Resume,
+    get_session,
+    get_setting,
+    set_setting,
+)
 
 
 # ---- providers.detect_all -------------------------------------------------
@@ -257,8 +268,44 @@ def test_resolve_scoring_model_fallback_chain():
         assert ai_mod.resolve_scoring_model(s, "claude") == "haiku"
         # Cleared override + a provider with no default -> the generation model.
         set_setting(s, ai_mod.AI_SCORING_MODEL_KEY, "")
-        set_setting(s, ai_mod.AI_MODEL_KEY, "llama3.1")
+        set_setting(s, ai_model_key("ollama"), "llama3.1")
         assert ai_mod.resolve_scoring_model(s, "ollama") == "llama3.1"
+        # ...and that generation model is the *provider's own*, so it can't leak
+        # into another provider's scoring run.
+        assert ai_mod.resolve_scoring_model(s, "codex") is None
+
+
+def test_generation_model_is_per_provider():
+    from job_applier.api import ai as ai_mod
+
+    engine = _mem_session()
+    with Session(engine) as s:
+        assert ai_mod.generation_model(s, "ollama") is None
+        set_setting(s, ai_model_key("ollama"), "llama3.1")
+        assert ai_mod.generation_model(s, "ollama") == "llama3.1"
+        # A model typed for one CLI is meaningless to another and must not be read
+        # back for it — this is the drift that broke drafting after a switch.
+        assert ai_mod.generation_model(s, "claude") is None
+        # Cleared reads as "use the CLI's own default", not as "".
+        set_setting(s, ai_model_key("ollama"), "")
+        assert ai_mod.generation_model(s, "ollama") is None
+
+
+def test_legacy_global_model_is_honored_for_ollama_only():
+    """Installs predating the namespacing kept one un-suffixed ``ai_model`` row.
+    Settings only rendered that input for Ollama, so it keeps working there — and
+    nowhere else, which is what stops it reaching a newly-selected CLI."""
+    from job_applier.api import ai as ai_mod
+
+    engine = _mem_session()
+    with Session(engine) as s:
+        set_setting(s, AI_MODEL_KEY_LEGACY, "qwen2.5:14b")
+        assert ai_mod.generation_model(s, "ollama") == "qwen2.5:14b"
+        assert ai_mod.generation_model(s, "claude") is None
+        assert ai_mod.generation_model(s, "gemini") is None
+        # A saved Ollama model supersedes it.
+        set_setting(s, ai_model_key("ollama"), "llama3.1")
+        assert ai_mod.generation_model(s, "ollama") == "llama3.1"
 
 
 def test_run_unknown_provider_raises():
@@ -412,7 +459,8 @@ def test_app_setting_roundtrip():
 
 
 @pytest.fixture
-def client():
+def client_and_engine():
+    """The API client plus its engine, for endpoint tests that seed rows."""
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -424,8 +472,13 @@ def client():
 
     app.dependency_overrides[get_session] = _session_dep
     with TestClient(app) as c:
-        yield c
+        yield c, engine
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client(client_and_engine):
+    return client_and_engine[0]
 
 
 def _fake_infos(*available):
@@ -601,6 +654,59 @@ def test_ollama_scoring_model_validated_against_pulled_list(client, monkeypatch)
     )
 
 
+def test_switching_provider_never_hands_the_old_model_to_the_new_cli(
+    client, monkeypatch
+):
+    """The generation model is per provider, so a switch can't leave a stale one.
+
+    Regression: one global ``ai_model`` row was written only when a model was
+    submitted and never cleared. Settings renders the Model input for Ollama alone,
+    so selecting Claude afterwards sent no model, the Ollama value survived, and
+    every generation flow ran ``claude -p ... --model llama3.1`` -> non-zero exit.
+    Drafting, suggest-roles and the Test round-trip broke together with nothing on
+    the page able to clear the value.
+    """
+    monkeypatch.setattr(
+        providers, "detect_all", lambda: _fake_infos("claude", "ollama")
+    )
+    seen: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        providers,
+        "run",
+        lambda name, _p, **kw: seen.append((name, kw.get("model"))) or "pong",
+    )
+
+    client.put("/api/ai/provider", json={"name": "ollama", "model": "llama3.1"})
+    client.post("/api/ai/test", json={})
+    assert seen[-1] == ("ollama", "llama3.1")
+
+    # What the UI actually sends when the provider isn't Ollama: no model field.
+    client.put("/api/ai/provider", json={"name": "claude"})
+    client.post("/api/ai/test", json={})
+    assert seen[-1] == ("claude", None), "stale model reached the new CLI"
+
+    # And Ollama's own choice survives the round trip rather than being wiped.
+    client.put("/api/ai/provider", json={"name": "ollama"})
+    client.post("/api/ai/test", json={})
+    assert seen[-1] == ("ollama", "llama3.1")
+    assert client.get("/api/ai/providers").json()["model"] == "llama3.1"
+
+
+def test_blank_model_clears_that_providers_choice(client, monkeypatch):
+    # Submitting "" is the explicit "use the CLI's own default" — distinct from
+    # omitting the field, which leaves the stored value alone.
+    monkeypatch.setattr(providers, "detect_all", lambda: _fake_infos("ollama"))
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        providers, "run", lambda _n, _p, **kw: seen.append(kw.get("model")) or "pong"
+    )
+
+    client.put("/api/ai/provider", json={"name": "ollama", "model": "llama3.1"})
+    client.put("/api/ai/provider", json={"name": "ollama", "model": ""})
+    client.post("/api/ai/test", json={})
+    assert seen[-1] is None
+
+
 def test_selected_cleared_when_provider_disappears(client, monkeypatch):
     monkeypatch.setattr(providers, "detect_all", lambda: _fake_infos("claude"))
     client.put("/api/ai/provider", json={"name": "claude"})
@@ -637,6 +743,106 @@ def test_test_endpoint_reports_provider_error(client, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False and "cli exploded" in body["error"]
+
+
+# ---- score-pending id resolution ------------------------------------------
+
+
+def _seed_scored_job(engine) -> int:
+    """A passed job that already carries a fresh score against the active resume —
+    i.e. one the pending-match queue deliberately leaves out."""
+    with Session(engine) as s:
+        set_setting(s, "ai_provider", "claude")
+        resume = Resume(
+            original_filename="r.pdf",
+            pdf_path="/tmp/r.pdf",
+            extracted_text="TypeScript, Node.js",
+            is_active=True,
+        )
+        job = JobPosting(
+            source="test",
+            source_id="t-1",
+            url="https://e.com/1",
+            title="Senior Engineer",
+            company_name="Acme",
+            description="We use TypeScript.",
+            dedupe_hash="h-1",
+            filter_status=FilterStatus.passed,
+        )
+        s.add(resume)
+        s.add(job)
+        s.commit()
+        s.refresh(resume)
+        s.refresh(job)
+        s.add(MatchScore(job_id=job.id, score=80, resume_id=resume.id))
+        s.commit()
+        return job.id
+
+
+def test_score_pending_scores_exactly_the_ids_it_is_given(
+    client_and_engine, monkeypatch
+):
+    """Regression: the requested ids were intersected with the pending-match queue
+    first, so a targeted re-score of an already-scored job (or of anything outside
+    the 200-row window) returned 200 with a task that settled `done 0/0` — success
+    reported for work that never happened. ``scoring.score_pending`` documents the
+    opposite: "When ``job_ids`` is given those exact jobs are scored"."""
+    from job_applier.ai import tasks as ai_tasks
+    from job_applier.api import ai as ai_mod
+
+    c, engine = client_and_engine
+    job_id = _seed_scored_job(engine)
+
+    # The premise: this job is NOT in the queue the endpoint used to filter against.
+    with Session(engine) as s:
+        assert services.select_pending_jobs(s, limit=200, include_stale=True) == []
+
+    started: dict = {}
+    monkeypatch.setattr(
+        ai_mod.tasks,
+        "start_task",
+        lambda kind, total, fn, ref=None: started.update(total=total, fn=fn) or "t-1",
+    )
+    r = c.post("/api/ai/score-pending", json={"job_ids": [job_id, job_id]})
+    assert r.status_code == 200
+    assert started["total"] == 1  # deduped, and not filtered away
+
+    # Run the worker body inline (no thread) with the scorer stubbed: the ids we
+    # asked for are the ids scoring is handed.
+    scored: dict = {}
+    monkeypatch.setattr(ai_mod.scoring, "open_session", lambda: Session(engine))
+    monkeypatch.setattr(
+        ai_mod.scoring, "score_pending", lambda _s, **kw: scored.update(kw) or []
+    )
+    started["fn"](ai_tasks.TaskState(id="t-1", kind="score_pending", total=1))
+    assert scored["job_ids"] == [job_id]
+
+
+def test_score_pending_rejects_ids_that_resolve_to_nothing(client_and_engine):
+    # Mirrors draft-batch: a request naming only unknown jobs is an error, not a
+    # task that quietly does nothing.
+    c, engine = client_and_engine
+    _seed_scored_job(engine)
+    r = c.post("/api/ai/score-pending", json={"job_ids": [9999]})
+    assert r.status_code == 400
+
+
+def test_score_pending_without_ids_still_uses_the_queue(client_and_engine, monkeypatch):
+    # The unfiltered path is unchanged: an empty queue starts a 0-total task rather
+    # than 400ing, which is what the dashboard's "nothing to score" state relies on.
+    from job_applier.api import ai as ai_mod
+
+    c, engine = client_and_engine
+    _seed_scored_job(engine)
+    started: dict = {}
+    monkeypatch.setattr(
+        ai_mod.tasks,
+        "start_task",
+        lambda kind, total, fn, ref=None: started.update(total=total) or "t-2",
+    )
+    r = c.post("/api/ai/score-pending", json={})
+    assert r.status_code == 200
+    assert started["total"] == 0
 
 
 # ---- real-CLI sandbox proof (gated) ---------------------------------------
