@@ -57,6 +57,15 @@ export const APPLICATION_STATUSES: ApplicationStatus[] = [
 ];
 
 /**
+ * Display text for a status. The wire values are snake_case identifiers, so
+ * anything rendered to the user goes through here — otherwise a status like
+ * `no_response` reaches the queue tag looking like a database column.
+ */
+export function statusLabel(status: ApplicationStatus | StatusFacet): string {
+	return status.replace(/_/g, ' ');
+}
+
+/**
  * A queue status facet: any application status, plus `none` for a posting that
  * has no application row yet. Mirrors `StatusFacet` in api/schemas.py — it is a
  * server-side query param on /api/jobs, not just a client-side label.

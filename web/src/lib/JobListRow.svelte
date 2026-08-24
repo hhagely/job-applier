@@ -2,7 +2,7 @@
 	// One row in the Queue master list. Presentational: the parent owns selection
 	// and the selected/checked state and passes callbacks; this renders the row and
 	// its status/dup/follow-up/unemployment/draft-list tags.
-	import type { Job } from '$lib/api';
+	import { statusLabel, type Job } from '$lib/api';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import { isFollowupDue, isUsedForUnemployment } from '$lib/jobFilters';
 	import { sourceInfo } from '$lib/sources';
@@ -55,7 +55,7 @@
 			<span class="pill src-{job.source}"><span class="dot-badge"></span>{si.label}</span>
 			<span class="co">{job.company?.name ?? 'Unknown'}</span>
 			{#if job.location}· <span>{job.location}</span>{/if}
-			{#if job.application}<span class="tag status-{job.application.status}">{job.application.status}</span>{/if}
+			{#if job.application}<span class="tag status-{job.application.status}">{statusLabel(job.application.status)}</span>{/if}
 			{#if isFollowupDue(job)}<span class="tag" style="color:var(--good)">follow-up due</span>{/if}
 			{#if isUsedForUnemployment(job)}<span class="tag status-applied">✓ unemployment</span>{/if}
 			{#if job.duplicate_of != null}<span class="tag" style="color:var(--good)">dup #{job.duplicate_of}</span>{/if}
