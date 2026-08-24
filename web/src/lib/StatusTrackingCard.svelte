@@ -7,7 +7,12 @@
 	// `job_id` field — the /jobs/[id] actions ignore it and use the route param.
 	// Refresh-after-change is delegated to `onChange` (each host owns its data).
 	import { enhance } from '$app/forms';
-	import { APPLICATION_STATUSES, type Application, type ApplicationStatus } from '$lib/api';
+	import {
+		APPLICATION_STATUSES,
+		statusLabel,
+		type Application,
+		type ApplicationStatus
+	} from '$lib/api';
 	import { fmtDate, defaultFollowupDate } from '$lib/date';
 	import { toast } from '$lib/toast.svelte';
 	import type { ActionResult } from '@sveltejs/kit';
@@ -74,7 +79,7 @@
 <form method="POST" action="?/setStatus" class="row-form" use:enhance={onSaved}>
 	<input type="hidden" name="job_id" value={jobId} />
 	<select class="input" name="status" bind:value={pendingStatus} style="flex:1;min-width:9rem">
-		{#each APPLICATION_STATUSES as s (s)}<option value={s}>{s}</option>{/each}
+		{#each APPLICATION_STATUSES as s (s)}<option value={s}>{statusLabel(s)}</option>{/each}
 	</select>
 	{#if pendingStatus === 'applied'}
 		<input class="input" type="date" name="next_followup_at" bind:value={followupInput} style="width:auto" />

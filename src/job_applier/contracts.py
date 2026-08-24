@@ -47,6 +47,22 @@ AI_MODEL_KEY_LEGACY = "ai_model"
 LEGACY_AI_MODEL_PROVIDER = "ollama"
 
 
+# ---- AppSetting keys for user preferences ----------------------------------
+
+#: Days of silence after which an application is offered up as ghosted on
+#: /followups. Stored as a decimal string like every other ``AppSetting`` value.
+GHOSTED_AFTER_DAYS_KEY = "ghosted_after_days"
+
+#: Fallback when the key was never set (or holds something unparseable).
+DEFAULT_GHOSTED_AFTER_DAYS = 45
+
+#: Floor is the default follow-up interval: calling an application ghosted before
+#: its first nudge is even due would be nonsense. Ceiling is a year, which is well
+#: past the point any employer is still deciding.
+MIN_GHOSTED_AFTER_DAYS = 7
+MAX_GHOSTED_AFTER_DAYS = 365
+
+
 def ai_model_key(provider: str) -> str:
     """Setting key holding ``provider``'s generation model (drafting, suggest-roles,
     tailored re-scoring, the Test round-trip).

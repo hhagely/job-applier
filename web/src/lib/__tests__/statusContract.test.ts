@@ -14,6 +14,7 @@ const EXPECTED: string[] = [
 	'screening',
 	'interviewing',
 	'rejected',
+	'no_response',
 	'archived'
 ];
 

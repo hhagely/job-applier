@@ -27,6 +27,10 @@ class ApplicationStatus(str, Enum):
     screening = "screening"
     interviewing = "interviewing"
     rejected = "rejected"
+    # Applied, then silence. Terminal, but deliberately NOT `rejected` (nobody
+    # said no, so the rejection count stays honest) and NOT `archived` (that is
+    # the machine-owned bucket for postings never pursued).
+    no_response = "no_response"
     archived = "archived"
 
 

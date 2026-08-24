@@ -5,7 +5,7 @@
 	// description + draft are fetched per selection. Extracted from the Queue page's
 	// +page.svelte to keep that component to list + bulk-action concerns.
 	import { invalidateAll } from '$app/navigation';
-	import { api, errorReason, type Draft, type Job, type JobDetail } from '$lib/api';
+	import { api, errorReason, statusLabel, type Draft, type Job, type JobDetail } from '$lib/api';
 	import { relTime } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -74,7 +74,7 @@
 		<div class="detail-inner">
 			<div class="d-top">
 				{#if draftCart.has(j.id)}<span class="tag status-draft">✓ in draft list</span>{/if}
-				{#if j.application}<span class="tag status-{j.application.status}">{j.application.status}</span>{/if}
+				{#if j.application}<span class="tag status-{j.application.status}">{statusLabel(j.application.status)}</span>{/if}
 				<span class="mono" style="color:var(--faint);font-size:12px">{si.ease} apply</span>
 			</div>
 			<div class="d-title">{j.title}</div>

@@ -47,6 +47,7 @@
 		{ key: 'screening', label: 'screening' },
 		{ key: 'interviewing', label: 'interviewing' },
 		{ key: 'rejected', label: 'rejected' },
+		{ key: 'no_response', label: 'no response' },
 		{ key: 'archived', label: 'archived' }
 	];
 
@@ -57,6 +58,7 @@
 		'screening',
 		'interviewing',
 		'rejected',
+		'no_response',
 		'archived'
 	];
 

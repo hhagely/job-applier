@@ -2,8 +2,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from job_applier.contracts import MAX_GHOSTED_AFTER_DAYS, MIN_GHOSTED_AFTER_DAYS
 from job_applier.models.db import ApplicationStatus, FilterStatus
 
 
@@ -94,6 +95,7 @@ class StatusFacet(str, Enum):
     screening = "screening"
     interviewing = "interviewing"
     rejected = "rejected"
+    no_response = "no_response"
     archived = "archived"
     none = "none"
 
@@ -317,6 +319,30 @@ class CompanyCoverageOut(BaseModel):
     # When the discovery pass last RAN (not when a row last changed): a run that
     # finds nothing new still counts as "we looked". None until the first run.
     last_checked_at: Optional[datetime] = None
+
+
+class PreferencesOut(BaseModel):
+    """User-tunable app preferences (the ``AppSetting`` key/value rows).
+
+    One object rather than an endpoint per key, so the next preference is a field
+    here instead of another route.
+    """
+
+    ghosted_after_days: int
+
+
+class PreferencesUpdate(BaseModel):
+    """Partial update: an omitted field is left at its stored value.
+
+    The bounds are enforced here rather than in the UI so a hand-rolled PATCH
+    can't park a nonsense value in the key/value table.
+    """
+
+    ghosted_after_days: Optional[int] = Field(
+        default=None,
+        ge=MIN_GHOSTED_AFTER_DAYS,
+        le=MAX_GHOSTED_AFTER_DAYS,
+    )
 
 
 class TaskOut(BaseModel):
