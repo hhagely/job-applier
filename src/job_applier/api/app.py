@@ -14,6 +14,7 @@ from job_applier import __version__, ingest, services
 from job_applier.ai import tasks as ai_tasks
 from job_applier.api import blacklist as blacklist_router
 from job_applier.api import drafts as drafts_router
+from job_applier.api import preferences as preferences_router
 from job_applier.api import profile as profile_router
 from job_applier.api import resume as resume_router
 from job_applier.api import watchlist as watchlist_router
@@ -130,6 +131,7 @@ app.include_router(profile_router.router)
 app.include_router(drafts_router.router)
 app.include_router(blacklist_router.router)
 app.include_router(watchlist_router.router)
+app.include_router(preferences_router.router)
 
 
 def _status_facet(job: JobPosting) -> StatusFacet:

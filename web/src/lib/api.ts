@@ -36,6 +36,7 @@ export type ApplicationStatus =
 	| 'screening'
 	| 'interviewing'
 	| 'rejected'
+	| 'no_response'
 	| 'archived';
 
 /**
@@ -51,6 +52,7 @@ export const APPLICATION_STATUSES: ApplicationStatus[] = [
 	'screening',
 	'interviewing',
 	'rejected',
+	'no_response',
 	'archived'
 ];
 
@@ -62,6 +64,23 @@ export const APPLICATION_STATUSES: ApplicationStatus[] = [
 export type StatusFacet = ApplicationStatus | 'none';
 
 export const STATUS_FACETS: StatusFacet[] = [...APPLICATION_STATUSES, 'none'];
+
+/**
+ * User-tunable app preferences, edited on /settings. Mirrors `PreferencesOut` in
+ * api/schemas.py; the bounds on each value are enforced server-side.
+ */
+export interface Preferences {
+	ghosted_after_days: number;
+}
+
+/**
+ * Accepted range for `ghosted_after_days`, mirroring MIN/MAX_GHOSTED_AFTER_DAYS in
+ * contracts.py. These drive the number input's min/max and the friendly
+ * out-of-range message — the server is the actual guard and 422s regardless, so a
+ * drift here shows up as a visible rejection rather than a bad stored value.
+ */
+export const GHOSTED_DAYS_MIN = 7;
+export const GHOSTED_DAYS_MAX = 365;
 
 /** Per-facet totals across the whole queue (see GET /api/jobs/status-counts). */
 export interface StatusCounts {
@@ -468,6 +487,15 @@ export const api = {
 		}),
 
 	getFollowups: (fetchFn: FetchFn, base: string) => call<Job[]>(fetchFn, base, `/api/followups`),
+
+	getPreferences: (fetchFn: FetchFn, base: string) =>
+		call<Preferences>(fetchFn, base, `/api/preferences`),
+
+	setPreferences: (fetchFn: FetchFn, base: string, payload: Partial<Preferences>) =>
+		call<Preferences>(fetchFn, base, `/api/preferences`, {
+			method: 'PATCH',
+			body: JSON.stringify(payload)
+		}),
 
 	setFollowup: (fetchFn: FetchFn, base: string, id: number, payload: FollowupPayload) =>
 		call<Application>(fetchFn, base, `/api/jobs/${id}/followup`, {

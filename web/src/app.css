@@ -783,6 +783,9 @@ kbd {
 	background: oklch(72% 0.13 200 / 0.16);
 	border-color: transparent;
 }
+.tag.status-no_response {
+	color: var(--weak);
+}
 .tag.status-new,
 .tag.status-unset,
 .tag.status-archived {

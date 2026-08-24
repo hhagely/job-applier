@@ -30,6 +30,7 @@ EXPECTED_STATUSES = [
     "screening",
     "interviewing",
     "rejected",
+    "no_response",
     "archived",
 ]
 

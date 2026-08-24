@@ -14,6 +14,7 @@ function makeData(overrides = {}) {
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		version: '0.1.3',
 		profile: null,
+		prefs: { ghosted_after_days: 45 },
 		ai: {
 			providers: [
 				{

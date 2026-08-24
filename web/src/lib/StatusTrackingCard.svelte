@@ -74,7 +74,7 @@
 <form method="POST" action="?/setStatus" class="row-form" use:enhance={onSaved}>
 	<input type="hidden" name="job_id" value={jobId} />
 	<select class="input" name="status" bind:value={pendingStatus} style="flex:1;min-width:9rem">
-		{#each APPLICATION_STATUSES as s (s)}<option value={s}>{s}</option>{/each}
+		{#each APPLICATION_STATUSES as s (s)}<option value={s}>{s.replace('_', ' ')}</option>{/each}
 	</select>
 	{#if pendingStatus === 'applied'}
 		<input class="input" type="date" name="next_followup_at" bind:value={followupInput} style="width:auto" />
