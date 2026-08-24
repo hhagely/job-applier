@@ -82,6 +82,28 @@ export const actions: Actions = {
 		}
 	},
 
+	// Closing out a ghosted backlog one row at a time is the whole reason this
+	// group exists, so it gets a bulk action. The ids come from the form rather
+	// than being re-derived here on purpose: the button is labelled with a count
+	// the user just read, and it should act on exactly those rows, not silently
+	// sweep in a 32nd that crossed the threshold since the page rendered.
+	noResponseAll: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const ids = form
+			.getAll('ids')
+			.map((v) => Number(v))
+			.filter((n) => Number.isFinite(n));
+		if (ids.length === 0) return fail(400, { error: 'no applications to close out' });
+		try {
+			await api.bulkSetStatus(fetch, serverApiBase(), ids, 'no_response', {
+				outcome: 'no response'
+			});
+			return { ok: true };
+		} catch (e) {
+			return fail(400, { error: errorReason(e) });
+		}
+	},
+
 	noResponse: async ({ request, fetch }) => {
 		const form = await request.formData();
 		const id = parseId(form);

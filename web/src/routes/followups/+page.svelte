@@ -26,6 +26,22 @@
 			await update({ reset: false });
 		};
 	}
+
+	// Bulk close-out. Two steps rather than one: this flips every row in the group
+	// at once and there is no undo, so an accidental click on a 31-row backlog
+	// would be a bad afternoon. The count is in the confirm label so what is about
+	// to happen is unambiguous.
+	let confirmingAll = $state(false);
+	let submittingAll = $state(false);
+	function onSubmitAll() {
+		submittingAll = true;
+		return async ({ update }: { update: (opts?: { reset?: boolean }) => Promise<void> }) => {
+			submittingAll = false;
+			confirmingAll = false;
+			await invalidateAll();
+			await update({ reset: false });
+		};
+	}
 </script>
 
 {#snippet card(job: Job, ghosted: boolean)}
@@ -86,10 +102,37 @@
 	{:else}
 		{#if data.ghosted.length > 0}
 			<section class="fu-group">
-				<h2 class="fu-group-head">
-					Ghosted?
-					<span class="fu-group-count">{data.ghosted.length}</span>
-				</h2>
+				<div class="fu-group-head">
+					<h2>Ghosted? <span class="fu-group-count">{data.ghosted.length}</span></h2>
+					<form
+						method="POST"
+						action="?/noResponseAll"
+						class="fu-group-action"
+						use:enhance={onSubmitAll}
+					>
+						{#each data.ghosted as job (job.id)}
+							<input type="hidden" name="ids" value={job.id} />
+						{/each}
+						{#if confirmingAll}
+							<span class="fu-confirm-q">Mark all {data.ghosted.length} as no response?</span>
+							<button type="submit" class="btn sm primary" disabled={submittingAll}>
+								{submittingAll ? 'Marking…' : 'Yes, mark them'}
+							</button>
+							<button
+								type="button"
+								class="btn sm ghost"
+								disabled={submittingAll}
+								onclick={() => (confirmingAll = false)}
+							>
+								Cancel
+							</button>
+						{:else}
+							<button type="button" class="btn sm" onclick={() => (confirmingAll = true)}>
+								Mark all as no response
+							</button>
+						{/if}
+					</form>
+				</div>
 				<p class="fu-group-note">
 					Applied {data.ghostedAfterDays}+ days ago, no reply. Marking these
 					<b>no response</b> closes them out without recording a rejection nobody sent, so
@@ -124,12 +167,30 @@
 		margin-bottom: 26px;
 	}
 	.fu-group-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin: 0 0 5px;
+		flex-wrap: wrap;
+	}
+	.fu-group-head h2 {
 		font-size: 13.5px;
 		font-weight: 640;
+		margin: 0;
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		margin: 0 0 5px;
+	}
+	.fu-group-action {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		margin: 0 0 0 auto;
+	}
+	.fu-confirm-q {
+		font-size: 12px;
+		color: var(--fg);
+		font-weight: 560;
 	}
 	.fu-group-count {
 		font-family: var(--mono);
