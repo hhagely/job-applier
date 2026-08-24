@@ -1,25 +1,29 @@
 import { api, errorReason } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
-import { activeJobs, isUnreviewed } from '$lib/jobFilters';
+import { isUnreviewed } from '$lib/jobFilters';
 import { scoreBand } from '$lib/score';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
 	const base = serverApiBase();
-	const [allPassed, followups] = await Promise.all([
-		api.listJobs(fetch, base, { filter_status: 'passed', limit: 500 }),
-		api.getFollowups(fetch, base)
+	const [jobs, followups, statusCounts] = await Promise.all([
+		// exclude_archived server-side: auto-archived low scorers outnumber live
+		// ones several times over, so filtering them out client-side spent almost
+		// the whole limit on rows this page throws away.
+		api.listJobs(fetch, base, { filter_status: 'passed', exclude_archived: true, limit: 500 }),
+		api.getFollowups(fetch, base),
+		api.getStatusCounts(fetch, base, { filter_status: 'passed' }).catch(() => null)
 	]);
-
-	const jobs = activeJobs(allPassed);
 	const scored = jobs.filter((j) => j.score != null);
 	// Unscored or stale-scored roles — the count the "Score pending" action targets.
 	const pending = jobs.filter((j) => j.score == null || j.score?.is_stale).length;
 
 	const strong = scored.filter((j) => scoreBand(j.score?.score) === 'strong').length;
-	const applied = jobs.filter((j) => j.application?.status === 'applied').length;
-	const rejected = jobs.filter((j) => j.application?.status === 'rejected').length;
+	// Whole-queue totals — these are lifetime counts, so they must not be limited
+	// to the rows this page loaded (that read 21 of 52 applied before the fix).
+	const applied = statusCounts?.counts.applied ?? 0;
+	const rejected = statusCounts?.counts.rejected ?? 0;
 	const unreviewed = jobs.filter(isUnreviewed).length;
 
 	const avg =

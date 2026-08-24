@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import Integer, cast, func
@@ -39,6 +39,8 @@ from job_applier.api.schemas import (
     ScoreIn,
     ScoreOut,
     StartTaskOut,
+    StatusCountsOut,
+    StatusFacet,
     StatusUpdate,
     UnemploymentUpdate,
 )
@@ -130,13 +132,26 @@ app.include_router(blacklist_router.router)
 app.include_router(watchlist_router.router)
 
 
+def _status_facet(job: JobPosting) -> StatusFacet:
+    """The status facet a posting falls under — ``none`` when never triaged.
+
+    The Python mirror of ``jobStatusKey`` in web/src/lib/queueFilters.ts. Takes
+    ``ApplicationStatus(...)`` rather than reading ``.value`` directly so it works
+    whether the ORM handed back the enum or the raw string.
+    """
+    if job.application is None:
+        return StatusFacet.none
+    return StatusFacet(ApplicationStatus(job.application.status).value)
+
+
 @app.get("/api/jobs", response_model=list[JobOut])
 def list_jobs(
-    status: Optional[ApplicationStatus] = None,
+    status: Optional[list[StatusFacet]] = Query(None),
     filter_status: Optional[FilterStatus] = FilterStatus.passed,
     min_score: Optional[int] = None,
     unscored_only: bool = False,
     include_duplicates: bool = False,
+    exclude_archived: bool = False,
     limit: int = 100,
     offset: int = 0,
     session: Session = Depends(get_session),
@@ -158,8 +173,16 @@ def list_jobs(
     # In-Python post-filters that need joined data — applied BEFORE pagination so
     # limit/offset count matching rows, not the raw ingest order (e.g.
     # ?status=applied&limit=100 returns 100 applied jobs, not applied-among-newest-100).
-    if status is not None:
-        jobs = [j for j in jobs if j.application and j.application.status == status]
+    #
+    # `status` is a multi-select of facets (the queue's chips are), and an explicit
+    # selection always wins over `exclude_archived` — asking for status=archived and
+    # getting nothing back would be a trap. `exclude_archived` is what keeps the
+    # default queue from spending its whole limit on auto-archived low scorers.
+    if status:
+        wanted = set(status)
+        jobs = [j for j in jobs if _status_facet(j) in wanted]
+    elif exclude_archived:
+        jobs = [j for j in jobs if _status_facet(j) is not StatusFacet.archived]
     if min_score is not None:
         jobs = [j for j in jobs if j.score and j.score.score >= min_score]
     if unscored_only:
@@ -169,6 +192,43 @@ def list_jobs(
     resume_names = _resume_filename_map(session)
     active_id = _active_resume_id(session)
     return [_job_summary(j, resume_names, active_id) for j in jobs]
+
+
+# NOTE: must stay ABOVE /api/jobs/{job_id} — FastAPI matches in declaration order,
+# so a route defined after it would be swallowed by the int path param and 422.
+@app.get("/api/jobs/status-counts", response_model=StatusCountsOut)
+def job_status_counts(
+    filter_status: Optional[FilterStatus] = FilterStatus.passed,
+    include_duplicates: bool = False,
+    session: Session = Depends(get_session),
+):
+    """Per-status totals across the whole queue, for the filter chips.
+
+    Deliberately a separate call rather than a field on /api/jobs: the chips must
+    count every matching posting, while /api/jobs returns one limited page. A
+    GROUP BY keeps it one cheap query instead of loading 1.5k rows to count them.
+    """
+    stmt = (
+        select(Application.status, func.count(JobPosting.id))
+        .select_from(JobPosting)
+        .outerjoin(Application, Application.job_id == JobPosting.id)  # type: ignore[arg-type]
+        .group_by(Application.status)  # type: ignore[arg-type]
+    )
+    if filter_status is not None:
+        stmt = stmt.where(JobPosting.filter_status == filter_status)
+    if not include_duplicates:
+        stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
+
+    counts = {facet: 0 for facet in StatusFacet}
+    for raw_status, n in session.exec(stmt).all():  # type: ignore[call-overload]
+        # LEFT JOIN misses (never-triaged postings) come back with a NULL status.
+        facet = (
+            StatusFacet.none
+            if raw_status is None
+            else StatusFacet(ApplicationStatus(raw_status).value)
+        )
+        counts[facet] += n
+    return StatusCountsOut(counts=counts, total=sum(counts.values()))
 
 
 @app.get("/api/search", response_model=list[JobOut])

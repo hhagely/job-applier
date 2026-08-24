@@ -6,12 +6,20 @@ import {
 	type FilterStatus
 } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
-import { activeJobs } from '$lib/jobFilters';
+import { matchedTotal, parseStatusParam } from '$lib/queueFilters';
 import { jobActions, parseFollowup } from '$lib/jobActions.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 const VALID: FilterStatus[] = ['passed', 'manual'];
+
+/**
+ * Cap on rows fetched for one queue view. Only the `archived` facet gets near it
+ * (auto-archive puts thousands there); every other facet is far below, so the
+ * page usually holds the COMPLETE match set and the remaining client-side facets
+ * (ease / source / score) filter over all of it rather than over a window.
+ */
+const PAGE_LIMIT = 500;
 
 export const load: PageServerLoad = async ({ url, fetch }) => {
 	const filterParam = url.searchParams.get('filter');
@@ -24,13 +32,41 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 	// inspect *why* a job was archived (its score + reasoning survive archiving).
 	const include_archived = url.searchParams.get('archived') === '1';
 
-	const all = await api.listJobs(fetch, serverApiBase(), {
+	// Status is a SERVER-side filter carried in the URL, not a client-side pass over
+	// whatever the page happened to load. Selecting "applied" must return every
+	// applied job, including ones ingested long enough ago to fall outside a window.
+	const statuses = parseStatusParam(url.searchParams.getAll('status'));
+
+	// Excluding archived server-side is what keeps the row budget meaningful: the
+	// auto-archived low scorers vastly outnumber live ones, so without this the
+	// limit is spent almost entirely on rows the queue then throws away.
+	// An explicit status selection speaks for itself and overrides both toggles.
+	const exclude_archived = statuses.length === 0 && !include_archived;
+
+	const base = serverApiBase();
+	const [jobs, counts] = await Promise.all([
+		api.listJobs(fetch, base, {
+			filter_status,
+			include_duplicates,
+			exclude_archived,
+			...(statuses.length > 0 ? { status: statuses } : {}),
+			limit: PAGE_LIMIT
+		}),
+		// Chip counts are whole-queue totals. Degrade to null rather than failing
+		// the page — the chips just lose their numbers.
+		api.getStatusCounts(fetch, base, { filter_status, include_duplicates }).catch(() => null)
+	]);
+
+	return {
+		jobs,
+		statusCounts: counts,
+		statuses,
+		matched: matchedTotal(counts, statuses),
+		limit: PAGE_LIMIT,
 		filter_status,
 		include_duplicates,
-		limit: 200
-	});
-	const jobs = include_archived ? all : activeJobs(all);
-	return { jobs, filter_status, include_duplicates, include_archived };
+		include_archived
+	};
 };
 
 export const actions: Actions = {

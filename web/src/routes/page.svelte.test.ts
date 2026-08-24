@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Application, FilterStatus, Job } from '$lib/api';
+import { STATUS_FACETS, type Application, type FilterStatus, type Job, type StatusCounts, type StatusFacet } from '$lib/api';
 import { FILTERS_STORAGE_KEY, type PersistedFilters } from '$lib/queueFilters';
 
 // SvelteKit ambient modules the board imports.
@@ -35,12 +35,36 @@ function job(overrides: Partial<Job> = {}): Job {
 	};
 }
 
-function data(overrides = {}) {
+/** Whole-queue status totals, as GET /api/jobs/status-counts returns them. */
+function statusCounts(counts: Partial<Record<StatusFacet, number>> = {}): StatusCounts {
+	const zeroed = Object.fromEntries(STATUS_FACETS.map((f) => [f, 0])) as Record<
+		StatusFacet,
+		number
+	>;
+	const merged = { ...zeroed, ...counts };
+	return { counts: merged, total: Object.values(merged).reduce((a, b) => a + b, 0) };
+}
+
+function data(overrides: Record<string, unknown> = {}) {
+	const jobs = (overrides.jobs as Job[]) ?? [job()];
+	// Default the chip counts to the seeded rows, so a test that doesn't care
+	// about the server/client split still sees chips for the jobs it passed in.
+	const derived = statusCounts(
+		jobs.reduce<Partial<Record<StatusFacet, number>>>((acc, j) => {
+			const key = (j.application?.status ?? 'none') as StatusFacet;
+			acc[key] = (acc[key] ?? 0) + 1;
+			return acc;
+		}, {})
+	);
 	return {
-		jobs: [job()],
+		jobs,
 		filter_status: 'passed' as FilterStatus,
 		include_duplicates: false,
 		include_archived: false,
+		statusCounts: derived,
+		statuses: [] as StatusFacet[],
+		matched: jobs.length,
+		limit: 500,
 		apiBase: '',
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
@@ -70,7 +94,6 @@ function persist(filters: Partial<PersistedFilters>) {
 		FILTERS_STORAGE_KEY,
 		JSON.stringify({
 			sortBy: 'score-desc',
-			statuses: [],
 			eases: [],
 			sources: [],
 			unscoredOnly: false,
@@ -135,8 +158,7 @@ describe('queue filter chips', () => {
 	const applied = job({ id: 1, application: application({ status: 'applied' }) });
 
 	it('keeps a selected status chip visible after its facet empties out', () => {
-		persist({ statuses: ['new'] });
-		render(Board, { props: { data: data({ jobs: [applied] }) } });
+		render(Board, { props: { data: data({ jobs: [applied], statuses: ['new'] }) } });
 
 		const ghost = chip('new');
 		expect(ghost).toBeDefined();
@@ -167,8 +189,7 @@ describe('queue filter chips', () => {
 	});
 
 	it('enables Clear filters so a restored ghost filter can be dropped', () => {
-		persist({ statuses: ['new'] });
-		render(Board, { props: { data: data({ jobs: [applied] }) } });
+		render(Board, { props: { data: data({ jobs: [applied], statuses: ['new'] }) } });
 
 		expect(screen.getByRole('button', { name: /Clear filters/ })).toBeEnabled();
 	});

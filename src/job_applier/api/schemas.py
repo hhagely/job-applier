@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel
@@ -74,6 +75,39 @@ class ApplicationOut(BaseModel):
     outcome: Optional[str] = None
     used_for_unemployment: bool = False
     used_for_unemployment_at: Optional[datetime] = None
+
+
+class StatusFacet(str, Enum):
+    """A queue status facet: every ``ApplicationStatus``, plus ``none``.
+
+    The queue filters on "unset" as if it were a status, but a posting the user
+    has never triaged has *no* ``Application`` row at all — so the facet set is
+    the enum plus one synthetic member. Mirrors ``StatusFilter`` / ``jobStatusKey``
+    in ``web/src/lib/queueFilters.ts``; drift between the two is caught by
+    ``tests/test_status_contract.py``.
+    """
+
+    new = "new"
+    interested = "interested"
+    drafted = "drafted"
+    applied = "applied"
+    screening = "screening"
+    interviewing = "interviewing"
+    rejected = "rejected"
+    archived = "archived"
+    none = "none"
+
+
+class StatusCountsOut(BaseModel):
+    """Per-facet totals for the *whole* queue, not just a fetched page.
+
+    The queue's chips are counts of everything matching, so they cannot be
+    derived from the rows ``/api/jobs`` returned under a limit — a chip reading
+    "applied 4" next to a list of 52 is the bug this exists to prevent.
+    """
+
+    counts: dict[StatusFacet, int]
+    total: int
 
 
 class JobOut(BaseModel):
