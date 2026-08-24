@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import { api, type Resume } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
-import { activeJobs, isUnreviewed } from '$lib/jobFilters';
+import { isUnreviewed } from '$lib/jobFilters';
 import { scoreBand } from '$lib/score';
 import { deriveProfile } from '$lib/shell/profile';
 import type { LayoutServerLoad } from './$types';
@@ -68,11 +68,12 @@ export const load: LayoutServerLoad = async ({ fetch, url, cookies }) => {
 
 	const counts: ShellCounts = { jobs: null, queue: null, followups: null, strong: null };
 	try {
-		const [passed, followups] = await Promise.all([
-			api.listJobs(fetch, base, { filter_status: 'passed', limit: 500 }),
+		const [active, followups] = await Promise.all([
+			// Archived excluded server-side so the badge counts every live job, not
+			// the live jobs that fit inside a window of mostly-archived rows.
+			api.listJobs(fetch, base, { filter_status: 'passed', exclude_archived: true, limit: 500 }),
 			api.getFollowups(fetch, base)
 		]);
-		const active = activeJobs(passed);
 		counts.jobs = active.length;
 		counts.queue = active.filter(isUnreviewed).length;
 		counts.strong = active.filter((j) => scoreBand(j.score?.score) === 'strong').length;

@@ -54,6 +54,21 @@ export const APPLICATION_STATUSES: ApplicationStatus[] = [
 	'archived'
 ];
 
+/**
+ * A queue status facet: any application status, plus `none` for a posting that
+ * has no application row yet. Mirrors `StatusFacet` in api/schemas.py — it is a
+ * server-side query param on /api/jobs, not just a client-side label.
+ */
+export type StatusFacet = ApplicationStatus | 'none';
+
+export const STATUS_FACETS: StatusFacet[] = [...APPLICATION_STATUSES, 'none'];
+
+/** Per-facet totals across the whole queue (see GET /api/jobs/status-counts). */
+export interface StatusCounts {
+	counts: Record<StatusFacet, number>;
+	total: number;
+}
+
 export interface Company {
 	id: number;
 	name: string;
@@ -378,18 +393,40 @@ export const api = {
 		base: string,
 		params: {
 			filter_status?: FilterStatus;
-			status?: ApplicationStatus;
+			/** Status facets to match, OR-ed. Repeats as ?status=a&status=b. */
+			status?: StatusFacet[];
 			min_score?: number;
 			unscored_only?: boolean;
 			include_duplicates?: boolean;
+			exclude_archived?: boolean;
 			limit?: number;
 		} = {}
 	) => {
 		const q = new URLSearchParams();
 		for (const [k, v] of Object.entries(params)) {
-			if (v !== undefined && v !== null) q.set(k, String(v));
+			if (v === undefined || v === null) continue;
+			// FastAPI reads a list param as repeated keys; a comma-joined string
+			// would 422 against the StatusFacet enum.
+			if (Array.isArray(v)) for (const item of v) q.append(k, String(item));
+			else q.set(k, String(v));
 		}
 		return call<Job[]>(fetchFn, base, `/api/jobs?${q.toString()}`);
+	},
+
+	/**
+	 * Whole-queue per-status totals for the filter chips. Separate from listJobs
+	 * because the chips must count every match, not the rows one page returned.
+	 */
+	getStatusCounts: (
+		fetchFn: FetchFn,
+		base: string,
+		params: { filter_status?: FilterStatus; include_duplicates?: boolean } = {}
+	) => {
+		const q = new URLSearchParams();
+		for (const [k, v] of Object.entries(params)) {
+			if (v !== undefined && v !== null) q.set(k, String(v));
+		}
+		return call<StatusCounts>(fetchFn, base, `/api/jobs/status-counts?${q.toString()}`);
 	},
 
 	getJob: (fetchFn: FetchFn, base: string, id: number) =>

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { Job } from '$lib/api';
+import { STATUS_FACETS, type Job, type StatusCounts, type StatusFacet } from '$lib/api';
 import {
 	filterAndSort,
 	jobStatusKey,
 	loadFilters,
+	matchedTotal,
+	parseStatusParam,
 	saveFilters,
 	type QueueFilterState
 } from '$lib/queueFilters';
@@ -22,7 +24,6 @@ function job(over: Partial<Job> & Pick<Job, 'id'>): Job {
 
 const base: QueueFilterState = {
 	sortBy: 'score-desc',
-	statuses: new Set(),
 	eases: new Set(),
 	sources: new Set(),
 	unscoredOnly: false,
@@ -63,19 +64,6 @@ describe('filterAndSort', () => {
 		expect(filterAndSort(jobs, { ...base, unscoredOnly: true }).map((j) => j.id)).toEqual([2]);
 	});
 
-	it('status facet matches the application status (and "none")', () => {
-		const jobs = [
-			job({ id: 1, application: { status: 'applied' } as Job['application'] }),
-			job({ id: 2 })
-		];
-		expect(
-			filterAndSort(jobs, { ...base, statuses: new Set(['applied']) }).map((j) => j.id)
-		).toEqual([1]);
-		expect(filterAndSort(jobs, { ...base, statuses: new Set(['none']) }).map((j) => j.id)).toEqual([
-			2
-		]);
-	});
-
 	it('source facet filters by exact source', () => {
 		const jobs = [job({ id: 1, source: 'lever' }), job({ id: 2, source: 'greenhouse' })];
 		expect(
@@ -112,9 +100,9 @@ describe('filterAndSort', () => {
 			filterAndSort(jobs, {
 				...base,
 				sources: new Set(['lever']),
-				statuses: new Set(['applied'])
+				unscoredOnly: true
 			}).map((j) => j.id)
-		).toEqual([1]);
+		).toEqual([1, 2]);
 	});
 
 	it('does not mutate the input array', () => {
@@ -129,7 +117,6 @@ describe('loadFilters / saveFilters', () => {
 	it('round-trips and tolerates a corrupt entry', () => {
 		saveFilters({
 			sortBy: 'title-asc',
-			statuses: ['applied'],
 			eases: [],
 			sources: ['lever'],
 			unscoredOnly: true,
@@ -140,5 +127,53 @@ describe('loadFilters / saveFilters', () => {
 
 		localStorage.setItem('job-applier:queue-filters', '{broken');
 		expect(loadFilters()).toBeNull();
+	});
+});
+
+// Status moved out of filterAndSort and became a server-side query param carried
+// in the URL, so selecting "applied" returns every applied job rather than the
+// applied jobs that happened to be inside the fetched page. These two helpers are
+// the seam: one reads the URL, the other reports the queue-wide match total.
+describe('parseStatusParam', () => {
+	it('keeps known facets, including "none"', () => {
+		expect(parseStatusParam(['applied', 'none'])).toEqual(['applied', 'none']);
+	});
+
+	it('drops unknown values rather than throwing', () => {
+		// A bookmark from before a status was renamed must degrade to "no filter".
+		expect(parseStatusParam(['applied', 'bogus'])).toEqual(['applied']);
+		expect(parseStatusParam(['nope'])).toEqual([]);
+	});
+
+	it('de-duplicates repeats', () => {
+		expect(parseStatusParam(['applied', 'applied'])).toEqual(['applied']);
+	});
+});
+
+describe('matchedTotal', () => {
+	function counts(over: Partial<Record<StatusFacet, number>>): StatusCounts {
+		const zeroed = Object.fromEntries(STATUS_FACETS.map((f) => [f, 0])) as Record<
+			StatusFacet,
+			number
+		>;
+		const merged = { ...zeroed, ...over };
+		return { counts: merged, total: Object.values(merged).reduce((a, b) => a + b, 0) };
+	}
+
+	it('sums the selected facets', () => {
+		const c = counts({ applied: 52, screening: 3, archived: 1442 });
+		expect(matchedTotal(c, ['applied'])).toBe(52);
+		expect(matchedTotal(c, ['applied', 'screening'])).toBe(55);
+	});
+
+	it('excludes archived when nothing is selected', () => {
+		// No selection means the queue was loaded with exclude_archived, so the
+		// comparable total has to leave archived out or it overstates wildly.
+		const c = counts({ applied: 52, none: 14, archived: 1442 });
+		expect(matchedTotal(c, [])).toBe(66);
+	});
+
+	it('is null when the counts call failed', () => {
+		expect(matchedTotal(null, ['applied'])).toBeNull();
 	});
 });

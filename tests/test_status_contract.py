@@ -17,7 +17,7 @@ import re
 import typing
 from pathlib import Path
 
-from job_applier.api.schemas import ScoreOut, TaskOut
+from job_applier.api.schemas import ScoreOut, StatusFacet, TaskOut
 from job_applier.models.db import ApplicationStatus
 
 # The canonical pipeline order. Mirrored verbatim in web/src/lib/api.ts
@@ -63,3 +63,27 @@ def test_score_kind_literal_is_baseline_or_tailored():
 def test_task_status_literal_matches_runner():
     args = typing.get_args(TaskOut.model_fields["status"].annotation)
     assert set(args) == {"running", "done", "error"}
+
+
+def test_status_facet_is_every_status_plus_none():
+    """``StatusFacet`` is a query param on /api/jobs, so it must track the enum.
+
+    A status added to ``ApplicationStatus`` but not here would 422 the moment the
+    queue tried to filter on its chip — the filter would look present but be
+    unusable.
+    """
+    assert [f.value for f in StatusFacet] == EXPECTED_STATUSES + ["none"]
+
+
+def test_typescript_status_facet_matches_python():
+    """``STATUS_FACETS`` in api.ts is spread from APPLICATION_STATUSES + 'none'.
+
+    Assert the spread is still what it claims, so the TS union that the queue's
+    URL parsing validates against cannot drift from the Python enum.
+    """
+    text = _API_TS.read_text(encoding="utf-8")
+    match = re.search(r"STATUS_FACETS:\s*StatusFacet\[\]\s*=\s*\[(.*?)\];", text, re.S)
+    assert match, "could not locate STATUS_FACETS in web/src/lib/api.ts"
+    body = match.group(1)
+    assert "...APPLICATION_STATUSES" in body
+    assert re.findall(r"'([^']+)'", body) == ["none"]

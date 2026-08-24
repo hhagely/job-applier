@@ -238,6 +238,112 @@ def test_list_jobs_unscored_only_filter(client):
     assert any(j["title"] == "Unscored Engineer" for j in unscored)
 
 
+def _seed_status_mix(session):
+    """One job per status facet, plus a never-triaged one (the `none` facet)."""
+    jobs = {}
+    for i, status in enumerate(ApplicationStatus):
+        j = _seed_job(session, title=f"{status.value} role", source_id=f"s{i}",
+                      company=f"Co {i}")
+        session.add(Application(job_id=j.id, status=status))
+        jobs[status.value] = j
+    jobs["none"] = _seed_job(session, title="untriaged role", source_id="sx",
+                             company="Co X")
+    session.commit()
+    return jobs
+
+
+def test_list_jobs_status_accepts_multiple_facets(client):
+    """The queue's status chips are multi-select, so ?status= repeats must OR."""
+    c, e = client
+    with Session(e) as s:
+        _seed_status_mix(s)
+
+    result = c.get("/api/jobs", params=[("status", "applied"), ("status", "screening")])
+    assert {j["title"] for j in result.json()} == {"applied role", "screening role"}
+
+
+def test_list_jobs_status_none_matches_untriaged(client):
+    """`none` is a synthetic facet: a posting with no Application row at all."""
+    c, e = client
+    with Session(e) as s:
+        _seed_status_mix(s)
+
+    result = c.get("/api/jobs", params={"status": "none"}).json()
+    assert {j["title"] for j in result} == {"untriaged role"}
+    assert result[0]["application"] is None
+
+
+def test_list_jobs_exclude_archived_drops_only_archived(client):
+    c, e = client
+    with Session(e) as s:
+        _seed_status_mix(s)
+
+    titles = {
+        j["title"] for j in c.get("/api/jobs", params={"exclude_archived": True}).json()
+    }
+    assert "archived role" not in titles
+    assert {"applied role", "untriaged role"} <= titles
+
+
+def test_list_jobs_explicit_status_beats_exclude_archived(client):
+    """Asking for archived and getting nothing back would be a trap."""
+    c, e = client
+    with Session(e) as s:
+        _seed_status_mix(s)
+
+    result = c.get(
+        "/api/jobs", params={"status": "archived", "exclude_archived": True}
+    ).json()
+    assert {j["title"] for j in result} == {"archived role"}
+
+
+def test_list_jobs_rejects_unknown_status_facet(client):
+    c, _ = client
+    assert c.get("/api/jobs", params={"status": "bogus"}).status_code == 422
+
+
+def test_status_counts_are_whole_queue_not_one_page(client):
+    """The regression this whole endpoint exists for: chip counts must not be
+    computed from a limited page, or 'applied 4' sits next to a list of 52."""
+    from datetime import datetime, timedelta, timezone
+
+    c, e = client
+    now = datetime.now(timezone.utc)
+    with Session(e) as s:
+        # 30 recent archived jobs bury 3 older applied ones — exactly the shape
+        # that made the queue read "4 applied" against 52 rows in the DB.
+        for i in range(30):
+            j = _seed_job(s, title=f"Arch {i}", source_id=f"ar{i}", company=f"Ar {i}",
+                          ingested_at=now - timedelta(minutes=i))
+            s.add(Application(job_id=j.id, status=ApplicationStatus.archived))
+        for i in range(3):
+            j = _seed_job(s, title=f"Applied {i}", source_id=f"ap{i}",
+                          company=f"Ap {i}", ingested_at=now - timedelta(days=10 + i))
+            s.add(Application(job_id=j.id, status=ApplicationStatus.applied))
+        s.commit()
+
+    body = c.get("/api/jobs/status-counts").json()
+    assert body["counts"]["applied"] == 3
+    assert body["counts"]["archived"] == 30
+    assert body["total"] == 33
+    # Zero-filled so the frontend never has to supply defaults.
+    assert body["counts"]["interviewing"] == 0
+
+
+def test_status_counts_route_not_shadowed_by_job_id(client):
+    """/api/jobs/{job_id} would swallow this path if declared first (422 on int)."""
+    c, _ = client
+    assert c.get("/api/jobs/status-counts").status_code == 200
+
+
+def test_status_counts_counts_untriaged_as_none(client):
+    c, e = client
+    with Session(e) as s:
+        _seed_job(s, title="Untriaged", source_id="u1")
+
+    assert c.get("/api/jobs/status-counts").json()["counts"]["none"] == 1
+
+
 # ---- posting search (Ctrl/Cmd-K palette) ----------------------------------
 
 

@@ -4,18 +4,16 @@
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { type ApplicationStatus, type Job } from '$lib/api';
+	import { type ApplicationStatus, type Job, type StatusFacet } from '$lib/api';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import { defaultFollowupDate } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import { isUsedForUnemployment } from '$lib/jobFilters';
 	import {
 		filterAndSort,
-		jobStatusKey,
 		loadFilters,
 		saveFilters,
 		type SortKey,
-		type StatusFilter,
 		type UnempFilter
 	} from '$lib/queueFilters';
 	import JobDetailPane from '$lib/JobDetailPane.svelte';
@@ -40,7 +38,7 @@
 		{ key: 'hard', label: 'hard' }
 	];
 
-	const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+	const STATUS_FILTERS: { key: StatusFacet; label: string }[] = [
 		{ key: 'none', label: 'unset' },
 		{ key: 'new', label: 'new' },
 		{ key: 'interested', label: 'interested' },
@@ -63,7 +61,6 @@
 	];
 
 	let sortBy = $state<SortKey>('score-desc');
-	let activeStatuses = $state<Set<StatusFilter>>(new Set());
 	let activeEases = $state<Set<Ease>>(new Set());
 	let activeSources = $state<Set<string>>(new Set());
 	let unscoredOnly = $state(false);
@@ -81,7 +78,6 @@
 		const s = loadFilters();
 		if (s) {
 			if (typeof s.sortBy === 'string') sortBy = s.sortBy;
-			if (Array.isArray(s.statuses)) activeStatuses = new Set(s.statuses);
 			if (Array.isArray(s.eases)) activeEases = new Set(s.eases);
 			if (Array.isArray(s.sources)) activeSources = new Set(s.sources);
 			if (typeof s.unscoredOnly === 'boolean') unscoredOnly = s.unscoredOnly;
@@ -95,7 +91,6 @@
 		if (!browser || !filtersLoaded) return;
 		saveFilters({
 			sortBy,
-			statuses: [...activeStatuses],
 			eases: [...activeEases],
 			sources: [...activeSources],
 			unscoredOnly,
@@ -152,12 +147,14 @@
 	}
 
 	function clearFilters() {
-		activeStatuses = new Set();
 		activeEases = new Set();
 		activeSources = new Set();
 		unscoredOnly = false;
 		activeUnemp = new Set();
 		minScoreInput = '';
+		// Status lives in the URL (it is a server-side query), so clearing it is a
+		// navigation rather than a state reset.
+		if (data.statuses.length > 0) setStatuses([]);
 	}
 
 	const minScore = $derived.by(() => {
@@ -168,7 +165,6 @@
 	const visible = $derived(
 		filterAndSort(data.jobs, {
 			sortBy,
-			statuses: activeStatuses,
 			eases: activeEases,
 			sources: activeSources,
 			unscoredOnly,
@@ -225,8 +221,10 @@
 
 	const selectedCount = $derived(selected.size);
 
-	function statusCount(key: StatusFilter): number {
-		return data.jobs.filter((j) => jobStatusKey(j) === key).length;
+	// Whole-queue totals from /api/jobs/status-counts, NOT a count of the loaded
+	// rows — a chip reading "applied 4" above a list of 52 was the original bug.
+	function statusCount(key: StatusFacet): number {
+		return data.statusCounts?.counts[key] ?? 0;
 	}
 	function easeCount(key: Ease): number {
 		return data.jobs.filter((j) => sourceInfo(j.source).ease === key).length;
@@ -254,6 +252,32 @@
 		goto(url, { invalidateAll: true });
 	}
 
+	// --- Status selection: a server-side filter, so it lives in the URL and each
+	// change is a navigation. This is what makes "applied" mean every applied job
+	// rather than the applied jobs that happened to be in the fetched page. ---
+
+	const selectedStatuses = $derived(new Set(data.statuses));
+
+	function setStatuses(next: StatusFacet[]) {
+		const url = new URL(page.url);
+		url.searchParams.delete('status');
+		for (const s of next) url.searchParams.append('status', s);
+		// The previously-selected row is usually not in the new result set.
+		selectedId = null;
+		goto(url, { invalidateAll: true });
+	}
+
+	function toggleStatus(key: StatusFacet) {
+		setStatuses([...toggleIn(selectedStatuses, key)]);
+	}
+
+	// The server caps one view at `data.limit` rows. Only the archived facet gets
+	// there in practice, but when it does the user must be told the list is partial
+	// rather than being shown 500 rows as if they were all of them.
+	const capped = $derived(
+		data.matched !== null && data.jobs.length >= data.limit && data.matched > data.jobs.length
+	);
+
 	function toggleArchived() {
 		const url = new URL(page.url);
 		if (data.include_archived) url.searchParams.delete('archived');
@@ -271,7 +295,7 @@
 	}
 
 	const hasActiveFilters = $derived(
-		activeStatuses.size > 0 ||
+		data.statuses.length > 0 ||
 			activeEases.size > 0 ||
 			activeSources.size > 0 ||
 			activeUnemp.size > 0 ||
@@ -396,7 +420,10 @@
 				<input class="mini-input" type="number" min="0" max="100" placeholder="min score" style="width:88px" bind:value={minScoreInput} aria-label="Minimum score" />
 				<button class="chip" aria-pressed={unscoredOnly} onclick={() => (unscoredOnly = !unscoredOnly)}>Unscored only</button>
 				<button class="chip" aria-pressed={data.include_duplicates} onclick={toggleDuplicates}>Show duplicates</button>
-				<button class="chip" aria-pressed={data.include_archived} onclick={toggleArchived} title="Include archived jobs (e.g. auto-archived low scores) so you can see why they were dropped">Show archived</button>
+				<!-- A status selection already says exactly which statuses to return, so
+				     this toggle has nothing left to decide — disable it rather than leave a
+				     control that looks live and does nothing. -->
+				<button class="chip" aria-pressed={data.include_archived} onclick={toggleArchived} disabled={data.statuses.length > 0} title={data.statuses.length > 0 ? 'Filtering by status already decides whether archived jobs are shown' : 'Include archived jobs (e.g. auto-archived low scores) so you can see why they were dropped'}>Show archived</button>
 			</div>
 
 			{#if !isManual}
@@ -429,8 +456,8 @@
 					<span class="lbl">Status</span>
 					{#each STATUS_FILTERS as f (f.key)}
 						{@const n = statusCount(f.key)}
-						{#if n > 0 || activeStatuses.has(f.key)}
-							<button class="chip" aria-pressed={activeStatuses.has(f.key)} onclick={() => (activeStatuses = toggleIn(activeStatuses, f.key))}>
+						{#if n > 0 || selectedStatuses.has(f.key)}
+							<button class="chip" aria-pressed={selectedStatuses.has(f.key)} onclick={() => toggleStatus(f.key)}>
 								{f.label} <span class="c-n">{n}</span>
 							</button>
 						{/if}
@@ -447,8 +474,17 @@
 			{/if}
 		</div>
 
+		{#if capped}
+			<p class="list-note">
+				Showing {data.jobs.length.toLocaleString()} of {data.matched?.toLocaleString()} — narrow
+				with another filter to see the rest.
+			</p>
+		{/if}
+
 		<div class="list-scroll">
-			{#if data.jobs.length === 0}
+			{#if data.jobs.length === 0 && data.statuses.length > 0}
+				<p class="list-empty">No jobs with that status.</p>
+			{:else if data.jobs.length === 0}
 				<p class="list-empty">Nothing here. Run a scrape from the Dashboard to pull new postings.</p>
 			{:else if visible.length === 0}
 				<p class="list-empty">No jobs match the current filters.</p>
@@ -624,6 +660,13 @@
 		text-align: center;
 		color: var(--faint);
 		font-size: 13px;
+	}
+	.list-note {
+		margin: 0;
+		padding: 6px 12px;
+		border-bottom: 1px solid var(--line);
+		color: var(--faint);
+		font-size: 12px;
 	}
 	.list-foot {
 		flex: none;
