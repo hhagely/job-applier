@@ -21,6 +21,7 @@ from job_applier.models.db import (
     Resume,
     SearchProfile,
     get_session,
+    session_profile_id,
     set_setting,
 )
 
@@ -118,14 +119,17 @@ def test_generate_draft_saves_md_renders_pdf_and_scores(tmp_path, monkeypatch):
         job = _seed_job(s)
         job_id = job.id
         result = drafting.generate_draft(s, "claude", job)
+        pid = session_profile_id(s)
 
         assert result.tailored_score == 88
         assert result.stages == ["drafting", "rendering", "scoring", "done"]
 
         # Markdown + (fake) PDFs on disk.
-        assert "TypeScript" in (drafts.read_markdown(job_id, "resume") or "")
-        assert drafts.pdf_path(job_id, "resume").read_bytes().startswith(b"%PDF")
-        assert drafts.pdf_path(job_id, "cover_letter").read_bytes().startswith(b"%PDF")
+        assert "TypeScript" in (drafts.read_markdown(job_id, "resume", profile_id=pid) or "")
+        assert drafts.pdf_path(job_id, "resume", profile_id=pid).read_bytes().startswith(b"%PDF")
+        assert (
+            drafts.pdf_path(job_id, "cover_letter", profile_id=pid).read_bytes().startswith(b"%PDF")
+        )
 
         # A tailored score row landed via the shared upsert path.
         score = s.exec(select(MatchScore).where(MatchScore.job_id == job_id)).one()
@@ -209,13 +213,14 @@ def test_draft_character_bans_enforced(tmp_path, monkeypatch):
         job_id = job.id
         result = drafting.generate_draft(s, "claude", job)
         assert result.sanitized is True
+        pid = session_profile_id(s)
 
         # Persisted markdown is free of every banned character.
         for kind in ("resume", "cover_letter"):
-            md = drafts.read_markdown(job_id, kind) or ""
+            md = drafts.read_markdown(job_id, kind, profile_id=pid) or ""
             assert bans.find_banned(md) == [], f"{kind} still has banned chars"
         # And the substitutions actually happened.
-        assert "-" in (drafts.read_markdown(job_id, "resume") or "")
+        assert "-" in (drafts.read_markdown(job_id, "resume", profile_id=pid) or "")
 
 
 def test_generate_draft_requires_active_resume(tmp_path, monkeypatch):
@@ -381,7 +386,7 @@ def test_ai_draft_runs_with_the_selected_providers_own_model(
     monkeypatch.setattr(
         ai_tasks,
         "start_task",
-        lambda kind, total, fn, ref=None: started.update(fn=fn) or "t-1",
+        lambda kind, total, fn, ref=None, profile_id=None: started.update(fn=fn) or "t-1",
     )
     assert c.post(f"/api/jobs/{jid}/ai/draft", json={}).status_code == 200
     assert started["fn"].keywords["model"] == expected
@@ -402,7 +407,7 @@ def test_draft_batch_runs_with_the_selected_providers_own_model(client, monkeypa
     monkeypatch.setattr(
         ai_mod.tasks,
         "start_task",
-        lambda kind, total, fn, ref=None: started.update(fn=fn) or "t-1",
+        lambda kind, total, fn, ref=None, profile_id=None: started.update(fn=fn) or "t-1",
     )
     assert c.post("/api/ai/draft-batch", json={"job_ids": [jid]}).status_code == 200
     assert started["fn"].keywords["model"] is None
@@ -424,7 +429,9 @@ def test_pdf_write_failure_is_a_503_that_keeps_the_markdown(client, monkeypatch,
     with Session(e) as s:
         job = _seed_job(s)
         jid = job.id
-    drafts_mod.save_markdown(jid, "# Jane Dev\n", None)  # render needs markdown
+        pid = session_profile_id(s, create=True)
+        s.commit()
+    drafts_mod.save_markdown(jid, "# Jane Dev\n", None, profile_id=pid)  # render needs markdown
 
     monkeypatch.setattr(pdf, "render_to_pdf", lambda _url: b"%PDF fake")
     monkeypatch.setattr(drafts_mod, "render_pdf", _raise_oserror)
@@ -434,7 +441,7 @@ def test_pdf_write_failure_is_a_503_that_keeps_the_markdown(client, monkeypatch,
     assert r.status_code == 503
     assert "resume PDF" in r.json()["detail"]
     # The contract the 503 asserts: only the PDF step failed.
-    assert drafts_mod.read_markdown(jid, "resume") is not None
+    assert drafts_mod.read_markdown(jid, "resume", profile_id=pid) is not None
 
 
 def test_markdown_write_failure_says_nothing_was_saved(client, monkeypatch):
@@ -445,12 +452,14 @@ def test_markdown_write_failure_says_nothing_was_saved(client, monkeypatch):
     with Session(e) as s:
         job = _seed_job(s)
         jid = job.id
+        pid = session_profile_id(s, create=True)
+        s.commit()
     monkeypatch.setattr(drafts_mod, "save_markdown", _raise_oserror)
 
     r = c.post(f"/api/jobs/{jid}/draft", json={"resume_md": "# Jane Dev\n"})
     assert r.status_code == 503
     assert "nothing was written" in r.json()["detail"]
-    assert drafts_mod.read_markdown(jid, "resume") is None
+    assert drafts_mod.read_markdown(jid, "resume", profile_id=pid) is None
 
 
 # ---- batch draft (Draft-list header button) -------------------------------

@@ -59,6 +59,7 @@ from job_applier.models.db import (
     engine,
     get_session,
     get_setting,
+    session_profile_id,
     set_setting,
 )
 from job_applier.sources import refresh as refresh_mod
@@ -68,6 +69,9 @@ from job_applier.updates import check_for_update
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     create_db_and_tables()
+    # Drafts became per-profile; existing ones belong to the profile that owned
+    # them (the migrated Default). Filesystem, so not in create_db_and_tables.
+    profiles.adopt_legacy_drafts()
     # Seed the per-company source slugs on first boot. The desktop app and
     # `make api` only ever run the server (never `job-applier init`), so without
     # this a fresh DB — e.g. the packaged app's userData dir — starts with an
@@ -588,7 +592,9 @@ def start_ingest(session: Session = Depends(get_session)):
     from job_applier.sources import get_all_sources
 
     total = len(get_all_sources())
-    task_id = ai_tasks.start_task("ingest", total, _run_ingest_task)
+    task_id = ai_tasks.start_task(
+        "ingest", total, _run_ingest_task, profile_id=session_profile_id(session)
+    )
     return StartTaskOut(task_id=task_id)
 
 

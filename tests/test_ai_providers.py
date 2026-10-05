@@ -801,7 +801,7 @@ def test_score_pending_scores_exactly_the_ids_it_is_given(
     monkeypatch.setattr(
         ai_mod.tasks,
         "start_task",
-        lambda kind, total, fn, ref=None: started.update(total=total, fn=fn) or "t-1",
+        lambda kind, total, fn, ref=None, profile_id=None: started.update(total=total, fn=fn) or "t-1",
     )
     r = c.post("/api/ai/score-pending", json={"job_ids": [job_id, job_id]})
     assert r.status_code == 200
@@ -838,7 +838,7 @@ def test_score_pending_without_ids_still_uses_the_queue(client_and_engine, monke
     monkeypatch.setattr(
         ai_mod.tasks,
         "start_task",
-        lambda kind, total, fn, ref=None: started.update(total=total) or "t-2",
+        lambda kind, total, fn, ref=None, profile_id=None: started.update(total=total) or "t-2",
     )
     r = c.post("/api/ai/score-pending", json={})
     assert r.status_code == 200

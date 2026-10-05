@@ -1,5 +1,6 @@
 """User preference endpoints: the tunables that live in the ``AppSetting``
-key/value table and are edited on ``/settings``.
+key/value table and are edited on ``/settings``. Per profile — see
+``contracts.profile_pref_key``.
 
 Separate from ``api/profile.py`` on purpose — a ``SearchProfile`` describes what
 to *ingest* (roles, tech, home state) and is what ``/suggest-roles`` proposes
@@ -15,11 +16,27 @@ from sqlmodel import Session
 from job_applier.contracts import (
     DEFAULT_GHOSTED_AFTER_DAYS,
     GHOSTED_AFTER_DAYS_KEY,
+    profile_pref_key,
 )
 from job_applier.api.schemas import PreferencesOut, PreferencesUpdate
-from job_applier.models.db import get_session, get_setting, set_setting
+from job_applier.models.db import get_session, get_setting, session_profile_id, set_setting
 
 router = APIRouter(tags=["preferences"])
+
+
+def _get_pref(session: Session, key: str) -> str | None:
+    """This profile's value, else the pre-profile shared value."""
+    pid = session_profile_id(session)
+    if pid is not None:
+        own = get_setting(session, profile_pref_key(pid, key))
+        if own is not None:
+            return own
+    return get_setting(session, key)
+
+
+def _set_pref(session: Session, key: str, value: str) -> None:
+    pid = session_profile_id(session, create=True)
+    set_setting(session, profile_pref_key(pid, key), value)
 
 
 def ghosted_after_days(session: Session) -> int:
@@ -30,7 +47,7 @@ def ghosted_after_days(session: Session) -> int:
     back rather than raising: a broken preference should not take down the page
     it configures.
     """
-    raw = get_setting(session, GHOSTED_AFTER_DAYS_KEY)
+    raw = _get_pref(session, GHOSTED_AFTER_DAYS_KEY)
     try:
         return int(raw) if raw is not None else DEFAULT_GHOSTED_AFTER_DAYS
     except ValueError:
@@ -56,5 +73,5 @@ def update_preferences(
     so nothing unparseable or absurd reaches the key/value table.
     """
     if body.ghosted_after_days is not None:
-        set_setting(session, GHOSTED_AFTER_DAYS_KEY, str(body.ghosted_after_days))
+        _set_pref(session, GHOSTED_AFTER_DAYS_KEY, str(body.ghosted_after_days))
     return _preferences_out(session)
