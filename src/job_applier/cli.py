@@ -14,6 +14,7 @@ from job_applier.ingest import (
     run_ingest,
 )
 from job_applier.models import create_db_and_tables, engine
+from job_applier.profiles import adopt_legacy_drafts
 from job_applier.sources.refresh import refresh_slugs, seed_if_empty
 from sqlmodel import Session
 
@@ -24,6 +25,7 @@ app = typer.Typer(no_args_is_help=True, help="job-applier CLI")
 def init() -> None:
     """Create the SQLite database and tables, seed slugs if empty."""
     create_db_and_tables()
+    moved = adopt_legacy_drafts()
     seeded = seed_if_empty()
     backfilled = backfill_cross_source_hash()
     typer.echo(f"DB ready at {settings.db_path}")
@@ -31,6 +33,8 @@ def init() -> None:
         typer.echo(f"Seeded {seeded} source slugs from companies.py")
     if backfilled:
         typer.echo(f"Backfilled cross_source_hash on {backfilled} existing postings")
+    if moved:
+        typer.echo(f"Moved {moved} existing drafts under the active profile")
 
 
 @app.command()

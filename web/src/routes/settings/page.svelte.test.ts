@@ -12,6 +12,7 @@ function makeData(overrides = {}) {
 		apiBase: '',
 		aiProvider: 'claude',
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
+		profiles: [],
 		version: '0.1.3',
 		profile: null,
 		prefs: { ghosted_after_days: 45 },

@@ -301,6 +301,81 @@ def test_migration_creates_default_profile_for_orphaned_postings(tmp_path, monke
         conn.close()
 
 
+def test_migration_moves_per_job_state_onto_the_default_profile(tmp_path, monkeypatch):
+    # The table rebuild: application/matchscore lose UNIQUE(job_id) for
+    # UNIQUE(job_id, profile_id), every row lands on the Default profile with
+    # its data intact, and a second profile can then own a row for the same job.
+    db_path, models = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        INSERT INTO application (id, job_id, status, notes, applied_at, updated_at)
+            VALUES (10, 1, 'applied', 'called them', '2026-08-01', '2026-08-02');
+        INSERT INTO matchscore (id, job_id, score, rubric, reasoning, scored_by, scored_at)
+            VALUES (20, 1, 88, '{}', 'good fit', 'claude', '2026-08-01');
+        INSERT INTO matchscorehistory (id, job_id, score, scored_by, scored_at)
+            VALUES (30, 1, 70, 'claude', '2026-07-01');
+        INSERT INTO blacklistedcompany (id, name, normalized_name, created_at)
+            VALUES (40, 'Meta', 'meta', '2026-07-01');
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(
+            "SELECT id, job_id, profile_id, status, notes FROM application"
+        ).fetchall() == [(10, 1, 3, "applied", "called them")]
+        assert conn.execute(
+            "SELECT id, job_id, profile_id, score, reasoning, score_kind FROM matchscore"
+        ).fetchall() == [(20, 1, 3, 88, "good fit", "baseline")]
+        assert conn.execute("SELECT profile_id FROM matchscorehistory").fetchall() == [(3,)]
+        assert conn.execute("SELECT profile_id FROM blacklistedcompany").fetchall() == [(3,)]
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name LIKE '%__pre_profile'"
+        ).fetchall()
+
+        # The old one-row-per-job constraint is gone; one-per-(job, profile) holds.
+        conn.execute("INSERT INTO searchprofile (id, role_titles) VALUES (4, '[]')")
+        conn.execute(
+            "INSERT INTO application (job_id, profile_id, status, updated_at, "
+            "used_for_unemployment) VALUES (1, 4, 'new', '2026-08-03', 0)"
+        )
+        conn.execute(
+            "INSERT INTO blacklistedcompany (profile_id, name, normalized_name, created_at) "
+            "VALUES (4, 'Meta', 'meta', '2026-08-03')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO application (job_id, profile_id, status, updated_at, "
+                "used_for_unemployment) VALUES (1, 3, 'new', '2026-08-03', 0)"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO blacklistedcompany (profile_id, name, normalized_name, created_at) "
+                "VALUES (3, 'Meta Inc', 'meta', '2026-08-03')"
+            )
+    finally:
+        conn.close()
+
+
+def test_legacy_draft_dirs_move_under_the_profile_once(tmp_path, monkeypatch):
+    from job_applier import drafts
+    from job_applier.config import settings
+
+    root = tmp_path / "applications"
+    monkeypatch.setattr(settings, "applications_dir", root)
+    (root / "12").mkdir(parents=True)
+    (root / "12" / "resume.md").write_text("# mine", encoding="utf-8")
+    (root / "notes").mkdir()  # not a job dir: left alone
+
+    assert drafts.move_legacy_draft_dirs(1) == 1
+    assert (root / "profile-1" / "12" / "resume.md").read_text(encoding="utf-8") == "# mine"
+    assert not (root / "12").exists()
+    assert (root / "notes").exists()
+    assert drafts.move_legacy_draft_dirs(1) == 0  # idempotent
+
+
 def test_migration_adds_sourceslug_whitelist_columns(tmp_path, monkeypatch):
     # Every pre-migration row got into the table via the seed or feed discovery,
     # so the backfill must read as "not added by hand" — otherwise the /search
