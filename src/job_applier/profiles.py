@@ -22,7 +22,13 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from job_applier.models.db import JobProfileLink, Resume, SearchProfile
+from job_applier.models.db import (
+    JobProfileLink,
+    Resume,
+    SearchProfile,
+    forget_active_profile,
+    session_profile_id,
+)
 
 
 class ProfileError(ValueError):
@@ -34,17 +40,15 @@ def _now() -> datetime:
 
 
 def active_profile(session: Session) -> Optional[SearchProfile]:
-    """The active profile, or ``None`` when no profile exists yet.
+    """The profile this session works for, or ``None`` when none exists yet.
 
-    Falls back to the oldest row when none is flagged, so a hand-built row (or a
-    DB caught mid-migration) still reads as the profile it obviously is.
+    Normally the active profile (oldest row if none is flagged, so a hand-built
+    row still reads as the profile it obviously is). A background task pinned to
+    a profile gets *that* one even after the user switches, which keeps its
+    queue scoping, resume, and writes all on the same person.
     """
-    p = session.exec(
-        select(SearchProfile).where(SearchProfile.is_active == True)  # noqa: E712
-    ).first()
-    if p is None:
-        p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
-    return p
+    pid = session_profile_id(session)
+    return session.get(SearchProfile, pid) if pid is not None else None
 
 
 def _active_resume_id(session: Session) -> Optional[int]:
@@ -144,6 +148,7 @@ def activate_profile(session: Session, profile_id: int) -> SearchProfile:
     target.updated_at = _now()
     session.add(target)
     session.commit()
+    forget_active_profile(session)
     session.refresh(target)
     return target
 
@@ -205,6 +210,24 @@ def adopt_uploaded_resume(session: Session, resume_id: int) -> None:
     p.resume_id = resume_id
     p.updated_at = _now()
     session.add(p)
+
+
+def adopt_legacy_drafts() -> int:
+    """Move pre-profile draft folders under the active profile (one-time, at
+    startup). Returns how many moved. Opens its own session; no-op when there
+    are none, so a fresh install never gets a profile created just for this."""
+    from job_applier import drafts
+    from job_applier.models.db import engine
+
+    root = drafts.settings.applications_dir
+    if not root.is_dir() or not any(
+        e.is_dir() and e.name.isdigit() for e in root.iterdir()
+    ):
+        return 0
+    with Session(engine()) as session:
+        pid = session_profile_id(session, create=True)
+        session.commit()
+    return drafts.move_legacy_draft_dirs(pid)
 
 
 def profile_job_ids(profile_id: int):

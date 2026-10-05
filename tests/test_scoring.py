@@ -21,7 +21,8 @@ from job_applier.models.db import (
     get_session,
     set_setting,
 )
-from job_applier.models.db import ApplicationStatus, FilterStatus
+from job_applier.models.db import ApplicationStatus, FilterStatus, JobProfileLink
+from job_applier.profiles import load_or_create_profile
 
 CANNED = (
     '{"score": 82, "rubric": {"skills_overlap": {"points": 26, "note": "x"}, '
@@ -67,6 +68,12 @@ def _seed_job(session, *, title="Senior Engineer", desc="<p>We use TypeScript.</
         filter_status=FilterStatus.passed,
     )
     session.add(j)
+    session.flush()
+    # Every real posting belongs to a profile (ingest links it); pending-match is
+    # scoped to the active profile's postings.
+    session.add(
+        JobProfileLink(job_id=j.id, search_profile_id=load_or_create_profile(session).id)
+    )
     session.commit()
     session.refresh(j)
     return j

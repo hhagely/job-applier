@@ -10,7 +10,7 @@ from job_applier.ai import bans
 from job_applier.api.app import app
 from job_applier.config import settings
 from job_applier.models import JobPosting
-from job_applier.models.db import FilterStatus, get_session
+from job_applier.models.db import FilterStatus, get_session, session_profile_id
 
 RESUME_MD = "# Jane Dev\n\n## Experience\n\n- Built **TypeScript** services on Node.js\n"
 COVER_MD = "# Jane Dev\njane@example.com\n\nDear Hiring Manager,\n\nI am excited.\n\nSincerely,\nJane\n"
@@ -56,6 +56,14 @@ def _seed_job(engine) -> int:
 
 
 # --- render_print_html (pure) ---------------------------------------------
+
+
+def _pid(engine) -> int:
+    """The profile the API will resolve for this DB (made on first use)."""
+    with Session(engine) as s:
+        pid = session_profile_id(s, create=True)
+        s.commit()
+    return pid
 
 
 def test_render_print_html_resume_uses_resume_css():
@@ -146,7 +154,7 @@ def test_markdown_link_reaching_renderer_loses_its_anchor(kind):
 def test_print_html_endpoint_serves_document(client):
     c, engine = client
     job_id = _seed_job(engine)
-    drafts.save_markdown(job_id, RESUME_MD, None)
+    drafts.save_markdown(job_id, RESUME_MD, None, profile_id=_pid(engine))
 
     resp = c.get(f"/api/jobs/{job_id}/draft/resume/print.html")
     assert resp.status_code == 200
@@ -165,7 +173,7 @@ def test_print_html_404_when_no_markdown(client):
 def test_print_html_404_for_unknown_kind(client):
     c, engine = client
     job_id = _seed_job(engine)
-    drafts.save_markdown(job_id, RESUME_MD, None)
+    drafts.save_markdown(job_id, RESUME_MD, None, profile_id=_pid(engine))
     resp = c.get(f"/api/jobs/{job_id}/draft/bogus/print.html")
     assert resp.status_code == 404
 
@@ -201,25 +209,28 @@ def test_save_draft_saves_md_and_writes_pdf(client, monkeypatch):
     assert body["has_cover_letter_md"] and body["has_cover_letter_pdf"]
 
     # Same files land on disk as before, via the same endpoint.
-    assert drafts.pdf_path(job_id, "resume").read_bytes() == b"%PDF-1.7 fake"
-    assert drafts.pdf_path(job_id, "cover_letter").read_bytes() == b"%PDF-1.7 fake"
-    # Driver was pointed at the print-HTML endpoint for each kind.
-    assert any(u.endswith(f"/api/jobs/{job_id}/draft/resume/print.html") for u in calls)
+    assert drafts.pdf_path(job_id, "resume", profile_id=_pid(engine)).read_bytes() == b"%PDF-1.7 fake"
+    assert drafts.pdf_path(job_id, "cover_letter", profile_id=_pid(engine)).read_bytes() == b"%PDF-1.7 fake"
+    # Driver was pointed at the print-HTML endpoint for each kind, pinned to the
+    # profile whose markdown it must print.
+    pid = _pid(engine)
+    assert any(u.endswith(f"/api/jobs/{job_id}/draft/resume/print.html?profile_id={pid}") for u in calls)
     assert any(
-        u.endswith(f"/api/jobs/{job_id}/draft/cover_letter/print.html") for u in calls
+        u.endswith(f"/api/jobs/{job_id}/draft/cover_letter/print.html?profile_id={pid}")
+        for u in calls
     )
 
 
 def test_render_draft_endpoint_rerenders_existing_markdown(client, monkeypatch):
     c, engine = client
     job_id = _seed_job(engine)
-    drafts.save_markdown(job_id, RESUME_MD, None)
+    drafts.save_markdown(job_id, RESUME_MD, None, profile_id=_pid(engine))
     monkeypatch.setattr(pdf, "render_to_pdf", lambda url: b"%PDF-1.7 fake")
 
     resp = c.post(f"/api/jobs/{job_id}/draft/render")
     assert resp.status_code == 200
     assert resp.json()["has_resume_pdf"] is True
-    assert drafts.pdf_path(job_id, "resume").exists()
+    assert drafts.pdf_path(job_id, "resume", profile_id=_pid(engine)).exists()
 
 
 def test_render_draft_404_without_markdown(client):
@@ -241,8 +252,8 @@ def test_save_draft_keeps_markdown_when_renderer_unavailable(client, monkeypatch
     resp = c.post(f"/api/jobs/{job_id}/draft", json={"resume_md": RESUME_MD})
     assert resp.status_code == 503
     # Markdown is persisted even though the PDF step failed.
-    assert drafts.read_markdown(job_id, "resume") == RESUME_MD
-    assert not drafts.pdf_path(job_id, "resume").exists()
+    assert drafts.read_markdown(job_id, "resume", profile_id=_pid(engine)) == RESUME_MD
+    assert not drafts.pdf_path(job_id, "resume", profile_id=_pid(engine)).exists()
 
 
 # --- real browser render (gated) -------------------------------------------
@@ -266,7 +277,7 @@ def test_draft_save_then_render_produces_real_pdf(
     endpoint serves: a non-empty %PDF lands at pdf_path."""
     monkeypatch.setattr(settings, "applications_dir", tmp_path)
     job_id = 42
-    drafts.save_markdown(job_id, RESUME_MD, None)
+    drafts.save_markdown(job_id, RESUME_MD, None, profile_id=1)
 
     # Render the exact print HTML the endpoint would serve, via a file URL so no
     # running server is required, then persist through the same render_pdf seam.
@@ -274,9 +285,9 @@ def test_draft_save_then_render_produces_real_pdf(
     html_file = tmp_path / "print.html"
     html_file.write_text(html, encoding="utf-8")
     pdf_bytes = pdf.render_to_pdf(html_file.as_uri())
-    drafts.render_pdf(job_id, "resume", pdf_bytes)
+    drafts.render_pdf(job_id, "resume", pdf_bytes, profile_id=1)
 
-    out = drafts.pdf_path(job_id, "resume")
+    out = drafts.pdf_path(job_id, "resume", profile_id=1)
     assert out.exists()
     assert out.read_bytes().startswith(b"%PDF")
     assert out.stat().st_size > 1000

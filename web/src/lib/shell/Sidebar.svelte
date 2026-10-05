@@ -1,16 +1,24 @@
 <script lang="ts">
+	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
 	import Icon from '$lib/Icon.svelte';
+	import type { SearchProfile } from '$lib/api';
 	import { NAV, activeNavId, type CountKey } from './nav';
 	import type { ShellProfile } from './profile';
 
 	let {
 		counts = {},
-		profile = null
+		profile = null,
+		profiles = []
 	}: {
 		counts?: Partial<Record<CountKey, number | null>>;
 		profile?: ShellProfile | null;
+		/** Every saved profile; the switcher only shows once there are two. */
+		profiles?: SearchProfile[];
 	} = $props();
+
+	const activeProfileId = $derived(profiles.find((p) => p.is_active)?.id ?? null);
+	let switching = $state(false);
 
 	let activeId = $derived(activeNavId(page.url.pathname));
 </script>
@@ -56,10 +64,59 @@
 			</div>
 		</a>
 	{/if}
+	{#if profiles.length > 1}
+		<!-- Switching who is using the app is a mutation, so it goes through the
+		     /search form action (server-side), which redirects back here. -->
+		<form
+			method="POST"
+			action="/search?/activateProfile"
+			class="profile-switch"
+			use:enhance={() => {
+				switching = true;
+				return async ({ update }) => {
+					await update();
+					switching = false;
+				};
+			}}
+		>
+			<input type="hidden" name="redirect_to" value={page.url.pathname + page.url.search} />
+			<label class="ps-label" for="profile-switch">Profile</label>
+			<select
+				id="profile-switch"
+				class="mini-input ps-select"
+				name="id"
+				value={activeProfileId === null ? '' : String(activeProfileId)}
+				disabled={switching}
+				onchange={(e) => e.currentTarget.form?.requestSubmit()}
+			>
+				{#each profiles as p (p.id)}
+					<option value={String(p.id)}>{p.name}</option>
+				{/each}
+			</select>
+		</form>
+	{/if}
 </aside>
 
 <style>
 	.count.due {
 		color: var(--weak);
+	}
+	.profile-switch {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 8px;
+		padding: 0 4px;
+	}
+	.ps-label {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--muted);
+	}
+	.ps-select {
+		flex: 1;
+		min-width: 0;
 	}
 </style>

@@ -1,6 +1,6 @@
 import { api, errorReason, type SearchProfileBody } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
-import { fail } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
@@ -61,15 +61,22 @@ export const actions: Actions = {
 		}
 	},
 
+	// Also posted to by the sidebar switcher from any page, which passes
+	// `redirect_to` so the user lands back where they were.
 	activateProfile: async ({ request, fetch }) => {
-		const id = readId(await request.formData());
+		const form = await request.formData();
+		const id = readId(form);
 		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
+		let active;
 		try {
-			const active = await api.activateSearchProfile(fetch, serverApiBase(), id);
-			return { profileOk: true, profileMessage: `Switched to "${active.name}".` };
+			active = await api.activateSearchProfile(fetch, serverApiBase(), id);
 		} catch (e) {
 			return fail(422, { profileError: errorReason(e) });
 		}
+		const back = String(form.get('redirect_to') ?? '');
+		// Same-origin paths only: never bounce to an arbitrary URL from a form field.
+		if (back.startsWith('/') && !back.startsWith('//')) redirect(303, back);
+		return { profileOk: true, profileMessage: `Switched to "${active.name}".` };
 	},
 
 	updateProfileMeta: async ({ request, fetch }) => {

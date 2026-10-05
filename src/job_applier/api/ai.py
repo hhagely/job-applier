@@ -43,7 +43,13 @@ from job_applier.contracts import (
     LEGACY_AI_MODEL_PROVIDER,
     ai_model_key,
 )
-from job_applier.models.db import JobPosting, get_session, get_setting, set_setting
+from job_applier.models.db import (
+    JobPosting,
+    get_session,
+    get_setting,
+    session_profile_id,
+    set_setting,
+)
 
 # The AppSetting key names live in ``job_applier.contracts`` (dependency-free) so
 # api/deps.py and api/drafts.py read the same constants instead of re-typing the
@@ -290,7 +296,8 @@ def start_score_pending(
     # first, re-scanning the same pending queue and burning AI calls. If a
     # score-pending run is already in flight, hand the caller its id so the UI
     # re-attaches to that run instead of starting a duplicate.
-    existing = tasks.active_task("score_pending")
+    profile_id = session_profile_id(session)
+    existing = tasks.active_task("score_pending", profile_id)
     if existing is not None:
         return StartTaskOut(task_id=existing.id)
 
@@ -320,7 +327,7 @@ def start_score_pending(
     fn = functools.partial(
         _run_score_pending, provider=provider, model=model, job_ids=ids
     )
-    task_id = tasks.start_task("score_pending", len(ids), fn)
+    task_id = tasks.start_task("score_pending", len(ids), fn, profile_id=profile_id)
     return StartTaskOut(task_id=task_id)
 
 
@@ -467,7 +474,9 @@ def start_draft_batch(
     fn = functools.partial(
         _run_draft_batch, provider=provider, model=model, job_ids=ids
     )
-    task_id = tasks.start_task("draft_batch", len(ids), fn)
+    task_id = tasks.start_task(
+        "draft_batch", len(ids), fn, profile_id=session_profile_id(session)
+    )
     return StartTaskOut(task_id=task_id)
 
 

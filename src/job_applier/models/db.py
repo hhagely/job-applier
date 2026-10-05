@@ -1,9 +1,12 @@
 from collections.abc import Iterator
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Column, UniqueConstraint, event
+from sqlalchemy import JSON, Column, Index, UniqueConstraint, event
+from sqlalchemy.orm import Session as SASession
+from sqlalchemy.orm import with_loader_criteria
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
 from job_applier.config import settings
@@ -94,8 +97,19 @@ class JobPosting(SQLModel, table=True):
 
 
 class MatchScore(SQLModel, table=True):
+    """A profile's active score for a posting: one per (job, profile).
+
+    Sessions only ever see the current profile's rows (see ``_scope_to_profile``),
+    which is what keeps ``JobPosting.score`` a single object.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "profile_id", name="uq_matchscore_job_profile"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
-    job_id: int = Field(foreign_key="jobposting.id", unique=True)
+    job_id: int = Field(foreign_key="jobposting.id", index=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
 
     score: int  # 0-100
     rubric: dict = Field(default_factory=dict, sa_column=Column(JSON))
@@ -111,6 +125,7 @@ class MatchScore(SQLModel, table=True):
 class MatchScoreHistory(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     job_id: int = Field(foreign_key="jobposting.id", index=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
 
     score: int
     rubric: dict = Field(default_factory=dict, sa_column=Column(JSON))
@@ -122,8 +137,17 @@ class MatchScoreHistory(SQLModel, table=True):
 
 
 class Application(SQLModel, table=True):
+    """A profile's tracking state for a posting: one per (job, profile), so two
+    people applying to the same job each have their own status, notes, and
+    follow-ups. Profile-scoped like ``MatchScore``."""
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "profile_id", name="uq_application_job_profile"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
-    job_id: int = Field(foreign_key="jobposting.id", unique=True)
+    job_id: int = Field(foreign_key="jobposting.id", index=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
 
     status: ApplicationStatus = ApplicationStatus.new
     notes: Optional[str] = None
@@ -268,15 +292,123 @@ class BlacklistedCompany(SQLModel, table=True):
     normalizer used for cross-source dedupe — so user-typed variants like
     "Meta", "Meta Inc", and "Meta, Inc." all collapse to one key and match
     however a source spells the employer. ``name`` keeps the original spelling
-    the user entered for display. Brand-new table, so ``create_all`` handles it
-    with no ALTER.
+    the user entered for display. Per profile: each person ignores their own
+    employers, so uniqueness is on (profile, normalized name).
     """
 
+    __table_args__ = (
+        Index(
+            "ux_blacklistedcompany_profile_name",
+            "profile_id",
+            "normalized_name",
+            unique=True,
+        ),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
     name: str
-    normalized_name: str = Field(index=True, unique=True)
+    normalized_name: str = Field(index=True)
     reason: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+# ---- profile scoping --------------------------------------------------------
+#
+# Application, MatchScore(+History) and BlacklistedCompany belong to a profile.
+# Rather than thread a profile id through every query, every ORM statement a
+# Session runs is filtered to one profile (SQLAlchemy's documented multi-tenant
+# pattern, ``with_loader_criteria``) and new rows are stamped with it on flush.
+# That keeps ``JobPosting.application`` / ``.score`` single objects meaning "the
+# current profile's", so the many call sites that read them don't change.
+#
+# Which profile, in order: ``session.info["profile_id"]`` when a caller pinned
+# one; the ``current_profile_id`` ContextVar (background tasks set it, so a run
+# keeps writing for the profile that started it even if the user switches); the
+# active profile in the DB. Pass ``execution_options(all_profiles=True)`` for the
+# rare query that must see every profile.
+
+PROFILE_SCOPED = (Application, MatchScore, MatchScoreHistory, BlacklistedCompany)
+
+current_profile_id: ContextVar[Optional[int]] = ContextVar(
+    "current_profile_id", default=None
+)
+
+_ACTIVE_CACHE = "_active_profile_id"
+
+
+def _active_profile_id_from(conn) -> Optional[int]:  # noqa: ANN001
+    """The active profile on a raw connection (oldest row if none is flagged,
+    matching ``profiles.active_profile``). Raw SQL so it can run inside ORM
+    events without re-entering them."""
+    row = conn.exec_driver_sql(
+        "SELECT id FROM searchprofile ORDER BY is_active DESC, id LIMIT 1"
+    ).first()
+    return row[0] if row else None
+
+
+def _insert_default_profile(conn) -> int:  # noqa: ANN001
+    return conn.exec_driver_sql(
+        "INSERT INTO searchprofile (name, is_active, role_titles, seniority_terms, "
+        "required_tech, excluded_tech, extracted_skills, updated_at) "
+        "VALUES ('Default', 1, '[]', '[]', '[]', '[]', '[]', CURRENT_TIMESTAMP)"
+    ).lastrowid
+
+
+def session_profile_id(session: Session, *, create: bool = False) -> Optional[int]:
+    """The profile this session reads and writes. ``create`` makes a Default
+    profile on a fresh install, for the flush that needs somewhere to put a row."""
+    pinned = session.info.get("profile_id")
+    if pinned is not None:
+        return pinned
+    ctx = current_profile_id.get()
+    if ctx is not None:
+        return ctx
+    cached = session.info.get(_ACTIVE_CACHE)
+    if cached is not None:
+        return cached
+    conn = session.connection()
+    pid = _active_profile_id_from(conn)
+    if pid is None and create:
+        pid = _insert_default_profile(conn)
+    if pid is not None:
+        session.info[_ACTIVE_CACHE] = pid
+    return pid
+
+
+def forget_active_profile(session: Session) -> None:
+    """Drop the session's cached active profile (after switching profiles)."""
+    session.info.pop(_ACTIVE_CACHE, None)
+
+
+@event.listens_for(SASession, "do_orm_execute")
+def _scope_to_profile(state) -> None:  # noqa: ANN001
+    if not (state.is_select or state.is_update or state.is_delete):
+        return
+    if state.is_column_load or state.execution_options.get("all_profiles"):
+        return
+    pid = session_profile_id(state.session)
+    if pid is None:
+        return
+    state.statement = state.statement.options(
+        *(
+            with_loader_criteria(model, lambda cls: cls.profile_id == pid, include_aliases=True)
+            for model in PROFILE_SCOPED
+        )
+    )
+
+
+@event.listens_for(SASession, "before_flush")
+def _stamp_profile(session, _flush_context, _instances) -> None:  # noqa: ANN001
+    pending = [
+        obj
+        for obj in session.new
+        if isinstance(obj, PROFILE_SCOPED) and obj.profile_id is None
+    ]
+    if pending:
+        pid = session_profile_id(session, create=True)
+        for obj in pending:
+            obj.profile_id = pid
 
 
 _engine = None
@@ -333,6 +465,8 @@ def create_db_and_tables() -> None:
     # After create_all (it backfills into the new jobprofilelink table).
     _ensure_multi_profile_columns()
     _ensure_sourceslug_columns()
+    # Last: rebuilds tables, so every column helper above must have run first.
+    _ensure_per_profile_state()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -540,6 +674,94 @@ def _ensure_application_unemployment_columns() -> None:
             added = True
         if added:
             conn.commit()
+
+
+def _ensure_per_profile_state() -> None:
+    """Give applications, scores, score history and the blacklist an owner profile.
+
+    One-time, gated on ``profile_id`` being absent. Every existing row goes to the
+    active profile (the Default that ``_ensure_multi_profile_columns`` made), which
+    is created here if per-profile rows exist with no profile yet.
+
+    ``application`` and ``matchscore`` shipped with an inline ``UNIQUE (job_id)``
+    that must become ``UNIQUE (job_id, profile_id)``; SQLite can't drop a table
+    constraint with ALTER, so those two are rebuilt (see ``_rebuild_with_profile``).
+    The other two only need the column, plus the blacklist's unique index moving
+    from ``normalized_name`` to ``(profile_id, normalized_name)``.
+    """
+    with engine().connect() as conn:
+
+        def cols(table: str) -> set[str]:
+            return {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+
+        todo = [
+            t
+            for t in ("application", "matchscore", "matchscorehistory", "blacklistedcompany")
+            if "profile_id" not in cols(t)
+        ]
+        if not todo:
+            return
+        pid = _active_profile_id_from(conn)
+        if pid is None and any(
+            conn.exec_driver_sql(f"SELECT 1 FROM {t} LIMIT 1").first() for t in todo
+        ):
+            pid = _insert_default_profile(conn)
+
+        for table in ("application", "matchscore"):
+            if table in todo:
+                _rebuild_with_profile(conn, table, pid, cols(table))
+        for table in ("matchscorehistory", "blacklistedcompany"):
+            if table in todo:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN profile_id INTEGER "
+                    "REFERENCES searchprofile(id)"
+                )
+                conn.exec_driver_sql(f"UPDATE {table} SET profile_id = ?", (pid,))
+                conn.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS ix_{table}_profile_id ON {table} (profile_id)"
+                )
+        if "blacklistedcompany" in todo:
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ix_blacklistedcompany_normalized_name")
+            conn.exec_driver_sql(
+                "CREATE INDEX ix_blacklistedcompany_normalized_name "
+                "ON blacklistedcompany (normalized_name)"
+            )
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_blacklistedcompany_profile_name "
+                "ON blacklistedcompany (profile_id, normalized_name)"
+            )
+        conn.commit()
+
+
+def _rebuild_with_profile(conn, table: str, pid: Optional[int], old_cols: set[str]) -> None:  # noqa: ANN001
+    """Recreate ``table`` at the model's current shape, copying rows across with
+    ``profile_id = pid``. SQLite's documented rebuild: rename the old table aside,
+    create the new one from the SQLModel metadata (so a migrated DB can't drift
+    from a fresh install), copy, drop the old. Runs inside the caller's
+    transaction, so a failure part-way leaves the original table in place.
+
+    Foreign-key enforcement is never switched on for this engine (no
+    ``PRAGMA foreign_keys``), so the rename/drop can't trip a constraint, and no
+    other table references these two.
+    """
+    old = f"{table}__pre_profile"
+    conn.exec_driver_sql(f"ALTER TABLE {table} RENAME TO {old}")
+    # The old indexes follow the rename but keep their names, which the new
+    # table's indexes reuse. Auto-indexes (sql IS NULL) go with the table.
+    for (name,) in conn.exec_driver_sql(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? "
+        "AND sql IS NOT NULL",
+        (old,),
+    ).all():
+        conn.exec_driver_sql(f"DROP INDEX {name}")
+    SQLModel.metadata.tables[table].create(conn)
+    copied = [c.name for c in SQLModel.metadata.tables[table].columns if c.name in old_cols]
+    col_list = ", ".join(copied)
+    conn.exec_driver_sql(
+        f"INSERT INTO {table} ({col_list}, profile_id) SELECT {col_list}, ? FROM {old}",
+        (pid,),
+    )
+    conn.exec_driver_sql(f"DROP TABLE {old}")
 
 
 def get_session() -> Iterator[Session]:
