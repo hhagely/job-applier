@@ -36,6 +36,10 @@
 	});
 
 	// --- Profiles -------------------------------------------------------------
+	// Saving criteria, adding a profile, or changing the blacklist re-matches the
+	// profile against every stored posting in the background (no scrape). Its
+	// progress rides the shared task stream as kind `match`, ref = profile id.
+	const rematch = createTaskRunner({ kind: 'match', ref: () => String(profile.id ?? '') });
 	let profileBusy = $state(false);
 	const busyEnhance = () => {
 		profileBusy = true;
@@ -122,10 +126,11 @@
 			<div class="card-h"><h2>Profiles</h2></div>
 			<div class="card-b">
 				<p class="muted" style="margin-bottom:14px">
-					Keep a profile per kind of search, e.g. an IC search and a manager search, each with
-					its own resume. Only the active profile is used: scrapes filter with its criteria,
-					scoring and drafting use its resume, and the queue shows the jobs it found. Switching
-					back to a profile brings back its scores without re-running them.
+					One profile per person (or per kind of search), each with its own resume, criteria,
+					statuses, scores, and drafts. A scrape runs once for everyone and then fills each
+					profile's queue by its own criteria. Adding a profile or changing its criteria
+					re-checks the jobs already found, so there's no need to scrape again. Switch who's
+					using the app from the sidebar.
 				</p>
 
 				{#if form && 'profileError' in form && form.profileError}
@@ -174,7 +179,11 @@
 										disabled={profileBusy}
 										aria-label="Delete {p.name}"
 										onclick={(e) => {
-											if (!confirm(`Delete "${p.name}"? Its jobs stay in the queue under "All profiles".`))
+											if (
+												!confirm(
+													`Delete "${p.name}"? This permanently removes its statuses, notes, scores, blacklist, and tailored drafts. Jobs and resumes are kept.`
+												)
+											)
 												e.preventDefault();
 										}}>Delete</button
 									>
@@ -204,6 +213,16 @@
 				</form>
 			</div>
 		</div>
+
+		{#if rematch.snap}
+			<ScoreProgress
+				task={rematch.snap}
+				onDismiss={rematch.dismiss}
+				runningVerb="Matching"
+				doneVerb="Matched"
+				resultsLabel="jobs"
+			/>
+		{/if}
 
 		{#if profile.using_defaults}
 			<p class="banner info">

@@ -153,16 +153,11 @@ def stale_scores_stmt(session: Session, resume_id: int):
     Shared by adoption and the stale-count endpoint so the two can't disagree
     about what "stale" covers.
     """
-    stmt = select(MatchScore).where(
+    return select(MatchScore).where(
         MatchScore.resume_id.is_not(None),  # type: ignore[union-attr]
         MatchScore.resume_id != resume_id,
+        MatchScore.job_id.in_(profiles.queue_job_ids(session)),  # type: ignore[attr-defined]
     )
-    profile = profiles.active_profile(session)
-    if profile is not None:
-        stmt = stmt.where(
-            MatchScore.job_id.in_(profiles.profile_job_ids(profile.id))  # type: ignore[attr-defined]
-        )
-    return stmt
 
 
 # ---- pending-match selection ----------------------------------------------
@@ -183,7 +178,7 @@ def select_pending_jobs(
     # serializer and the scoring loop), avoiding a lazy load per job.
     stmt = (
         select(JobPosting)
-        .where(JobPosting.filter_status == FilterStatus.passed)
+        .where(JobPosting.id.in_(profiles.queue_job_ids(session, FilterStatus.passed)))  # type: ignore[union-attr]
         .options(
             selectinload(JobPosting.company),
             selectinload(JobPosting.score),
@@ -191,9 +186,6 @@ def select_pending_jobs(
         )
         .order_by(JobPosting.ingested_at.desc())
     )
-    profile = profiles.active_profile(session)
-    if profile is not None:
-        stmt = stmt.where(JobPosting.id.in_(profiles.profile_job_ids(profile.id)))  # type: ignore[union-attr]
     jobs = list(session.exec(stmt).all())
     active_id = active_resume(session).id if include_stale and active_resume(session) else None
 

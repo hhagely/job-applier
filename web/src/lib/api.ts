@@ -435,8 +435,6 @@ export const api = {
 			unscored_only?: boolean;
 			include_duplicates?: boolean;
 			exclude_archived?: boolean;
-			/** Only postings this search profile surfaced; omitted = every profile's. */
-			profile_id?: number;
 			limit?: number;
 		} = {}
 	) => {
@@ -458,7 +456,7 @@ export const api = {
 	getStatusCounts: (
 		fetchFn: FetchFn,
 		base: string,
-		params: { filter_status?: FilterStatus; include_duplicates?: boolean; profile_id?: number } = {}
+		params: { filter_status?: FilterStatus; include_duplicates?: boolean } = {}
 	) => {
 		const q = new URLSearchParams();
 		for (const [k, v] of Object.entries(params)) {

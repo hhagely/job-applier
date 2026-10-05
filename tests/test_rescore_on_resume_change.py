@@ -45,7 +45,7 @@ def _seed_job(engine, *, source_id: str = "t-1", title: str = "Senior Engineer")
         s.flush()
         # Every real posting belongs to a profile (ingest links it); pending-match
         # and staleness are scoped to the active profile's postings.
-        s.add(JobProfileLink(job_id=job.id, search_profile_id=load_or_create_profile(s).id))
+        s.add(JobProfileLink(job_id=job.id, profile_id=load_or_create_profile(s).id))
         s.commit()
         s.refresh(job)
         return job.id

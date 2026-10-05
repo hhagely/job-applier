@@ -79,7 +79,13 @@ class JobPosting(SQLModel, table=True):
         default=None, foreign_key="jobposting.id", index=True
     )
     raw: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # The source's tags (RawJob.tags). Persisted so a profile added or edited
+    # after the scrape can be matched against the stored posting exactly as it
+    # would have been at ingest. Null on postings saved before the column.
+    tags: Optional[list[str]] = Field(default=None, sa_column=Column(JSON))
 
+    # The *shared* rules' verdict (remote, US, sales, crypto); always ``passed``
+    # for anything stored. Each profile's own verdict is on its JobProfileLink.
     filter_status: FilterStatus = FilterStatus.passed
     filter_reason: Optional[str] = None
 
@@ -93,6 +99,11 @@ class JobPosting(SQLModel, table=True):
     application: Optional["Application"] = Relationship(
         back_populates="job",
         sa_relationship_kwargs={"uselist": False, "cascade": "all, delete-orphan"},
+    )
+    # The current profile's verdict on this posting (profile-scoped, like
+    # ``application``), or None when the profile hasn't evaluated it.
+    link: Optional["JobProfileLink"] = Relationship(
+        sa_relationship_kwargs={"uselist": False, "viewonly": True}
     )
 
 
@@ -256,18 +267,24 @@ class SearchProfile(SQLModel, table=True):
 
 
 class JobProfileLink(SQLModel, table=True):
-    """Which search profile(s) surfaced a posting.
+    """One profile's verdict on one stored posting.
 
-    Many-to-many rather than a column on ``JobPosting`` because dedupe stores a
-    posting once: when profile B's ingest meets a job profile A already saved,
-    ingest links the existing row to B instead of skipping it. Scopes the queue,
-    pending-match, and stale-score adoption to the active profile.
+    The scrape stores every posting that passes the shared rules, once; then
+    ``matching`` runs each profile's personal rules (seniority, tech, home-state
+    allow-list, blacklist) and records the outcome here — including ``dropped``,
+    so a row's existence means "this profile has evaluated this posting" and a
+    re-scrape only evaluates what's new. A profile's queue is its ``passed``
+    (or ``manual``) rows. Profile-scoped like ``Application``.
     """
 
-    job_id: int = Field(foreign_key="jobposting.id", primary_key=True)
-    search_profile_id: int = Field(
-        foreign_key="searchprofile.id", primary_key=True, index=True
+    __table_args__ = (
+        Index("ix_jobprofilelink_profile_status", "profile_id", "filter_status"),
     )
+
+    job_id: int = Field(foreign_key="jobposting.id", primary_key=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", primary_key=True, index=True)
+    filter_status: FilterStatus = FilterStatus.passed
+    filter_reason: Optional[str] = None
     linked_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -328,7 +345,13 @@ class BlacklistedCompany(SQLModel, table=True):
 # active profile in the DB. Pass ``execution_options(all_profiles=True)`` for the
 # rare query that must see every profile.
 
-PROFILE_SCOPED = (Application, MatchScore, MatchScoreHistory, BlacklistedCompany)
+PROFILE_SCOPED = (
+    Application,
+    MatchScore,
+    MatchScoreHistory,
+    BlacklistedCompany,
+    JobProfileLink,
+)
 
 current_profile_id: ContextVar[Optional[int]] = ContextVar(
     "current_profile_id", default=None
@@ -467,6 +490,7 @@ def create_db_and_tables() -> None:
     _ensure_sourceslug_columns()
     # Last: rebuilds tables, so every column helper above must have run first.
     _ensure_per_profile_state()
+    _ensure_match_columns()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -582,11 +606,27 @@ def _ensure_multi_profile_columns() -> None:
                 "(SELECT id FROM resume WHERE is_active = 1 LIMIT 1) WHERE id = ?",
                 (first,),
             )
-            conn.exec_driver_sql(
-                "INSERT OR IGNORE INTO jobprofilelink (job_id, search_profile_id, linked_at) "
-                "SELECT id, ?, CURRENT_TIMESTAMP FROM jobposting",
-                (first,),
-            )
+            # A DB coming straight from a pre-profile release gets jobprofilelink
+            # from create_all at today's shape (profile_id + a NOT NULL verdict);
+            # one migrated by the first multi-profile build still has the old
+            # column, which _ensure_match_columns renames afterwards.
+            link_cols = {
+                r[1] for r in conn.exec_driver_sql("PRAGMA table_info(jobprofilelink)")
+            }
+            if "profile_id" in link_cols:
+                conn.exec_driver_sql(
+                    "INSERT OR IGNORE INTO jobprofilelink "
+                    "(job_id, profile_id, filter_status, filter_reason, linked_at) "
+                    "SELECT id, ?, COALESCE(filter_status, 'passed'), filter_reason, CURRENT_TIMESTAMP "
+                    "FROM jobposting",
+                    (first,),
+                )
+            else:
+                conn.exec_driver_sql(
+                    "INSERT OR IGNORE INTO jobprofilelink (job_id, search_profile_id, linked_at) "
+                    "SELECT id, ?, CURRENT_TIMESTAMP FROM jobposting",
+                    (first,),
+                )
         conn.commit()
 
 
@@ -762,6 +802,52 @@ def _rebuild_with_profile(conn, table: str, pid: Optional[int], old_cols: set[st
         (pid,),
     )
     conn.exec_driver_sql(f"DROP TABLE {old}")
+
+
+def _ensure_match_columns() -> None:
+    """Scrape-once / match-per-profile columns (PR 2 of multi-profile).
+
+    - ``jobprofilelink.search_profile_id`` is renamed ``profile_id`` so the link
+      table is scoped like every other per-profile table.
+    - ``jobprofilelink.filter_status`` / ``filter_reason`` hold each profile's own
+      verdict. Existing links were all written by an ingest that *was* that
+      profile's filter, so they backfill from the posting's columns.
+    - ``jobposting.tags`` keeps the source tags so later matching sees what
+      ingest saw. Existing postings stay null (treated as no tags).
+    """
+    with engine().connect() as conn:
+
+        def cols(table: str) -> set[str]:
+            return {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+
+        link_cols = cols("jobprofilelink")
+        if "search_profile_id" in link_cols and "profile_id" not in link_cols:
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ix_jobprofilelink_search_profile_id")
+            conn.exec_driver_sql(
+                "ALTER TABLE jobprofilelink RENAME COLUMN search_profile_id TO profile_id"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_jobprofilelink_profile_id "
+                "ON jobprofilelink (profile_id)"
+            )
+        if "filter_status" not in link_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobprofilelink ADD COLUMN filter_status VARCHAR(7) "
+                "NOT NULL DEFAULT 'passed'"
+            )
+            conn.exec_driver_sql("ALTER TABLE jobprofilelink ADD COLUMN filter_reason VARCHAR")
+            conn.exec_driver_sql(
+                "UPDATE jobprofilelink SET "
+                "filter_status = COALESCE((SELECT filter_status FROM jobposting WHERE jobposting.id = job_id), 'passed'), "
+                "filter_reason = (SELECT filter_reason FROM jobposting WHERE jobposting.id = job_id)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_jobprofilelink_profile_status "
+                "ON jobprofilelink (profile_id, filter_status)"
+            )
+        if "tags" not in cols("jobposting"):
+            conn.exec_driver_sql("ALTER TABLE jobposting ADD COLUMN tags JSON")
+        conn.commit()
 
 
 def get_session() -> Iterator[Session]:

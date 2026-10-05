@@ -15,8 +15,6 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from job_applier import profiles, services
 from job_applier.api.app import app
-from job_applier.filters import build_config
-from job_applier.ingest import IngestStats, ingest_one
 from job_applier.models import JobPosting, JobProfileLink, Resume, SearchProfile
 from job_applier.models.db import get_session
 from job_applier.sources.base import RawJob
@@ -154,103 +152,44 @@ def test_singular_endpoint_edits_the_active_profile(client):
 
 
 # ---------------------------------------------------------------------------
-# Ingest linking
-# ---------------------------------------------------------------------------
-
-
-_TS = build_config(role_titles=[], seniority_terms=["senior"], required_tech=["typescript"], excluded_tech=[])
-_RUST = build_config(role_titles=[], seniority_terms=["senior"], required_tech=["rust"], excluded_tech=[])
-
-
-def _links(session: Session) -> set[tuple[int, int]]:
-    return {
-        (link.job_id, link.search_profile_id)
-        for link in session.exec(select(JobProfileLink)).all()
-    }
-
-
-def test_duplicate_passing_the_new_profile_is_linked_not_reinserted(session):
-    a = profiles.load_or_create_profile(session)
-    b = profiles.create_profile(session, name="B")
-    ingest_one(session, _raw(), IngestStats(), filter_config=_TS, profile_id=a.id)
-    session.commit()
-    job_id = session.exec(select(JobPosting.id)).one()
-
-    stats = IngestStats()
-    ingest_one(session, _raw(), stats, filter_config=_TS, profile_id=b.id)
-    session.commit()
-
-    assert stats.linked_existing == 1
-    assert stats.inserted == 0
-    assert len(session.exec(select(JobPosting)).all()) == 1
-    assert _links(session) == {(job_id, a.id), (job_id, b.id)}
-
-
-def test_duplicate_failing_the_new_profile_is_not_linked(session):
-    a = profiles.load_or_create_profile(session)
-    b = profiles.create_profile(session, name="B")
-    ingest_one(session, _raw(), IngestStats(), filter_config=_TS, profile_id=a.id)
-    session.commit()
-
-    stats = IngestStats()
-    ingest_one(session, _raw(), stats, filter_config=_RUST, profile_id=b.id)
-    session.commit()
-
-    assert stats.linked_existing == 0
-    assert stats.skipped_duplicate == 1
-    assert {pid for _, pid in _links(session)} == {a.id}
-
-
-def test_cross_source_duplicate_is_linked_to_the_new_profile(session):
-    a = profiles.load_or_create_profile(session)
-    b = profiles.create_profile(session, name="B")
-    ingest_one(session, _raw(), IngestStats(), filter_config=_TS, profile_id=a.id)
-    session.commit()
-
-    # Same company + title from a different source: the cross-source path.
-    stats = IngestStats()
-    ingest_one(
-        session,
-        _raw(source="other", source_id="o-9", url="https://other.example/9"),
-        stats,
-        filter_config=_TS,
-        profile_id=b.id,
-    )
-    session.commit()
-
-    assert stats.linked_existing == 1
-    assert len(session.exec(select(JobPosting)).all()) == 1
-
-
-# ---------------------------------------------------------------------------
 # Scoping: pending-match + queue
 # ---------------------------------------------------------------------------
+
+
+def _queued(session: Session, profile_id: int, job_id: int) -> None:
+    """Matching gave ``job_id`` a passed verdict for ``profile_id``."""
+    session.add(JobProfileLink(job_id=job_id, profile_id=profile_id))
+
+
+def _job(session: Session, source_id: str, title: str) -> int:
+    j = JobPosting(
+        source="test",
+        source_id=source_id,
+        url=f"https://example.com/{source_id}",
+        title=title,
+        description="TypeScript.",
+        dedupe_hash=f"h-{source_id}",
+    )
+    session.add(j)
+    session.flush()
+    return j.id
 
 
 def test_pending_match_and_queue_are_scoped_to_the_active_profile(session, client):
     a = profiles.load_or_create_profile(session)
     session.commit()
     b = profiles.create_profile(session, name="B")
-    ingest_one(session, _raw(), IngestStats(), filter_config=_TS, profile_id=a.id)
-    ingest_one(
-        session,
-        _raw(source_id="t-2", title="Senior Platform Engineer", url="https://example.com/2"),
-        IngestStats(),
-        filter_config=_TS,
-        profile_id=b.id,
-    )
+    _queued(session, a.id, _job(session, "t-1", "Senior Software Engineer"))
+    _queued(session, b.id, _job(session, "t-2", "Senior Platform Engineer"))
     session.commit()
 
     assert [j.title for j in services.select_pending_jobs(session)] == [
         "Senior Software Engineer"
     ]
+    assert [j["title"] for j in client.get("/api/jobs").json()] == ["Senior Software Engineer"]
     profiles.activate_profile(session, b.id)
     assert [j.title for j in services.select_pending_jobs(session)] == [
         "Senior Platform Engineer"
     ]
-
-    scoped = client.get(f"/api/jobs?profile_id={a.id}").json()
-    assert [j["title"] for j in scoped] == ["Senior Software Engineer"]
-    assert len(client.get("/api/jobs").json()) == 2
-    counts = client.get(f"/api/jobs/status-counts?profile_id={b.id}").json()
-    assert counts["total"] == 1
+    assert [j["title"] for j in client.get("/api/jobs").json()] == ["Senior Platform Engineer"]
+    assert client.get("/api/jobs/status-counts").json()["total"] == 1

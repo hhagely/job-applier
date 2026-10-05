@@ -72,7 +72,7 @@ def _seed_job(session, *, title="Senior Engineer", desc="<p>We use TypeScript.</
     # Every real posting belongs to a profile (ingest links it); pending-match is
     # scoped to the active profile's postings.
     session.add(
-        JobProfileLink(job_id=j.id, search_profile_id=load_or_create_profile(session).id)
+        JobProfileLink(job_id=j.id, profile_id=load_or_create_profile(session).id)
     )
     session.commit()
     session.refresh(j)

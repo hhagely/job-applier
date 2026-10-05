@@ -43,7 +43,7 @@ TaskSnapshot = dict
 # Task kinds that only touch the network + DB, never an AI CLI. These get their
 # own worker so a long scrape doesn't hold up scoring/drafting; everything else
 # shares the AI lane, where serializing is the point (see the module docstring).
-NET_KINDS = frozenset({"ingest", "refresh_companies"})
+NET_KINDS = frozenset({"ingest", "refresh_companies", "match"})
 AI_LANE = "ai"
 NET_LANE = "net"
 
