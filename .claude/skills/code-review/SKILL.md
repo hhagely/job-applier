@@ -1,11 +1,11 @@
 ---
 name: code-review
-description: Perform a full code review of the currently checked out branch against main for this Python (FastAPI/SQLModel) + SvelteKit app. Analyzes tests, DRY code, architecture, Python/TypeScript best practices, error handling, correctness & caller-impact, documentation, DB migration safety, SvelteKit conventions, and AI-sandbox safety across the branch diff. Use when the user asks to review the branch, review a PR, or do a code review.
+description: Perform a full code review of the currently checked out branch against its base (the open PR's base branch, else main) for this Python (FastAPI/SQLModel) + SvelteKit app. Analyzes tests, DRY code, architecture, Python/TypeScript best practices, error handling, correctness & caller-impact, documentation, DB migration safety, SvelteKit conventions, and AI-sandbox safety across the branch diff. Use when the user asks to review the branch, review a PR, or do a code review.
 ---
 
 # code-review
 
-Perform a comprehensive code review of all changes on the currently checked out branch compared to `main`. Scope is limited to the branch diff — for a whole-codebase audit, use `/codebase-audit` instead.
+Perform a comprehensive code review of all changes on the currently checked out branch compared to its **base**: the base branch of the branch's open PR (so a PR into the `multi-profile` integration branch, or a PR stacked on another PR, is reviewed on its own changes), or `main` when there is no open PR. Scope is limited to the branch diff — for a whole-codebase audit, use `/codebase-audit` instead.
 
 This skill is a **thin launcher** for the shared review engine — a Claude Code Workflow at `.claude/skills/_shared/review-engine.workflow.js` (the SAME engine `/codebase-audit` uses, run with `mode: "diff"`). The engine fans out one agent per review dimension (deterministically — every dimension runs every time), each returns schema-enforced findings, then the engine semantically merges them and computes the verdict in JS. The verbose per-agent reports stay OUT of this conversation. **Auto-fix is NOT part of the workflow** — the engine returns findings only; you (the main loop) run the auto-fix in Step 4. Your job: (1) identify the diff inline, (2) call the Workflow with the review config, (3) present the result, (4) auto-fix on BLOCK/NEEDS WORK, (5) final report.
 
@@ -18,15 +18,22 @@ This skill is a **thin launcher** for the shared review engine — a Claude Code
 
 ### Step 1: Identify Changes (inline, in this conversation)
 
-Determine the diff between the current branch and `main`:
+Find the base first. The review agents do the same lookup, so the launcher and the agents always agree:
 
 ```bash
-git diff main...HEAD --name-only
-git diff main...HEAD --stat
+gh pr view --json baseRefName -q .baseRefName   # the open PR's base; if this fails or prints nothing, use main
+git fetch -q origin <BASE>
+```
+
+Use `origin/<BASE>` as `<BASE_REF>` in every command below (shell variables don't persist between commands, so substitute the literal ref):
+
+```bash
+git diff <BASE_REF>...HEAD --name-only
+git diff <BASE_REF>...HEAD --stat
 git rev-parse --abbrev-ref HEAD
 ```
 
-If there are no changes vs main, inform the user and stop. Note which area(s) the diff touches — backend (`src/job_applier/`, `tests/`), frontend (`web/`), desktop (`desktop/`) — so the auto-fix step (Step 4) runs the right verification commands.
+If there are no changes vs the base, inform the user and stop. Note which area(s) the diff touches — backend (`src/job_applier/`, `tests/`), frontend (`web/`), desktop (`desktop/`) — so the auto-fix step (Step 4) runs the right verification commands.
 
 **Presence signals (for conditional domain agents).** These are the domain agents in this skill's `PROJECT_CONFIGS` entry that are marked `conditional`, with the signals each one needs. The engine runs a conditional agent only when `scope.present` includes at least one of its signals, so this table and the detection lines below must cover every signal it lists.
 
@@ -39,9 +46,9 @@ If there are no changes vs main, inform the user and stop. Note which area(s) th
 Derive the signals from the `--name-only` list, with one detection line per signal in the table:
 
 ```bash
-git diff main...HEAD --name-only | grep -qE '^src/job_applier/models/|^src/job_applier/maintenance\.py|^tests/test_migrations\.py' && echo schema
-git diff main...HEAD --name-only | grep -qE '^web/' && echo web
-git diff main...HEAD --name-only | grep -qE '^src/job_applier/(ai/|drafts\.py|pdf\.py)|^desktop/main\.js|^\.claude/commands/' && echo ai
+git diff <BASE_REF>...HEAD --name-only | grep -qE '^src/job_applier/models/|^src/job_applier/maintenance\.py|^tests/test_migrations\.py' && echo schema
+git diff <BASE_REF>...HEAD --name-only | grep -qE '^web/' && echo web
+git diff <BASE_REF>...HEAD --name-only | grep -qE '^src/job_applier/(ai/|drafts\.py|pdf\.py)|^desktop/main\.js|^\.claude/commands/' && echo ai
 ```
 
 Collect the emitted signals into `scope.present` (e.g. `["schema", "web"]`). When a changed file plausibly belongs to a signal that its pattern missed, add the signal anyway: an extra signal costs one agent run, while a missing one skips a review dimension. Baseline agents are never conditional, so they always run. An empty or omitted `scope.present` runs every agent.
@@ -68,7 +75,7 @@ Pass exactly this as `args` — nothing else, and never a `config` key:
   "scope": {
     "branch": "<current branch from Step 1>",
     "date": "<today>",
-    "summary": "branch diff vs main",
+    "summary": "branch diff vs <BASE_REF>",
     "present": [
       "<signals from Step 1>"
     ]
