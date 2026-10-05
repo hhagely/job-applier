@@ -25,7 +25,7 @@ import pytest
 # jobposting predates cross_source_hash + jd_fingerprint/duplicate_of;
 # matchscore predates resume_id; both score tables predate score_kind
 # (matchscorehistory shipped with resume_id); searchprofile predates
-# home_state; sourceslug predates added_by_user/label; application predates
+# home_state and the multi-profile name/is_active/resume_id; sourceslug predates added_by_user/label; application predates
 # the followup and unemployment columns. company / resume / appsetting /
 # blacklistedcompany have never needed a helper and so appear at their
 # shipped shape — they're here so that the first column added to any of them
@@ -127,6 +127,12 @@ CREATE TABLE blacklistedcompany (
     reason VARCHAR,
     created_at DATETIME
 );
+CREATE TABLE jobprofilelink (
+    job_id INTEGER NOT NULL,
+    search_profile_id INTEGER NOT NULL,
+    linked_at DATETIME,
+    PRIMARY KEY (job_id, search_profile_id)
+);
 """
 
 _LEGACY_TABLES = frozenset(re.findall(r"CREATE TABLE (\w+)", _LEGACY_SCHEMA))
@@ -215,6 +221,84 @@ def test_migration_adds_searchprofile_home_state(tmp_path, monkeypatch):
     # so an upgraded DB can store a home state instead of silently lacking it.
     db_path, _ = _run_startup(tmp_path, monkeypatch)
     assert "home_state" in _cols(db_path, "searchprofile")
+
+
+def _run_startup_with(tmp_path, monkeypatch, seed_sql: str):
+    """Like ``_run_startup`` but with rows in the legacy DB before migrating."""
+    db_path = tmp_path / "legacy.db"
+    _make_legacy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(seed_sql)
+    conn.commit()
+    conn.close()
+
+    from job_applier import models
+    from job_applier.config import settings
+
+    monkeypatch.setattr(settings, "db_path", db_path)
+    monkeypatch.setattr(models.db, "_engine", None)
+    models.db.create_db_and_tables()
+    return db_path, models
+
+
+def test_migration_makes_existing_profile_the_active_default(tmp_path, monkeypatch):
+    # The single pre-multi-profile row becomes the active "Default" profile, on
+    # the active resume, and owns every existing posting — the queue the user had
+    # before upgrading is exactly that profile's queue.
+    db_path, models = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO resume (id, original_filename, pdf_path, extracted_text, is_active)
+            VALUES (1, 'old.pdf', '/x', 't', 0), (2, 'cur.pdf', '/y', 't', 1);
+        INSERT INTO searchprofile (id, role_titles) VALUES (7, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title)
+            VALUES (1, 'gh', 'a', 'u', 'A'), (2, 'gh', 'b', 'u', 'B');
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(
+            "SELECT name, is_active, resume_id FROM searchprofile"
+        ).fetchall() == [("Default", 1, 2)]
+        assert conn.execute(
+            "SELECT job_id, search_profile_id FROM jobprofilelink ORDER BY job_id"
+        ).fetchall() == [(1, 7), (2, 7)]
+    finally:
+        conn.close()
+
+    # One-time: a second startup must not re-home postings that lost their link
+    # (a deleted profile's postings stay unlinked).
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM jobprofilelink WHERE job_id = 2")
+    conn.commit()
+    conn.close()
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT job_id FROM jobprofilelink").fetchall() == [(1,)]
+    finally:
+        conn.close()
+
+
+def test_migration_creates_default_profile_for_orphaned_postings(tmp_path, monkeypatch):
+    # Postings but no profile row (filter ran on built-in defaults): a Default
+    # profile is created so those postings aren't left out of every scoped view.
+    db_path, _ = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        "INSERT INTO jobposting (id, source, source_id, url, title) "
+        "VALUES (1, 'gh', 'a', 'u', 'A');",
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute("SELECT id, name, is_active FROM searchprofile").fetchall()
+        assert [(r[1], r[2]) for r in rows] == [("Default", 1)]
+        assert conn.execute(
+            "SELECT job_id, search_profile_id FROM jobprofilelink"
+        ).fetchall() == [(1, rows[0][0])]
+    finally:
+        conn.close()
 
 
 def test_migration_adds_sourceslug_whitelist_columns(tmp_path, monkeypatch):

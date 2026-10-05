@@ -4,15 +4,22 @@ import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const [profile, resume, blacklist, coverage, watched] = await Promise.all([
+	const [profile, profiles, resumes, blacklist, coverage, watched] = await Promise.all([
 		api.getSearchProfile(fetch, serverApiBase()),
-		api.getCurrentResume(fetch, serverApiBase()),
+		api.listSearchProfiles(fetch, serverApiBase()),
+		api.listResumes(fetch, serverApiBase()),
 		api.listBlacklist(fetch, serverApiBase()),
 		api.getCompanyCoverage(fetch, serverApiBase()),
 		api.listWatchedCompanies(fetch, serverApiBase())
 	]);
-	return { profile, hasResume: resume !== null, blacklist, coverage, watched };
+	const hasResume = resumes.some((r) => r.is_active);
+	return { profile, profiles, resumes, hasResume, blacklist, coverage, watched };
 };
+
+function readId(form: FormData): number | null {
+	const id = Number(form.get('id'));
+	return Number.isInteger(id) && id > 0 ? id : null;
+}
 
 function splitList(raw: FormDataEntryValue | null): string[] {
 	if (typeof raw !== 'string') return [];
@@ -35,6 +42,64 @@ function readProfile(form: FormData): SearchProfileBody {
 }
 
 export const actions: Actions = {
+	// --- Profiles: only one is active; it drives ingest and owns the active resume.
+	createProfile: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const name = String(form.get('name') ?? '').trim();
+		if (!name) return fail(400, { profileError: 'Give the profile a name.' });
+		const cloneFrom = Number(form.get('clone_from'));
+		try {
+			const created = await api.createSearchProfile(
+				fetch,
+				serverApiBase(),
+				name,
+				Number.isInteger(cloneFrom) && cloneFrom > 0 ? cloneFrom : undefined
+			);
+			return { profileOk: true, profileMessage: `Created "${created.name}". Switch to it to edit its criteria.` };
+		} catch (e) {
+			return fail(422, { profileError: errorReason(e) });
+		}
+	},
+
+	activateProfile: async ({ request, fetch }) => {
+		const id = readId(await request.formData());
+		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
+		try {
+			const active = await api.activateSearchProfile(fetch, serverApiBase(), id);
+			return { profileOk: true, profileMessage: `Switched to "${active.name}".` };
+		} catch (e) {
+			return fail(422, { profileError: errorReason(e) });
+		}
+	},
+
+	updateProfileMeta: async ({ request, fetch }) => {
+		const form = await request.formData();
+		const id = readId(form);
+		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
+		const name = String(form.get('name') ?? '').trim();
+		const resumeId = Number(form.get('resume_id'));
+		try {
+			await api.updateSearchProfileMeta(fetch, serverApiBase(), id, {
+				...(name ? { name } : {}),
+				...(Number.isInteger(resumeId) && resumeId > 0 ? { resume_id: resumeId } : {})
+			});
+			return { profileOk: true, profileMessage: 'Profile updated.' };
+		} catch (e) {
+			return fail(422, { profileError: errorReason(e) });
+		}
+	},
+
+	deleteProfile: async ({ request, fetch }) => {
+		const id = readId(await request.formData());
+		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
+		try {
+			await api.deleteSearchProfile(fetch, serverApiBase(), id);
+			return { profileOk: true, profileMessage: 'Profile deleted.' };
+		} catch (e) {
+			return fail(409, { profileError: errorReason(e) });
+		}
+	},
+
 	save: async ({ request, fetch }) => {
 		const form = await request.formData();
 		try {

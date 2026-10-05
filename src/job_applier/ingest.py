@@ -40,9 +40,11 @@ from job_applier.models import (
     BlacklistedCompany,
     Company,
     JobPosting,
+    JobProfileLink,
     engine,
 )
 from job_applier.models.db import FilterStatus
+from job_applier.profiles import load_or_create_profile
 from job_applier.sources import RawJob, SourceAdapter, get_all_sources
 
 log = logging.getLogger(__name__)
@@ -91,6 +93,9 @@ class IngestStats:
     manual_review: int = 0
     stale: int = 0
     flagged_jd_similar: int = 0
+    # Already-saved postings (found under another profile) that pass the active
+    # profile's filter and were linked to it instead of being re-inserted.
+    linked_existing: int = 0
 
 
 def _is_stale(posted_at: datetime | None, now: datetime) -> bool:
@@ -150,22 +155,32 @@ class _IngestCaches:
     incoming job*, so the cost of a batch grew with the product of the two.
     """
 
-    # JobPosting.dedupe_hash for every posting.
-    hashes: set[str]
-    # Non-null JobPosting.cross_source_hash for every posting.
-    cross: set[str]
-    # (source, company_id, normalized title) for every posting.
-    titles: set[tuple[str, int, str]]
+    # Each dedupe key maps to the posting holding it, so a duplicate the active
+    # profile hasn't seen yet can be linked to that posting.
+    # JobPosting.dedupe_hash -> id, for every posting.
+    hashes: dict[str, int]
+    # Non-null JobPosting.cross_source_hash -> id (first holder wins).
+    cross: dict[str, int]
+    # (source, company_id, normalized title) -> id (first holder wins).
+    titles: dict[tuple[str, int, str], int]
     # (canonical posting id, fingerprint) for postings recent enough to match a
     # near-duplicate JD against. Canonical means the row's ``duplicate_of`` when
     # it is itself a dup, so a later match never links to a link.
     jd: list[tuple[int, str]]
     # company name -> (id, is_blocked)
     companies: dict[str, tuple[int, bool]]
+    # Posting ids already linked to the profile this run ingests for.
+    linked: set[int]
 
     @classmethod
-    def load(cls, session: Session, *, now: datetime | None = None) -> "_IngestCaches":
-        """Snapshot the dedupe state from the DB. Four queries, once per run."""
+    def load(
+        cls,
+        session: Session,
+        *,
+        now: datetime | None = None,
+        profile_id: int | None = None,
+    ) -> "_IngestCaches":
+        """Snapshot the dedupe state from the DB. Five queries, once per run."""
         cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=JD_LOOKBACK_DAYS)
         rows = session.exec(
             select(
@@ -175,7 +190,8 @@ class _IngestCaches:
                 JobPosting.location,
                 JobPosting.dedupe_hash,
                 JobPosting.cross_source_hash,
-            )
+                JobPosting.id,
+            ).order_by(JobPosting.id)
         ).all()
         jd_rows = session.exec(
             select(JobPosting.id, JobPosting.duplicate_of, JobPosting.jd_fingerprint)
@@ -185,15 +201,48 @@ class _IngestCaches:
         company_rows = session.exec(
             select(Company.id, Company.name, Company.is_blocked)
         ).all()
+        linked: set[int] = set()
+        if profile_id is not None:
+            linked = set(
+                session.exec(
+                    select(JobProfileLink.job_id).where(
+                        JobProfileLink.search_profile_id == profile_id
+                    )
+                ).all()
+            )
+        cross: dict[str, int] = {}
+        titles: dict[tuple[str, int, str], int] = {}
+        for r in rows:
+            if r[5] is not None:
+                cross.setdefault(r[5], r[6])
+            if r[1] is not None:
+                titles.setdefault((r[0], r[1], normalize_title(r[2], r[3])), r[6])
         return cls(
-            hashes={r[4] for r in rows},
-            cross={r[5] for r in rows if r[5] is not None},
-            titles={
-                (r[0], r[1], normalize_title(r[2], r[3])) for r in rows if r[1] is not None
-            },
+            hashes={r[4]: r[6] for r in rows},
+            cross=cross,
+            titles=titles,
             jd=[(dup_of or pid, fp) for pid, dup_of, fp in jd_rows],
             companies={name: (cid, blocked) for cid, name, blocked in company_rows},
+            linked=linked,
         )
+
+
+def _link_existing(
+    session: Session,
+    posting_id: int,
+    profile_id: int | None,
+    caches: _IngestCaches,
+    stats: IngestStats,
+) -> bool:
+    """Link an already-saved posting to the profile being ingested for, if it
+    isn't yet. Returns True when a link was added (the caller counts it instead
+    of a duplicate skip)."""
+    if profile_id is None or posting_id in caches.linked:
+        return False
+    session.add(JobProfileLink(job_id=posting_id, search_profile_id=profile_id))
+    caches.linked.add(posting_id)
+    stats.linked_existing += 1
+    return True
 
 
 def ingest_one(
@@ -204,8 +253,14 @@ def ingest_one(
     filter_config: FilterConfig | None = None,
     blacklist: frozenset[str] | None = None,
     caches: "_IngestCaches | None" = None,
+    profile_id: int | None = None,
 ) -> None:
     """Dedupe, filter, and (if it survives) persist one raw job into ``session``.
+
+    ``profile_id`` is the search profile this run ingests for. New postings are
+    linked to it, and so is an already-saved posting when the job passes *this*
+    profile's filter: it was saved under another profile and dedupe would
+    otherwise keep it from ever surfacing here. ``None`` skips linking.
 
     ``caches`` carries the dedupe state across calls; ``run_ingest`` builds it
     once per run. When omitted it is loaded from ``session`` on every call, which
@@ -213,7 +268,7 @@ def ingest_one(
     handful of rows a test or a one-off script pushes through, not for a real run.
     """
     if caches is None:
-        caches = _IngestCaches.load(session)
+        caches = _IngestCaches.load(session, profile_id=profile_id)
 
     stats.fetched += 1
 
@@ -226,18 +281,30 @@ def ingest_one(
         return
 
     h = dedupe_hash(raw)
+    stale = _is_stale(raw.posted_at, datetime.now(timezone.utc))
 
-    if h in caches.hashes:
+    existing_id = caches.hashes.get(h)
+    if existing_id is not None and (
+        profile_id is None or existing_id in caches.linked or stale
+    ):
+        # Already saved, nothing to link: the cheap path, no filter run.
         stats.skipped_duplicate += 1
         return
 
-    if _is_stale(raw.posted_at, datetime.now(timezone.utc)):
+    if stale:
         stats.stale += 1
         return
 
     decision = evaluate(raw, filter_config)
     if decision.status == FilterStatus.dropped:
-        stats.dropped_filter += 1
+        if existing_id is not None:
+            stats.skipped_duplicate += 1
+        else:
+            stats.dropped_filter += 1
+        return
+
+    if existing_id is not None:
+        _link_existing(session, existing_id, profile_id, caches, stats)
         return
 
     company_id, is_blocked = _upsert_company(session, raw.company_name, caches)
@@ -250,12 +317,14 @@ def ingest_one(
     # title as a duplicate so we don't flood the queue.
     title_key = (raw.source, company_id, normalize_title(raw.title, raw.location))
     if title_key in caches.titles:
-        stats.skipped_duplicate += 1
+        if not _link_existing(session, caches.titles[title_key], profile_id, caches, stats):
+            stats.skipped_duplicate += 1
         return
 
     cross_h = cross_source_hash(raw)
     if cross_h is not None and cross_h in caches.cross:
-        stats.skipped_cross_source += 1
+        if not _link_existing(session, caches.cross[cross_h], profile_id, caches, stats):
+            stats.skipped_cross_source += 1
         return
 
     jd_fp = jd_simhash(raw.description)
@@ -296,17 +365,19 @@ def ingest_one(
         stats.manual_review += 1
 
     session.add(posting)
-    if jd_fp is not None and duplicate_of is None:
-        # Flush to get the assigned PK: this row becomes the canonical target for
-        # any later near-duplicate JD, so the cache needs a real id to link to.
-        session.flush()
+    # Flush to get the assigned PK: the dedupe caches map keys to it, the profile
+    # link needs it, and it's the canonical target for a later near-duplicate JD.
+    session.flush()
+    if profile_id is not None:
+        session.add(JobProfileLink(job_id=posting.id, search_profile_id=profile_id))
+        caches.linked.add(posting.id)
 
     # Keep the caches level with the session, so rows added earlier in this run
     # dedupe against rows added later exactly as they would have via a re-query.
-    caches.hashes.add(h)
+    caches.hashes[h] = posting.id
     if cross_h is not None:
-        caches.cross.add(cross_h)
-    caches.titles.add(title_key)
+        caches.cross.setdefault(cross_h, posting.id)
+    caches.titles[title_key] = posting.id
     if jd_fp is not None:
         caches.jd.append((duplicate_of or posting.id, jd_fp))
 
@@ -338,6 +409,7 @@ def _write_batch(
     filter_config: FilterConfig | None,
     blacklist: frozenset[str] | None,
     caches: _IngestCaches,
+    profile_id: int | None = None,
 ) -> None:
     """Persist one batch in its own short-lived session + transaction.
 
@@ -355,6 +427,7 @@ def _write_batch(
                     filter_config=filter_config,
                     blacklist=blacklist,
                     caches=caches,
+                    profile_id=profile_id,
                 )
             session.commit()
         except Exception:
@@ -396,10 +469,14 @@ def run_ingest(
     stats = IngestStats()
     with Session(engine()) as session:
         filter_config = load_active_config(session)
+        # The active profile owns every posting this run saves or links. Created
+        # on a fresh install so the first ingest is already scoped.
+        profile_id = load_or_create_profile(session).id
+        session.commit()
         blacklist = load_blacklisted_names(session)
         if sources is None:
             sources = get_all_sources(filter_config=filter_config)
-        caches = _IngestCaches.load(session)
+        caches = _IngestCaches.load(session, profile_id=profile_id)
 
     total = len(sources)
     for i, source in enumerate(sources):
@@ -411,6 +488,7 @@ def run_ingest(
                     filter_config=filter_config,
                     blacklist=blacklist,
                     caches=caches,
+                    profile_id=profile_id,
                 )
         except Exception as exc:  # noqa: BLE001 - one source can't abort the run
             log.warning("source %s failed during ingest, skipping: %s", source.name, exc)
@@ -418,7 +496,7 @@ def run_ingest(
             # committed, which would make the next source skip real jobs as
             # duplicates. Reload from what actually landed.
             with Session(engine()) as session:
-                caches = _IngestCaches.load(session)
+                caches = _IngestCaches.load(session, profile_id=profile_id)
         if progress_cb is not None:
             progress_cb(i + 1, total, source.name, stats)
     return stats

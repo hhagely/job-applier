@@ -195,8 +195,15 @@ class ResumeOut(BaseModel):
     extracted_text: str
 
 
+class ResumeSummaryOut(BaseModel):
+    id: int
+    original_filename: str
+    is_active: bool
+    uploaded_at: datetime
+
+
 class SearchProfileBody(BaseModel):
-    """Shape used for both reading and writing the active search profile.
+    """Shape used for both reading and writing a search profile's criteria.
 
     All fields are lists of strings so they round-trip cleanly through the JSON
     columns. Empty lists are legal — the filter falls back to its built-in
@@ -216,9 +223,27 @@ class SearchProfileBody(BaseModel):
 
 class SearchProfileOut(SearchProfileBody):
     id: Optional[int] = None
+    name: str = "Default"
+    is_active: bool = True
+    resume_id: Optional[int] = None
     recommendations_draft: Optional[dict] = None
     updated_at: Optional[datetime] = None
     using_defaults: bool = False  # True when the filter is falling back
+
+
+class SearchProfileCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    # Copy criteria + resume from this profile; omitted starts blank (filter
+    # defaults) on the current resume.
+    clone_from: Optional[int] = None
+
+
+class SearchProfileMetaUpdate(BaseModel):
+    """Rename and/or re-point a profile at an uploaded resume. Criteria go
+    through PUT /api/search-profiles/{id}."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    resume_id: Optional[int] = None
 
 
 class SearchProfileRecommendationIn(BaseModel):

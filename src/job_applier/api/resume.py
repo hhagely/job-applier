@@ -1,7 +1,8 @@
 """Resume upload + retrieval endpoints.
 
 The active resume is the one scored against and tailored from; uploading a new
-one demotes the previous active (history is preserved).
+one demotes the previous active (history is preserved) and becomes the active
+search profile's resume.
 """
 
 from __future__ import annotations
@@ -10,8 +11,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlmodel import Session, select
 
-from job_applier import resume_io
-from job_applier.api.schemas import ResumeOut
+from job_applier import profiles, resume_io
+from job_applier.api.schemas import ResumeOut, ResumeSummaryOut
 from job_applier.config import settings
 from job_applier.models.db import Resume, get_session
 
@@ -75,9 +76,29 @@ async def upload_resume(
         is_active=True,
     )
     session.add(resume)
+    session.flush()
+    profiles.adopt_uploaded_resume(session, resume.id)
     session.commit()
     session.refresh(resume)
     return _resume_out(resume)
+
+
+@router.get("/api/resumes", response_model=list[ResumeSummaryOut])
+def list_resumes(session: Session = Depends(get_session)):
+    """Every uploaded resume, newest first, for the per-profile resume picker.
+
+    Leaves out the extracted text so the list stays light.
+    """
+    rows = session.exec(select(Resume).order_by(Resume.uploaded_at.desc())).all()
+    return [
+        ResumeSummaryOut(
+            id=r.id,
+            original_filename=r.original_filename,
+            is_active=r.is_active,
+            uploaded_at=r.uploaded_at,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/api/resume/current", response_model=ResumeOut)

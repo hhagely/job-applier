@@ -288,6 +288,17 @@
 		goto(url, { invalidateAll: true });
 	}
 
+	// Search-profile scope: server-side like status, so it rides the URL. The
+	// active profile is the default and gets no param; `all` widens to every one.
+	function setProfileScope(value: string) {
+		const url = new URL(page.url);
+		const active = data.profiles.find((p) => p.is_active);
+		if (value === String(active?.id ?? '')) url.searchParams.delete('profile');
+		else url.searchParams.set('profile', value);
+		selectedId = null;
+		goto(url, { invalidateAll: true });
+	}
+
 	function switchQueue(manual: boolean) {
 		const url = new URL(page.url);
 		if (manual) url.searchParams.set('filter', 'manual');
@@ -412,6 +423,20 @@
 			</div>
 
 			<div class="toolbar-row">
+				{#if data.profiles.length > 1}
+					<select
+						class="mini-input"
+						style="width:auto"
+						aria-label="Search profile"
+						value={data.profile_id === null ? 'all' : String(data.profile_id)}
+						onchange={(e) => setProfileScope(e.currentTarget.value)}
+					>
+						{#each data.profiles as p (p.id)}
+							<option value={String(p.id)}>{p.name}{p.is_active ? ' (active)' : ''}</option>
+						{/each}
+						<option value="all">All profiles</option>
+					</select>
+				{/if}
 				<select class="mini-input" bind:value={sortBy} style="width:auto" aria-label="Sort">
 					<option value="score-desc">Score (high → low)</option>
 					<option value="score-asc">Score (low → high)</option>

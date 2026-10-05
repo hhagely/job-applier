@@ -186,13 +186,22 @@ class Resume(SQLModel, table=True):
 
 
 class SearchProfile(SQLModel, table=True):
-    """User's configured job-search criteria. Singleton (one active row).
+    """A saved set of job-search criteria. Many rows, exactly one active.
 
-    Drives the hard filter at ingest time. When empty, the filter falls back to
-    its built-in defaults so a fresh install still works.
+    The active row drives the hard filter at ingest time. When its lists are
+    empty, the filter falls back to built-in defaults so a fresh install still
+    works. Switching profiles also switches the active resume — see
+    ``services.activate_profile`` for the invariant.
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = "Default"
+    # Exactly one row is active. Readers go through ``services.active_profile``,
+    # which falls back to the oldest row if none is flagged.
+    is_active: bool = Field(default=False, index=True)
+    # The resume scored against and tailored from while this profile is active.
+    # Null until the profile is first activated with a resume on file.
+    resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")
     # Human-readable role titles the user wants surfaced
     # (e.g. ["Senior Software Engineer", "Staff Backend Engineer"]).
     role_titles: list[str] = Field(default_factory=list, sa_column=Column(JSON))
@@ -220,6 +229,22 @@ class SearchProfile(SQLModel, table=True):
         default=None, sa_column=Column(JSON)
     )
     updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class JobProfileLink(SQLModel, table=True):
+    """Which search profile(s) surfaced a posting.
+
+    Many-to-many rather than a column on ``JobPosting`` because dedupe stores a
+    posting once: when profile B's ingest meets a job profile A already saved,
+    ingest links the existing row to B instead of skipping it. Scopes the queue,
+    pending-match, and stale-score adoption to the active profile.
+    """
+
+    job_id: int = Field(foreign_key="jobposting.id", primary_key=True)
+    search_profile_id: int = Field(
+        foreign_key="searchprofile.id", primary_key=True, index=True
+    )
+    linked_at: datetime = Field(default_factory=_utcnow)
 
 
 class AppSetting(SQLModel, table=True):
@@ -305,6 +330,8 @@ def create_db_and_tables() -> None:
     _ensure_application_unemployment_columns()
     _ensure_jd_dedupe_columns()
     _ensure_searchprofile_columns()
+    # After create_all (it backfills into the new jobprofilelink table).
+    _ensure_multi_profile_columns()
     _ensure_sourceslug_columns()
 
 
@@ -373,6 +400,60 @@ def _ensure_searchprofile_columns() -> None:
         if "home_state" not in cols:
             conn.exec_driver_sql("ALTER TABLE searchprofile ADD COLUMN home_state VARCHAR")
             conn.commit()
+
+
+def _ensure_multi_profile_columns() -> None:
+    """Migrate a single-profile DB to named, switchable profiles.
+
+    Runs its one-time backfill only on the startup that adds ``is_active``: the
+    existing row becomes the active "Default" profile, pointed at the active
+    resume, and every existing posting is linked to it (the pre-migration queue
+    *was* that profile's queue). A DB with postings but no profile gets a Default
+    row first so those postings aren't orphaned. Gating on the column add keeps
+    this from re-homing postings later — a deleted profile's postings stay
+    unlinked rather than being swept into whichever profile is active.
+    """
+    with engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(searchprofile)")}
+        if "name" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE searchprofile ADD COLUMN name VARCHAR NOT NULL DEFAULT 'Default'"
+            )
+        if "resume_id" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE searchprofile ADD COLUMN resume_id INTEGER REFERENCES resume(id)"
+            )
+        if "is_active" in cols:
+            conn.commit()
+            return
+        conn.exec_driver_sql(
+            "ALTER TABLE searchprofile ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 0"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_searchprofile_is_active "
+            "ON searchprofile (is_active)"
+        )
+        has_jobs = conn.exec_driver_sql("SELECT 1 FROM jobposting LIMIT 1").first()
+        has_profile = conn.exec_driver_sql("SELECT 1 FROM searchprofile LIMIT 1").first()
+        if has_jobs and not has_profile:
+            conn.exec_driver_sql(
+                "INSERT INTO searchprofile (name, role_titles, seniority_terms, "
+                "required_tech, excluded_tech, extracted_skills, updated_at, is_active) "
+                "VALUES ('Default', '[]', '[]', '[]', '[]', '[]', CURRENT_TIMESTAMP, 0)"
+            )
+        first = conn.exec_driver_sql("SELECT MIN(id) FROM searchprofile").scalar()
+        if first is not None:
+            conn.exec_driver_sql(
+                "UPDATE searchprofile SET is_active = 1, resume_id = "
+                "(SELECT id FROM resume WHERE is_active = 1 LIMIT 1) WHERE id = ?",
+                (first,),
+            )
+            conn.exec_driver_sql(
+                "INSERT OR IGNORE INTO jobprofilelink (job_id, search_profile_id, linked_at) "
+                "SELECT id, ?, CURRENT_TIMESTAMP FROM jobposting",
+                (first,),
+            )
+        conn.commit()
 
 
 def _ensure_sourceslug_columns() -> None:
