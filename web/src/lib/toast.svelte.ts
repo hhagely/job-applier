@@ -3,6 +3,7 @@
 // errors); kept generic so anything can `toast(msg)`. Rendered by Toaster.svelte.
 
 import { browser } from '$app/environment';
+import { untrack } from 'svelte';
 
 export interface ToastItem {
 	id: number;
@@ -16,7 +17,10 @@ class Toaster {
 	push(message: string, ms = 3600): void {
 		if (!browser || !message) return;
 		const id = ++this.seq;
-		this.items = [...this.items, { id, message }];
+		// Untracked read: callers toast from inside $effects (the layout's
+		// lost-connection notice), and a tracked read of `items` there makes the
+		// effect depend on the very state it writes — an infinite update loop.
+		this.items = [...untrack(() => this.items), { id, message }];
 		setTimeout(() => this.dismiss(id), ms);
 	}
 
