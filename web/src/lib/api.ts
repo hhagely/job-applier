@@ -204,6 +204,11 @@ export interface Draft {
 
 export interface SearchProfile {
 	id: number | null;
+	name: string;
+	/** Exactly one profile is active: it drives ingest and owns the active resume. */
+	is_active: boolean;
+	/** The resume scored against while this profile is active; null until first activated. */
+	resume_id: number | null;
 	role_titles: string[];
 	seniority_terms: string[];
 	required_tech: string[];
@@ -253,6 +258,9 @@ export interface Resume {
 	uploaded_at: string;
 	extracted_text: string;
 }
+
+/** A resume without its extracted text — the per-profile resume picker's options. */
+export type ResumeSummary = Pick<Resume, 'id' | 'original_filename' | 'is_active' | 'uploaded_at'>;
 
 export type ProviderTier = 'recommended' | 'best-effort';
 
@@ -427,6 +435,8 @@ export const api = {
 			unscored_only?: boolean;
 			include_duplicates?: boolean;
 			exclude_archived?: boolean;
+			/** Only postings this search profile surfaced; omitted = every profile's. */
+			profile_id?: number;
 			limit?: number;
 		} = {}
 	) => {
@@ -448,7 +458,7 @@ export const api = {
 	getStatusCounts: (
 		fetchFn: FetchFn,
 		base: string,
-		params: { filter_status?: FilterStatus; include_duplicates?: boolean } = {}
+		params: { filter_status?: FilterStatus; include_duplicates?: boolean; profile_id?: number } = {}
 	) => {
 		const q = new URLSearchParams();
 		for (const [k, v] of Object.entries(params)) {
@@ -533,6 +543,9 @@ export const api = {
 	getCurrentResume: (fetchFn: FetchFn, base: string) =>
 		callOptional<Resume>(fetchFn, base, '/api/resume/current'),
 
+	listResumes: (fetchFn: FetchFn, base: string) =>
+		call<ResumeSummary[]>(fetchFn, base, '/api/resumes'),
+
 	getStaleScoreCount: (fetchFn: FetchFn, base: string) =>
 		call<{ count: number }>(fetchFn, base, '/api/scores/stale-count'),
 
@@ -578,6 +591,41 @@ export const api = {
 		call<SearchProfile>(fetchFn, base, '/api/search-profile/recommendations', {
 			method: 'DELETE'
 		}),
+
+	listSearchProfiles: (fetchFn: FetchFn, base: string) =>
+		call<SearchProfile[]>(fetchFn, base, '/api/search-profiles'),
+
+	/** New inactive profile; `clone_from` copies another's criteria + resume. */
+	createSearchProfile: (fetchFn: FetchFn, base: string, name: string, clone_from?: number) =>
+		call<SearchProfile>(fetchFn, base, '/api/search-profiles', {
+			method: 'POST',
+			body: JSON.stringify({ name, clone_from })
+		}),
+
+	/** Rename and/or re-point at an uploaded resume (the active one switches the active resume). */
+	updateSearchProfileMeta: (
+		fetchFn: FetchFn,
+		base: string,
+		id: number,
+		body: { name?: string; resume_id?: number }
+	) =>
+		call<SearchProfile>(fetchFn, base, `/api/search-profiles/${id}`, {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		}),
+
+	activateSearchProfile: (fetchFn: FetchFn, base: string, id: number) =>
+		call<SearchProfile>(fetchFn, base, `/api/search-profiles/${id}/activate`, { method: 'POST' }),
+
+	/** 409 for the active profile — the detail says to switch first. */
+	deleteSearchProfile: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
+		const path = `/api/search-profiles/${id}`;
+		const res = await fetchWithRetry(fetchFn, `${base}${path}`, { method: 'DELETE' });
+		if (!res.ok && res.status !== 404) {
+			const body = await res.text();
+			throw new ApiError(`API ${path} -> ${res.status}: ${body}`, res.status, parseDetail(body));
+		}
+	},
 
 	getProviders: (fetchFn: FetchFn, base: string) =>
 		call<ProvidersResponse>(fetchFn, base, '/api/ai/providers'),

@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from job_applier import __version__, ingest, services
+from job_applier import __version__, ingest, profiles, services
 from job_applier.ai import tasks as ai_tasks
 from job_applier.api import blacklist as blacklist_router
 from job_applier.api import drafts as drafts_router
@@ -53,7 +53,6 @@ from job_applier.models.db import (
     Company,
     FilterStatus,
     JobPosting,
-    MatchScore,
     MatchScoreHistory,
     SourceSlug,
     create_db_and_tables,
@@ -154,10 +153,13 @@ def list_jobs(
     unscored_only: bool = False,
     include_duplicates: bool = False,
     exclude_archived: bool = False,
+    profile_id: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
     session: Session = Depends(get_session),
 ):
+    """Queue listing. ``profile_id`` limits it to the postings that search profile
+    surfaced; omitted means every profile's postings."""
     # Eager-load the 1:1/n:1 relationships _job_summary reads, so rendering N rows
     # is a constant handful of queries instead of ~3 lazy loads per row (N+1).
     stmt = select(JobPosting).options(
@@ -169,6 +171,8 @@ def list_jobs(
         stmt = stmt.where(JobPosting.filter_status == filter_status)
     if not include_duplicates:
         stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
+    if profile_id is not None:
+        stmt = stmt.where(JobPosting.id.in_(profiles.profile_job_ids(profile_id)))  # type: ignore[union-attr]
     stmt = stmt.order_by(JobPosting.ingested_at.desc())
     jobs = list(session.exec(stmt).all())
 
@@ -202,6 +206,7 @@ def list_jobs(
 def job_status_counts(
     filter_status: Optional[FilterStatus] = FilterStatus.passed,
     include_duplicates: bool = False,
+    profile_id: Optional[int] = None,
     session: Session = Depends(get_session),
 ):
     """Per-status totals across the whole queue, for the filter chips.
@@ -220,6 +225,8 @@ def job_status_counts(
         stmt = stmt.where(JobPosting.filter_status == filter_status)
     if not include_duplicates:
         stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
+    if profile_id is not None:
+        stmt = stmt.where(JobPosting.id.in_(profiles.profile_job_ids(profile_id)))  # type: ignore[union-attr]
 
     counts = {facet: 0 for facet in StatusFacet}
     for raw_status, n in session.exec(stmt).all():  # type: ignore[call-overload]
@@ -461,7 +468,8 @@ def pending_match(
 
 @app.get("/api/scores/stale-count")
 def stale_score_count(session: Session = Depends(get_session)) -> dict:
-    """Count of baseline scores not against the active resume.
+    """Count of baseline scores not against the active resume, on the active
+    profile's postings (the set "Re-score" and "Keep existing scores" act on).
 
     Returns 0 when there's no active resume — there's nothing to be stale
     against in that case.
@@ -469,14 +477,7 @@ def stale_score_count(session: Session = Depends(get_session)) -> dict:
     active_id = _active_resume_id(session)
     if active_id is None:
         return {"count": 0}
-    count = len(
-        session.exec(
-            select(MatchScore).where(
-                MatchScore.resume_id.is_not(None),  # type: ignore[union-attr]
-                MatchScore.resume_id != active_id,
-            )
-        ).all()
-    )
+    count = len(session.exec(services.stale_scores_stmt(session, active_id)).all())
     return {"count": count}
 
 
