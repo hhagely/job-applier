@@ -8,7 +8,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from job_applier import ingest
 from job_applier.api.app import app
-from job_applier.models.db import JobPosting, get_session
+from job_applier.models import db
+from job_applier.models.db import JobPosting, JobProfileLink, get_session
 from job_applier.sources.base import RawJob
 
 
@@ -57,7 +58,7 @@ def _engine():
 
 def test_run_ingest_reports_per_source_progress(monkeypatch):
     e = _engine()
-    monkeypatch.setattr(ingest, "engine", lambda: e)
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
     calls = []
     sources = [
         FakeSource("alpha", [_raw("a1")]),
@@ -81,7 +82,7 @@ def test_run_ingest_isolates_a_failing_source(monkeypatch):
     dropped. Here the boom source fails within its first batch, so nothing of its
     survives; see the test below for a failure past a batch boundary."""
     e = _engine()
-    monkeypatch.setattr(ingest, "engine", lambda: e)
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
     seen = []
     sources = [
         FakeSource("alpha", [_raw("a1", company="Alpha Co")]),
@@ -98,6 +99,13 @@ def test_run_ingest_isolates_a_failing_source(monkeypatch):
     with Session(e) as s:
         companies = {j.company.name for j in s.exec(select(JobPosting)).all()}
     assert companies == {"Alpha Co", "Gamma Co"}
+    # Matching still ran over what was saved, including the source before the
+    # failure: every surviving posting has a verdict for the profile.
+    with Session(e) as s:
+        linked = set(
+            s.exec(select(JobProfileLink.job_id).execution_options(all_profiles=True)).all()
+        )
+        assert linked == set(s.exec(select(JobPosting.id)).all())
     # Stats reflect only the two good rows (the failed source's counts were restored).
     assert stats.inserted == 2
 
@@ -111,7 +119,7 @@ def test_run_ingest_keeps_batches_committed_before_a_source_fails(monkeypatch):
     before it. Only the in-flight batch is lost.
     """
     e = _engine()
-    monkeypatch.setattr(ingest, "engine", lambda: e)
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
 
     class _LateBoom:
         name = "late-boom"
@@ -136,7 +144,7 @@ def test_run_ingest_dedupes_across_sources_when_batched(monkeypatch):
     per-batch sessions: batches commit before the next reads, so a later source
     still sees an earlier source's rows."""
     e = _engine()
-    monkeypatch.setattr(ingest, "engine", lambda: e)
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
 
     def _from(source, sid):
         # Same company + title from two *different* sources, which is what the
@@ -159,7 +167,7 @@ def test_run_ingest_dedupes_across_sources_when_batched(monkeypatch):
 
 def test_run_ingest_without_cb_is_unchanged(monkeypatch):
     e = _engine()
-    monkeypatch.setattr(ingest, "engine", lambda: e)
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
     stats = ingest.run_ingest(sources=[FakeSource("only", [_raw("x1")])])
     assert stats.fetched == 1
     assert stats.inserted == 1
@@ -183,7 +191,7 @@ def test_ingest_endpoint_starts_and_runs_task(monkeypatch):
         "job_applier.sources.get_all_sources", lambda *a, **k: [object(), object()]
     )
 
-    def _fake_run(sources=None, progress_cb=None):
+    def _fake_run(sources=None, progress_cb=None, match_cb=None):
         for i, name in enumerate(["alpha", "beta"], start=1):
             if progress_cb:
                 progress_cb(i, 2, name, ingest.IngestStats(inserted=i, passed_filter=i, fetched=i))
@@ -223,7 +231,7 @@ def test_ingest_endpoint_persists_via_real_run(monkeypatch):
     # call time); run_ingest uses the name bound in its own module namespace.
     monkeypatch.setattr("job_applier.sources.get_all_sources", lambda *a, **k: sources)
     monkeypatch.setattr(ingest, "get_all_sources", lambda *a, **k: sources)
-    monkeypatch.setattr(ingest, "engine", lambda: e)
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
 
     with TestClient(app) as c:
         tid = c.post("/api/ingest").json()["task_id"]

@@ -1,16 +1,16 @@
 """Coverage for the user company blacklist: the service layer (normalize +
-idempotent add, guard, remove), the ingest drop, and the REST endpoints."""
+idempotent add, guard, remove) and the REST endpoints."""
 
 from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, SQLModel, create_engine
 
-from job_applier import ingest, services
+from job_applier import services
 from job_applier.api.app import app
-from job_applier.models.db import JobPosting, get_session
+from job_applier.models.db import get_session
 from job_applier.sources.base import RawJob
 
 
@@ -93,48 +93,8 @@ class TestBlacklistService:
         assert services.list_blacklisted_companies(session) == []
 
 
-class TestBlacklistIngest:
-    def test_load_blacklisted_names_returns_normalized_set(self, session):
-        services.add_blacklisted_company(session, "Meta, Inc.")
-        services.add_blacklisted_company(session, "Acme")
-        assert ingest.load_blacklisted_names(session) == frozenset({"meta", "acme"})
-
-    def test_blacklisted_company_job_is_dropped(self, session):
-        services.add_blacklisted_company(session, "Evil Corp")
-        stats = ingest.IngestStats()
-        bl = ingest.load_blacklisted_names(session)
-        ingest.ingest_one(
-            session, _raw(company_name="Evil Corp"), stats, blacklist=bl
-        )
-        assert stats.dropped_blacklist == 1
-        assert stats.inserted == 0
-        assert session.exec(select(JobPosting)).all() == []
-
-    def test_naming_variant_still_matches_at_ingest(self, session):
-        # "Globex" and "Globex Inc" both normalize to "globex" (the legal suffix
-        # is stripped), so blacklisting one catches however a source spells it.
-        services.add_blacklisted_company(session, "Globex")
-        stats = ingest.IngestStats()
-        bl = ingest.load_blacklisted_names(session)
-        ingest.ingest_one(
-            session, _raw(company_name="Globex Inc"), stats, blacklist=bl
-        )
-        assert stats.dropped_blacklist == 1
-
-    def test_non_blacklisted_company_still_ingests(self, session):
-        services.add_blacklisted_company(session, "Evil Corp")
-        stats = ingest.IngestStats()
-        bl = ingest.load_blacklisted_names(session)
-        ingest.ingest_one(session, _raw(company_name="Acme"), stats, blacklist=bl)
-        assert stats.dropped_blacklist == 0
-        assert stats.inserted == 1
-        assert stats.passed_filter == 1
-
-    def test_no_blacklist_is_a_noop(self, session):
-        stats = ingest.IngestStats()
-        ingest.ingest_one(session, _raw(company_name="Evil Corp"), stats)
-        assert stats.dropped_blacklist == 0
-        assert stats.inserted == 1
+# Dropping a blacklisted company's postings is matching's job (per profile, at
+# match time): see tests/test_matching.py.
 
 
 class TestBlacklistApi:

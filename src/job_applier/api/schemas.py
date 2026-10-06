@@ -122,7 +122,8 @@ class JobOut(BaseModel):
     employment_type: Optional[str]
     posted_at: Optional[datetime]
     ingested_at: datetime
-    filter_status: FilterStatus
+    # The active profile's verdict; None when it never matched this posting.
+    filter_status: Optional[FilterStatus]
     filter_reason: Optional[str]
     company: Optional[CompanyOut]
     score: Optional[ScoreOut]

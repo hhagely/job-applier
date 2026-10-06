@@ -16,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
-from job_applier import profiles, services
+from job_applier import matching, profiles, services
 from job_applier.api.schemas import (
     SearchProfileBody,
     SearchProfileCreate,
@@ -89,6 +89,8 @@ def create_search_profile(
         raise HTTPException(404, str(exc)) from exc
     except profiles.ProfileError as exc:
         raise HTTPException(422, str(exc)) from exc
+    # A new person gets a full queue from what's already stored: no scrape.
+    matching.start_rematch(p.id)
     return _profile_out(p, is_active=False)
 
 
@@ -155,6 +157,7 @@ def put_search_profile(
     session.add(p)
     session.commit()
     session.refresh(p)
+    matching.start_rematch(p.id)
     return _profile_out(p)
 
 

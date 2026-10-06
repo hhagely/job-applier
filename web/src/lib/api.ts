@@ -179,7 +179,8 @@ export interface Job {
 	employment_type?: string | null;
 	posted_at?: string | null;
 	ingested_at: string;
-	filter_status: FilterStatus;
+	/** The active profile's verdict; null when it never matched this posting. */
+	filter_status: FilterStatus | null;
 	filter_reason?: string | null;
 	company?: Company | null;
 	score?: Score | null;
@@ -435,8 +436,6 @@ export const api = {
 			unscored_only?: boolean;
 			include_duplicates?: boolean;
 			exclude_archived?: boolean;
-			/** Only postings this search profile surfaced; omitted = every profile's. */
-			profile_id?: number;
 			limit?: number;
 		} = {}
 	) => {
@@ -458,7 +457,7 @@ export const api = {
 	getStatusCounts: (
 		fetchFn: FetchFn,
 		base: string,
-		params: { filter_status?: FilterStatus; include_duplicates?: boolean; profile_id?: number } = {}
+		params: { filter_status?: FilterStatus; include_duplicates?: boolean } = {}
 	) => {
 		const q = new URLSearchParams();
 		for (const [k, v] of Object.entries(params)) {

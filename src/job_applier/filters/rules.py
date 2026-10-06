@@ -1,15 +1,21 @@
-"""Hard-rule filter applied at ingestion.
+"""Hard-rule filter, in two stages.
 
-Rules (drop on any failure):
+Shared rules (``evaluate_shared``, run by ingest for everyone; a failure means
+the posting is never stored, and they never return ``manual``):
   1. Must be fully remote.
   2. Location must not be non-US-only (when a country is named).
-  3. If the posting names an explicit US-state allow-list, the user's configured
-     home state must be in it. Skipped when no home state is configured.
-  4. Title must indicate one of the configured seniority terms.
-  5. Title must not be a sales / pre-sales / biz-dev role.
-  6. Posting must not be a crypto / blockchain / web3 role.
+  3. Title must not be a sales / pre-sales / biz-dev role.
+  4. Posting must not be a crypto / blockchain / web3 role.
+
+Per-profile rules (``evaluate_profile``, run by ``matching`` for each profile
+over the stored postings; the verdict lands on that profile's JobProfileLink):
+  5. If the posting names an explicit US-state allow-list, the profile's home
+     state must be in it. Skipped when no home state is configured.
+  6. Title must indicate one of the configured seniority terms.
   7. Posting must reference one of the configured required-tech terms.
   8. A configured excluded-tech term as the primary stack disqualifies.
+
+``evaluate`` composes the two.
 
 Ambiguous postings (e.g. tech implied via short tokens only, exclusion mentioned
 in description with no positive signal) are marked `manual` so the user can
@@ -32,7 +38,7 @@ from typing import Optional
 from sqlmodel import Session
 
 from job_applier.contracts import RawJob
-from job_applier.models.db import FilterStatus, engine
+from job_applier.models.db import FilterStatus, SearchProfile, engine
 from job_applier.profiles import active_profile
 
 
@@ -252,6 +258,12 @@ def load_active_config(session: Optional[Session] = None) -> FilterConfig:
     finally:
         if close_after:
             session.close()
+    return config_for(profile)
+
+
+def config_for(profile: Optional[SearchProfile]) -> FilterConfig:
+    """The filter config one profile's row describes (built-in defaults when
+    there's no row). ``matching`` builds one of these per profile."""
     if profile is None:
         return _BUILTIN_DEFAULT
     if not profile.required_tech or not profile.seniority_terms:
@@ -496,13 +508,31 @@ def _haystack(raw: RawJob) -> str:
     return "\n".join(parts)
 
 
+def union_title_config(configs: list[FilterConfig]) -> FilterConfig:
+    """A config whose seniority gate passes a title any of ``configs`` would.
+
+    For the title pre-skip in adapters: the scrape serves every profile at once,
+    so a title may only be skipped when no profile's seniority terms match it.
+    Any profile with no seniority gate means no title can be skipped on seniority.
+    """
+    if not configs:
+        return _BUILTIN_DEFAULT
+    patterns = [c.seniority_re for c in configs]
+    if any(p is None for p in patterns):
+        return replace(_BUILTIN_DEFAULT, seniority_re=None)
+    union = re.compile("|".join(f"(?:{p.pattern})" for p in patterns), re.IGNORECASE)
+    return replace(_BUILTIN_DEFAULT, seniority_re=union)
+
+
 def title_quick_fail(title: str, config: Optional[FilterConfig] = None) -> bool:
     """Cheap title-only check — does this title fail seniority or sales rules?
 
     Used by adapters that fan out per-job HTTP requests (Workable,
     SmartRecruiters) to skip the expensive detail fetch when the title alone
-    already disqualifies the posting. Mirrors rules 4 and 5 of ``evaluate``;
+    already disqualifies the posting. Mirrors the seniority and sales rules;
     deliberately conservative — anything that *could* pass returns ``False``.
+    With several profiles, pass ``union_title_config(...)`` so a title is only
+    skipped when it fails *every* profile.
     """
     cfg = config or _BUILTIN_DEFAULT
     title = title or ""
@@ -514,10 +544,24 @@ def title_quick_fail(title: str, config: Optional[FilterConfig] = None) -> bool:
 
 
 def evaluate(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult:
-    cfg = config or _BUILTIN_DEFAULT
+    """The full hard filter for one profile: the shared rules, then the profile's.
+
+    Ingest no longer calls this directly (it stores what passes
+    ``evaluate_shared`` and ``matching`` applies ``evaluate_profile`` per
+    profile); it remains the single-profile composition that ``diagnose-filter``
+    and the tests reason about.
+    """
+    shared = evaluate_shared(raw)
+    if shared.status is FilterStatus.dropped:
+        return shared
+    return evaluate_profile(raw, config)
+
+
+def evaluate_shared(raw: RawJob) -> FilterResult:
+    """Rules that are the same for every profile: remote-only, US-only, no sales
+    titles, no crypto. Applied once at scrape time; a posting that fails is never
+    stored. Never returns ``manual``."""
     title = raw.title or ""
-    haystack = _haystack(raw)
-    tags_lower = {t.lower() for t in raw.tags}
 
     # 1. Remote
     if not raw.remote:
@@ -532,27 +576,39 @@ def evaluate(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult
     if _is_specific_non_us(location):
         return FilterResult(FilterStatus.dropped, "location is non-US only")
 
-    # 3. State allow-list must include the user's home state (when one is configured;
+    # 3. Sales / pre-sales / biz-dev titles
+    if SALES_TITLE.search(title) or SALES_HEAD_OF.search(title):
+        return FilterResult(FilterStatus.dropped, "title is sales / pre-sales / biz-dev")
+
+    # 4. Crypto / blockchain / web3 industry
+    if CRYPTO_BLOCKCHAIN.search(_haystack(raw)):
+        return FilterResult(FilterStatus.dropped, "crypto / blockchain / web3 role")
+
+    return FilterResult(FilterStatus.passed)
+
+
+def evaluate_profile(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult:
+    """One profile's personal rules (home-state allow-list, seniority, excluded
+    and required tech) on a posting that already passed ``evaluate_shared``.
+    Applied per profile by ``matching``, against the stored posting."""
+    cfg = config or _BUILTIN_DEFAULT
+    title = raw.title or ""
+    haystack = _haystack(raw)
+    tags_lower = {t.lower() for t in raw.tags}
+
+    # 5. State allow-list must include the user's home state (when one is configured;
     #    an unset home state skips this rule rather than assuming any state).
-    if cfg.home_state and _has_state_allowlist_excluding_home(_haystack(raw), cfg):
+    if cfg.home_state and _has_state_allowlist_excluding_home(haystack, cfg):
         return FilterResult(
             FilterStatus.dropped, f"state allow-list excludes {cfg.home_state}"
         )
 
-    # 4. Seniority (configurable)
+    # 6. Seniority (configurable)
     if cfg.seniority_re is not None and not cfg.seniority_re.search(title):
         return FilterResult(
             FilterStatus.dropped,
             "title not Senior/Staff/Principal/Lead (or configured equivalent)",
         )
-
-    # 5. Sales / pre-sales / biz-dev titles
-    if SALES_TITLE.search(title) or SALES_HEAD_OF.search(title):
-        return FilterResult(FilterStatus.dropped, "title is sales / pre-sales / biz-dev")
-
-    # 6. Crypto / blockchain / web3 industry
-    if CRYPTO_BLOCKCHAIN.search(haystack):
-        return FilterResult(FilterStatus.dropped, "crypto / blockchain / web3 role")
 
     # 7. Excluded-tech check (before required-tech — an excluded term may itself
     #    satisfy required-tech, but disqualifies anyway).

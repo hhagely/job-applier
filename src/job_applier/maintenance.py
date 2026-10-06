@@ -66,14 +66,22 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
     Dedupe still works against these rows because the hash columns and the
     normalized-title inputs are untouched, and because each row is
     fingerprinted (if it wasn't already) *before* its description is cleared.
+
+    Statuses are per profile, and a posting is shared: it counts as
+    archived/rejected only when every profile that tracked it says so, and as
+    applied when *any* profile applied. Rows are never deleted (the hashes are
+    what keep a re-scrape from re-adding them); this is also what keeps the
+    scrape-once store small, since postings no profile matched are lightened
+    like any other untouched posting.
     """
     now = now or datetime.now(timezone.utc)
     posted_cutoff = now - timedelta(days=PRUNE_POSTED_AFTER_DAYS)
     ingested_cutoff = now - timedelta(days=PRUNE_INGESTED_AFTER_DAYS)
 
-    app_status_by_job: dict[int, ApplicationStatus] = {
-        a.job_id: a.status for a in session.exec(select(Application)).all()
-    }
+    statuses_by_job: dict[int, set[ApplicationStatus]] = {}
+    for a in session.exec(select(Application).execution_options(all_profiles=True)).all():
+        statuses_by_job.setdefault(a.job_id, set()).add(ApplicationStatus(a.status))
+    closed = {ApplicationStatus.archived, ApplicationStatus.rejected}
 
     stats = PruneStats()
     postings = session.exec(select(JobPosting)).all()
@@ -82,9 +90,9 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
         if not p.description and not p.raw:
             continue
 
-        status = app_status_by_job.get(p.id) if p.id is not None else None
+        statuses = statuses_by_job.get(p.id, set()) if p.id is not None else set()
         prune = False
-        if status in (ApplicationStatus.archived, ApplicationStatus.rejected):
+        if statuses and statuses <= closed:
             prune = True
         else:
             posted = p.posted_at
@@ -99,7 +107,7 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
                 if (
                     ingested is not None
                     and ingested < ingested_cutoff
-                    and status != ApplicationStatus.applied
+                    and ApplicationStatus.applied not in statuses
                 ):
                     prune = True
 

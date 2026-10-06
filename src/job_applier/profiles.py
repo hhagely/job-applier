@@ -1,8 +1,10 @@
 """Search-profile lifecycle: which profile is active, and switching between them.
 
-Several saved profiles, exactly one active. The active profile drives the hard
-filter at ingest, scopes the queue / pending-match / stale-score adoption to the
-postings it surfaced (``JobProfileLink``), and owns the active resume.
+Several saved profiles, exactly one active. Every profile's own rules run in
+``matching`` after each scrape, recording a per-profile verdict as a
+``JobProfileLink``; the active profile scopes the queue / pending-match /
+stale-score adoption to its non-dropped verdicts (``queue_job_ids``) and owns
+the active resume.
 
 **Invariant:** the active profile's ``resume_id`` is the active resume
 (``Resume.is_active``). Every reader goes through ``active_resume``, which
@@ -16,18 +18,28 @@ import it without a cycle.
 
 from __future__ import annotations
 
+import logging
+import shutil
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
+from sqlmodel.sql.expression import SelectOfScalar
 
 from job_applier.models.db import (
+    PROFILE_SCOPED,
+    AppSetting,
+    FilterStatus,
     JobProfileLink,
     Resume,
     SearchProfile,
     forget_active_profile,
     session_profile_id,
 )
+
+
+log = logging.getLogger(__name__)
 
 
 class ProfileError(ValueError):
@@ -210,21 +222,42 @@ def update_profile_meta(
 
 
 def delete_profile(session: Session, profile_id: int) -> None:
-    """Delete an inactive profile and its job links.
+    """Delete an inactive profile and everything that is only its: verdicts,
+    statuses + notes, scores + history, blacklist, preferences, and tailored
+    drafts on disk. Shared postings and uploaded resumes stay.
 
-    The postings themselves stay — an applied job is history regardless of which
-    profile found it — and remain reachable under "All profiles".
+    Profiles can be different people, so a profile's rows are that person's
+    data; leaving them behind would orphan rows pointing at a deleted profile.
     """
+    from job_applier import drafts
+
     p = get_profile(session, profile_id)
     active = active_profile(session)
     if active is not None and active.id == p.id:
         raise ProfileError("can't delete the active profile — switch to another first")
-    for link in session.exec(
-        select(JobProfileLink).where(JobProfileLink.search_profile_id == p.id)
-    ).all():
-        session.delete(link)
+    # Move the drafts aside first, so a reused id never finds them even if the
+    # delete below fails (a PDF open in a viewer blocks it on Windows).
+    folder = drafts.settings.applications_dir / f"profile-{p.id}"
+    doomed = folder.with_name(f"{folder.name}.deleted")
+    if folder.exists():
+        shutil.rmtree(doomed, ignore_errors=True)
+        folder.rename(doomed)
+    for model in PROFILE_SCOPED:
+        session.execute(
+            delete(model)
+            .where(model.profile_id == p.id)
+            .execution_options(all_profiles=True)
+        )
+    session.execute(delete(AppSetting).where(AppSetting.key.startswith(f"pref:{p.id}:")))  # type: ignore[union-attr]
     session.delete(p)
     session.commit()
+    if doomed.exists():
+        shutil.rmtree(
+            doomed,
+            onexc=lambda _fn, path, exc: log.warning(
+                "couldn't remove deleted profile's draft %s: %s", path, exc
+            ),
+        )
 
 
 def adopt_uploaded_resume(session: Session, resume_id: int) -> None:
@@ -257,8 +290,16 @@ def adopt_legacy_drafts() -> int:
     return drafts.move_legacy_draft_dirs(pid)
 
 
-def profile_job_ids(profile_id: int):
-    """Subquery of posting ids linked to ``profile_id``, for ``IN (...)`` filters."""
-    return select(JobProfileLink.job_id).where(
-        JobProfileLink.search_profile_id == profile_id
+def queue_job_ids(
+    session: Session, status: Optional[FilterStatus] = None
+) -> SelectOfScalar[int]:
+    """Subquery of the posting ids in this session's profile's queue, for
+    ``IN (...)`` filters: its verdict is ``status``, or anything but ``dropped``
+    when ``status`` is None. Postings the profile hasn't been matched against, or
+    that its rules dropped, are never in its queue."""
+    stmt = select(JobProfileLink.job_id).where(
+        JobProfileLink.profile_id == session_profile_id(session)
     )
+    if status is None:
+        return stmt.where(JobProfileLink.filter_status != FilterStatus.dropped)
+    return stmt.where(JobProfileLink.filter_status == status)
