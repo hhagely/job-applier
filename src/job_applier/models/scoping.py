@@ -68,10 +68,10 @@ def _insert_default_profile(conn: Connection) -> int:
     so it can run from ORM events and migrations; ``profiles.load_or_create_profile``
     is the ORM path and keeps the same shape."""
     return conn.exec_driver_sql(
-        "INSERT INTO searchprofile (name, is_active, resume_id, role_titles, seniority_terms, "
-        "required_tech, excluded_tech, extracted_skills, updated_at) "
+        "INSERT INTO searchprofile (name, is_active, resume_id, role_titles, title_terms, "
+        "seniority_terms, required_tech, excluded_tech, extracted_skills, updated_at) "
         "VALUES ('Default', 1, (SELECT id FROM resume WHERE is_active = 1 LIMIT 1), "
-        "'[]', '[]', '[]', '[]', '[]', CURRENT_TIMESTAMP)"
+        "'[]', '[]', '[]', '[]', '[]', '[]', CURRENT_TIMESTAMP)"
     ).lastrowid
 
 

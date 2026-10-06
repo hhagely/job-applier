@@ -192,6 +192,7 @@ def create_profile(
     if clone_from is not None:
         src = get_profile(session, clone_from)
         p.role_titles = list(src.role_titles or [])
+        p.title_terms = list(src.title_terms or [])
         p.seniority_terms = list(src.seniority_terms or [])
         p.required_tech = list(src.required_tech or [])
         p.excluded_tech = list(src.excluded_tech or [])

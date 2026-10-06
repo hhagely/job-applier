@@ -163,12 +163,21 @@ def test_load_active_config_falls_back_to_defaults_when_no_row(db_session):
     assert cfg is _BUILTIN_DEFAULT
 
 
-def test_load_active_config_falls_back_when_required_tech_empty(db_session):
-    # An empty required-tech list would drop every posting; the loader treats
-    # it as "unconfigured" and falls back to defaults instead.
+def test_load_active_config_falls_back_only_when_no_criteria(db_session):
+    db_session.add(
+        SearchProfile(role_titles=["Whatever"], seniority_terms=[], required_tech=[], excluded_tech=[])
+    )
+    db_session.commit()
+    assert load_active_config(db_session) is _BUILTIN_DEFAULT
+
+
+def test_load_active_config_uses_partial_criteria_without_tech_defaults(db_session):
+    # A non-engineering profile (title keywords + seniority, no tech) is filtered
+    # by its own lists; an empty required-tech list skips that rule rather than
+    # pulling in the built-in JavaScript stack.
     db_session.add(
         SearchProfile(
-            role_titles=["Whatever"],
+            title_terms=["project manager"],
             seniority_terms=["senior"],
             required_tech=[],
             excluded_tech=[],
@@ -176,21 +185,9 @@ def test_load_active_config_falls_back_when_required_tech_empty(db_session):
     )
     db_session.commit()
     cfg = load_active_config(db_session)
-    assert cfg is _BUILTIN_DEFAULT
-
-
-def test_load_active_config_falls_back_when_seniority_empty(db_session):
-    db_session.add(
-        SearchProfile(
-            role_titles=[],
-            seniority_terms=[],
-            required_tech=["rust"],
-            excluded_tech=[],
-        )
-    )
-    db_session.commit()
-    cfg = load_active_config(db_session)
-    assert cfg is _BUILTIN_DEFAULT
+    assert cfg is not _BUILTIN_DEFAULT
+    assert cfg.required_long_re is None and cfg.required_short_re is None
+    assert cfg.title_re is not None
 
 
 def test_load_active_config_uses_stored_lists(db_session):
@@ -366,6 +363,7 @@ def test_post_recommendations_does_not_mutate_active_fields(client):
 
     draft = {
         "role_titles": ["Principal Platform Engineer"],
+        "title_terms": ["engineer"],
         "seniority_terms": ["principal"],
         "required_tech": ["rust"],
         "excluded_tech": [],

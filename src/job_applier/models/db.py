@@ -253,6 +253,10 @@ class SearchProfile(SQLModel, table=True):
     # Seniority terms that gate the title regex
     # (e.g. ["senior", "staff", "principal", "lead", "architect"]).
     seniority_terms: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Job-function keywords the title must contain one of (any-of), e.g.
+    # ["project manager", "program manager"]. Empty skips the gate. This is what
+    # keeps a non-engineering profile from matching every senior engineering role.
+    title_terms: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Tech/skills the posting MUST reference (any-of). Filter drops if none match.
     required_tech: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Tech that disqualifies a posting when it's the primary stack (e.g. "angular").
@@ -268,7 +272,7 @@ class SearchProfile(SQLModel, table=True):
     # the recommendations.
     extracted_skills: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Pending LLM-generated proposal awaiting user accept/reject. Shape mirrors
-    # the active fields (role_titles/seniority_terms/required_tech/excluded_tech
+    # the active fields (role_titles/title_terms/seniority_terms/required_tech/excluded_tech
     # /extracted_skills) plus a free-form "rationale" string. Null when no draft.
     recommendations_draft: Optional[dict] = Field(
         default=None, sa_column=Column(JSON)

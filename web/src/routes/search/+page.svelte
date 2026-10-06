@@ -13,6 +13,7 @@
 	let saving = $state(false);
 
 	let role_titles = $state(untrack(() => joinList(data.profile.role_titles)));
+	let title_terms = $state(untrack(() => joinList(data.profile.title_terms ?? [])));
 	let seniority_terms = $state(untrack(() => joinList(data.profile.seniority_terms)));
 	let required_tech = $state(untrack(() => joinList(data.profile.required_tech)));
 	let excluded_tech = $state(untrack(() => joinList(data.profile.excluded_tech)));
@@ -26,6 +27,7 @@
 		const key = `${profile.id}@${profile.updated_at}`;
 		if (profile.updated_at && key !== lastSeen) {
 			role_titles = joinList(profile.role_titles);
+			title_terms = joinList(profile.title_terms ?? []);
 			seniority_terms = joinList(profile.seniority_terms);
 			required_tech = joinList(profile.required_tech);
 			excluded_tech = joinList(profile.excluded_tech);
@@ -225,6 +227,7 @@
 					{#if draft.rationale}<p class="muted" style="margin-bottom:12px">{draft.rationale}</p>{/if}
 					<div class="meta-table">
 						<div class="d-meta-row"><span class="dm-k">Role titles</span><span class="dm-v">{draft.role_titles.join(', ') || '—'}</span></div>
+						<div class="d-meta-row"><span class="dm-k">Title keywords</span><span class="dm-v">{(draft.title_terms ?? []).join(', ') || '—'}</span></div>
 						<div class="d-meta-row"><span class="dm-k">Seniority</span><span class="dm-v">{draft.seniority_terms.join(', ') || '—'}</span></div>
 						<div class="d-meta-row"><span class="dm-k">Required tech</span><span class="dm-v">{draft.required_tech.join(', ') || '—'}</span></div>
 						<div class="d-meta-row"><span class="dm-k">Excluded tech</span><span class="dm-v">{draft.excluded_tech.join(', ') || '—'}</span></div>
@@ -308,15 +311,20 @@
 					</div>
 					<div class="grid-2" style="margin-top:14px">
 						<div class="field">
-							<span>Role titles</span>
-							<textarea class="input" name="role_titles" rows="5" bind:value={role_titles}></textarea>
-							<small>Documentation + LLM context. e.g. "Senior Software Engineer".</small>
+							<span>Title keywords <span style="color:var(--faint);font-weight:500">(gate)</span></span>
+							<textarea class="input" name="title_terms" rows="5" bind:value={title_terms}></textarea>
+							<small>Title must contain one of these — the job itself, e.g. "project manager" or "engineer". Leave empty to skip.</small>
 						</div>
 						<div class="field">
 							<span>Seniority terms <span style="color:var(--faint);font-weight:500">(gate)</span></span>
 							<textarea class="input" name="seniority_terms" rows="5" bind:value={seniority_terms}></textarea>
 							<small>Title must contain one of these (senior, staff, principal, lead).</small>
 						</div>
+					</div>
+					<div class="field" style="margin-top:14px">
+						<span>Role titles</span>
+						<textarea class="input" name="role_titles" rows="4" bind:value={role_titles}></textarea>
+						<small>Not used by the filter — context for AI scoring and drafting. e.g. "Senior Project Manager".</small>
 					</div>
 					<div class="grid-2" style="margin-top:14px">
 						<div class="field">

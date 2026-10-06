@@ -14,6 +14,7 @@ function profile(overrides: Partial<SearchProfile> = {}): SearchProfile {
 		is_active: true,
 		resume_id: 1,
 		role_titles: [],
+		title_terms: [],
 		seniority_terms: [],
 		required_tech: [],
 		excluded_tech: [],

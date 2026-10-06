@@ -82,6 +82,7 @@
 			const cur = await api.getSearchProfile(fetch, base());
 			await api.saveSearchProfile(fetch, base(), {
 				role_titles: cur.role_titles,
+				title_terms: cur.title_terms,
 				seniority_terms: cur.seniority_terms,
 				required_tech: cur.required_tech,
 				excluded_tech: cur.excluded_tech,

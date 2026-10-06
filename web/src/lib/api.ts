@@ -226,6 +226,8 @@ export interface SearchProfile {
 	/** That resume's filename (profile list only). */
 	resume_filename?: string | null;
 	role_titles: string[];
+	/** Job-function keywords the posting title must contain one of; empty skips the gate. */
+	title_terms: string[];
 	seniority_terms: string[];
 	required_tech: string[];
 	excluded_tech: string[];
@@ -249,6 +251,8 @@ export interface CompanyCoverage {
 
 export interface SearchProfileRecommendation {
 	role_titles: string[];
+	/** Job-function keywords the posting title must contain one of; empty skips the gate. */
+	title_terms?: string[];
 	seniority_terms: string[];
 	required_tech: string[];
 	excluded_tech: string[];
@@ -258,6 +262,8 @@ export interface SearchProfileRecommendation {
 
 export interface SearchProfileBody {
 	role_titles: string[];
+	/** Job-function keywords the posting title must contain one of; empty skips the gate. */
+	title_terms: string[];
 	seniority_terms: string[];
 	required_tech: string[];
 	excluded_tech: string[];

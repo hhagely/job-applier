@@ -12,6 +12,8 @@ over the stored postings; the verdict lands on that profile's JobProfileLink):
   5. If the posting names an explicit US-state allow-list, the profile's home
      state must be in it. Skipped when no home state is configured.
   6. Title must indicate one of the configured seniority terms.
+  6b. Title must contain one of the configured title keywords (the job
+      function, e.g. "project manager"). Skipped when none are configured.
   7. Posting must reference one of the configured required-tech terms.
   8. A configured excluded-tech term as the primary stack disqualifies.
 
@@ -21,10 +23,11 @@ Ambiguous postings (e.g. tech implied via short tokens only, exclusion mentioned
 in description with no positive signal) are marked `manual` so the user can
 decide rather than silently dropping.
 
-The seniority / required-tech / excluded-tech lists and the home state live on
-``SearchProfile`` in the DB and are configurable through the ``/search`` UI. If no
-profile row exists the filter falls back to ``_BUILTIN_DEFAULT`` so a fresh install
-still filters sanely. The home state is deliberately *not* part of the built-in
+The title-keyword / seniority / required-tech / excluded-tech lists and the home
+state live on ``SearchProfile`` in the DB and are configurable through the
+``/search`` UI. Each profile is filtered by its own lists; only a profile with no
+criteria at all (or no profile row) falls back to ``_BUILTIN_DEFAULT`` so a fresh
+install still filters sanely. The home state is deliberately *not* part of the built-in
 default — an unset home state skips the state-allow-list rule rather than assuming
 any particular state, so the tool is usable by anyone regardless of where they live.
 """
@@ -120,6 +123,7 @@ class FilterConfig:
     """
 
     role_titles: list[str] = field(default_factory=list)
+    title_terms: list[str] = field(default_factory=list)
     seniority_terms: list[str] = field(default_factory=list)
     required_tech: list[str] = field(default_factory=list)
     excluded_tech: list[str] = field(default_factory=list)
@@ -130,6 +134,7 @@ class FilterConfig:
     home_state_abbr: Optional[str] = None
 
     seniority_re: Optional[re.Pattern[str]] = None
+    title_re: Optional[re.Pattern[str]] = None
     required_long_re: Optional[re.Pattern[str]] = None
     required_short_re: Optional[re.Pattern[str]] = None
     excluded_re: Optional[re.Pattern[str]] = None
@@ -143,11 +148,18 @@ def build_config(
     seniority_terms: list[str],
     required_tech: list[str],
     excluded_tech: list[str],
+    title_terms: Optional[list[str]] = None,
     home_state: Optional[str] = None,
 ) -> FilterConfig:
     seniority_re = (
         re.compile(rf"\b({_alt_pattern(seniority_terms)})\b", re.IGNORECASE)
         if seniority_terms
+        else None
+    )
+    title_terms = [t for t in (title_terms or []) if t.strip()]
+    title_re = (
+        re.compile(rf"\b({_alt_pattern(title_terms)})\b", re.IGNORECASE)
+        if title_terms
         else None
     )
 
@@ -176,12 +188,14 @@ def build_config(
     canonical_state = _canonical_state(home_state)
     return FilterConfig(
         role_titles=list(role_titles),
+        title_terms=title_terms,
         seniority_terms=list(seniority_terms),
         required_tech=list(required_tech),
         excluded_tech=list(excluded_tech),
         home_state=canonical_state,
         home_state_abbr=STATE_ABBREV_BY_NAME.get(canonical_state) if canonical_state else None,
         seniority_re=seniority_re,
+        title_re=title_re,
         required_long_re=required_long_re,
         required_short_re=required_short_re,
         excluded_re=excluded_re,
@@ -245,9 +259,8 @@ _BUILTIN_DEFAULT = build_config(
 def load_active_config(session: Optional[Session] = None) -> FilterConfig:
     """Load the filter config from the active SearchProfile row.
 
-    Falls back to ``_BUILTIN_DEFAULT`` when no profile exists or required lists
-    are empty (an empty required-tech list would drop every posting, which is
-    never what the user means).
+    Falls back to ``_BUILTIN_DEFAULT`` when no profile exists or it has no
+    criteria at all (see ``config_for``).
     """
     close_after = False
     if session is None:
@@ -261,12 +274,20 @@ def load_active_config(session: Optional[Session] = None) -> FilterConfig:
     return config_for(profile)
 
 
+def has_criteria(profile: SearchProfile) -> bool:
+    """Whether the profile describes a search of its own. Any one gating list is
+    enough: a project manager may set title keywords and seniority with no tech
+    at all, and must then be filtered by those, not by the built-in engineering
+    defaults. An empty list simply skips its rule."""
+    return bool(profile.title_terms or profile.seniority_terms or profile.required_tech)
+
+
 def config_for(profile: Optional[SearchProfile]) -> FilterConfig:
     """The filter config one profile's row describes (built-in defaults when
     there's no row). ``matching`` builds one of these per profile."""
     if profile is None:
         return _BUILTIN_DEFAULT
-    if not profile.required_tech or not profile.seniority_terms:
+    if not has_criteria(profile):
         # Fall back to the built-in role/tech defaults, but still honor the
         # profile's home state. The state-allow-list rule is independent of the
         # tech lists, and the onboarding wizard sets the state *before* any roles
@@ -282,6 +303,7 @@ def config_for(profile: Optional[SearchProfile]) -> FilterConfig:
         )
     return build_config(
         role_titles=profile.role_titles,
+        title_terms=profile.title_terms or [],
         seniority_terms=profile.seniority_terms,
         required_tech=profile.required_tech,
         excluded_tech=profile.excluded_tech,
@@ -509,19 +531,27 @@ def _haystack(raw: RawJob) -> str:
 
 
 def union_title_config(configs: list[FilterConfig]) -> FilterConfig:
-    """A config whose seniority gate passes a title any of ``configs`` would.
+    """A config whose title gates pass a title any of ``configs`` would.
 
     For the title pre-skip in adapters: the scrape serves every profile at once,
-    so a title may only be skipped when no profile's seniority terms match it.
-    Any profile with no seniority gate means no title can be skipped on seniority.
+    so a title may only be skipped when no profile's terms match it. Each gate
+    (seniority, title keywords) is unioned on its own, and any profile without
+    that gate disables it. That is looser than "some profile passes both", never
+    stricter, so it can only fetch extra details, not lose a posting.
     """
     if not configs:
         return _BUILTIN_DEFAULT
-    patterns = [c.seniority_re for c in configs]
-    if any(p is None for p in patterns):
-        return replace(_BUILTIN_DEFAULT, seniority_re=None)
-    union = re.compile("|".join(f"(?:{p.pattern})" for p in patterns), re.IGNORECASE)
-    return replace(_BUILTIN_DEFAULT, seniority_re=union)
+
+    def _union(patterns: list[Optional[re.Pattern[str]]]) -> Optional[re.Pattern[str]]:
+        if any(p is None for p in patterns):
+            return None
+        return re.compile("|".join(f"(?:{p.pattern})" for p in patterns), re.IGNORECASE)
+
+    return replace(
+        _BUILTIN_DEFAULT,
+        seniority_re=_union([c.seniority_re for c in configs]),
+        title_re=_union([c.title_re for c in configs]),
+    )
 
 
 def title_quick_fail(title: str, config: Optional[FilterConfig] = None) -> bool:
@@ -537,6 +567,8 @@ def title_quick_fail(title: str, config: Optional[FilterConfig] = None) -> bool:
     cfg = config or _BUILTIN_DEFAULT
     title = title or ""
     if cfg.seniority_re is not None and not cfg.seniority_re.search(title):
+        return True
+    if cfg.title_re is not None and not cfg.title_re.search(title):
         return True
     if SALES_TITLE.search(title) or SALES_HEAD_OF.search(title):
         return True
@@ -608,6 +640,14 @@ def evaluate_profile(raw: RawJob, config: Optional[FilterConfig] = None) -> Filt
         return FilterResult(
             FilterStatus.dropped,
             "title not Senior/Staff/Principal/Lead (or configured equivalent)",
+        )
+
+    # 6b. Job function (configurable): the title must name one of the profile's
+    #     title keywords, so a PM profile doesn't match "Senior Software Engineer"
+    #     just because the description mentions Jira and AWS.
+    if cfg.title_re is not None and not cfg.title_re.search(title):
+        return FilterResult(
+            FilterStatus.dropped, "title doesn't match any of your title keywords"
         )
 
     # 7. Excluded-tech check (before required-tech — an excluded term may itself

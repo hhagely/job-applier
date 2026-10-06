@@ -26,7 +26,7 @@ from job_applier.api.schemas import (
     SearchProfileOut,
     SearchProfileRecommendationIn,
 )
-from job_applier.filters import normalize_home_state
+from job_applier.filters import has_criteria, normalize_home_state
 from job_applier.models.db import SearchProfile, get_session
 
 router = APIRouter(tags=["search-profile"])
@@ -49,7 +49,7 @@ def profile_out(
     """
     if p is None:
         return SearchProfileOut(using_defaults=True)
-    using_defaults = not p.required_tech or not p.seniority_terms
+    using_defaults = not has_criteria(p)
     return SearchProfileOut(
         id=p.id,
         name=p.name,
@@ -57,6 +57,7 @@ def profile_out(
         resume_id=p.resume_id,
         resume_filename=resume_filename,
         role_titles=list(p.role_titles or []),
+        title_terms=list(p.title_terms or []),
         seniority_terms=list(p.seniority_terms or []),
         required_tech=list(p.required_tech or []),
         excluded_tech=list(p.excluded_tech or []),
@@ -153,6 +154,7 @@ def put_search_profile(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     p = _load_or_create_profile(session)
     p.role_titles = body.role_titles
+    p.title_terms = body.title_terms
     p.seniority_terms = body.seniority_terms
     p.required_tech = body.required_tech
     p.excluded_tech = body.excluded_tech

@@ -30,6 +30,7 @@ class SuggestedProfile(BaseModel):
     """
 
     role_titles: list[str] = []
+    title_terms: list[str] = []
     seniority_terms: list[str] = []
     required_tech: list[str] = []
     excluded_tech: list[str] = []
@@ -43,6 +44,7 @@ def _current_profile_summary(profile: Optional[SearchProfile]) -> str:
     return json.dumps(
         {
             "role_titles": list(profile.role_titles or []),
+            "title_terms": list(profile.title_terms or []),
             "seniority_terms": list(profile.seniority_terms or []),
             "required_tech": list(profile.required_tech or []),
             "excluded_tech": list(profile.excluded_tech or []),

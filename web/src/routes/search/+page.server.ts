@@ -33,6 +33,7 @@ function readProfile(form: FormData): SearchProfileBody {
 	const homeState = form.get('home_state');
 	return {
 		role_titles: splitList(form.get('role_titles')),
+		title_terms: splitList(form.get('title_terms')),
 		seniority_terms: splitList(form.get('seniority_terms')),
 		required_tech: splitList(form.get('required_tech')),
 		excluded_tech: splitList(form.get('excluded_tech')),
@@ -143,6 +144,7 @@ export const actions: Actions = {
 				mode === 'append'
 					? {
 							role_titles: dedupe([...(current.role_titles ?? []), ...(draft.role_titles ?? [])]),
+							title_terms: dedupe([...(current.title_terms ?? []), ...(draft.title_terms ?? [])]),
 							seniority_terms: dedupe([
 								...(current.seniority_terms ?? []),
 								...(draft.seniority_terms ?? [])
@@ -163,6 +165,7 @@ export const actions: Actions = {
 						}
 					: {
 							role_titles: draft.role_titles ?? [],
+							title_terms: draft.title_terms ?? [],
 							seniority_terms: draft.seniority_terms ?? [],
 							required_tech: draft.required_tech ?? [],
 							excluded_tech: draft.excluded_tech ?? [],

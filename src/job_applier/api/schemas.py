@@ -219,11 +219,14 @@ class SearchProfileBody(BaseModel):
     """Shape used for both reading and writing a search profile's criteria.
 
     All fields are lists of strings so they round-trip cleanly through the JSON
-    columns. Empty lists are legal — the filter falls back to its built-in
-    defaults when ``required_tech`` or ``seniority_terms`` is empty.
+    columns. Empty lists are legal — an empty list skips its rule, and the filter
+    falls back to its built-in defaults only when ``title_terms``,
+    ``seniority_terms`` and ``required_tech`` are all empty.
     """
 
     role_titles: list[str] = []
+    # Job-function keywords the posting title must contain one of (any-of).
+    title_terms: list[str] = []
     seniority_terms: list[str] = []
     required_tech: list[str] = []
     excluded_tech: list[str] = []
@@ -268,6 +271,7 @@ class SearchProfileRecommendationIn(BaseModel):
     """
 
     role_titles: list[str] = []
+    title_terms: list[str] = []
     seniority_terms: list[str] = []
     required_tech: list[str] = []
     excluded_tech: list[str] = []
