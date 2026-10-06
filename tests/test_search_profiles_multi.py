@@ -106,6 +106,26 @@ def test_activating_a_profile_switches_the_active_resume_and_back(session):
     ).all() == [profiles.active_profile(session)]
 
 
+@pytest.mark.parametrize("dangling", [False, True])
+def test_activating_a_profile_without_a_usable_resume_adopts_the_current_one(
+    session, dangling
+):
+    # No resume (or one whose row is gone) must not leave the profile and
+    # Resume.is_active disagreeing: the profile adopts the current resume.
+    ic = _resume(session, "ic.pdf", active=True)
+    profiles.load_or_create_profile(session)
+    session.commit()
+    b = SearchProfile(name="B", resume_id=999 if dangling else None)
+    session.add(b)
+    session.commit()
+
+    profiles.activate_profile(session, b.id)
+    assert b.resume_id == ic.id
+    assert _active_resume_id(session) == ic.id
+    flagged = session.exec(select(Resume).where(Resume.is_active == True)).all()  # noqa: E712
+    assert [r.id for r in flagged] == [ic.id]
+
+
 def test_uploaded_resume_becomes_the_active_profiles_resume(session):
     _resume(session, "old.pdf", active=True)
     p = profiles.load_or_create_profile(session)

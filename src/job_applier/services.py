@@ -50,20 +50,9 @@ class JobNotFound(Exception):
 
 
 def active_resume(session: Session) -> Optional[Resume]:
-    """The resume this session's profile scores and drafts with.
-
-    Resolved through the profile rather than ``Resume.is_active`` alone, so a
-    background task pinned to one person keeps using their resume even if the
-    user switches profiles (which moves ``is_active``) mid-run.
-    """
-    profile = profiles.active_profile(session)
-    if profile is not None and profile.resume_id is not None:
-        resume = session.get(Resume, profile.resume_id)
-        if resume is not None:
-            return resume
-    return session.exec(
-        select(Resume).where(Resume.is_active == True)  # noqa: E712
-    ).first()
+    """The resume this session's profile scores and drafts with (see
+    ``profiles.active_resume``)."""
+    return profiles.active_resume(session)
 
 
 # ---- scoring persistence --------------------------------------------------

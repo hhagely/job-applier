@@ -359,6 +359,88 @@ def test_migration_moves_per_job_state_onto_the_default_profile(tmp_path, monkey
         conn.close()
 
 
+def test_rebuild_fills_nulls_in_columns_that_are_now_required(tmp_path, monkeypatch):
+    # Legacy scored_by / scored_at / updated_at were nullable; the rebuilt tables
+    # make them NOT NULL, so a NULL must take the model default, not fail the copy.
+    db_path, _ = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        INSERT INTO application (id, job_id, status, updated_at) VALUES (10, 1, 'applied', NULL);
+        INSERT INTO matchscore (id, job_id, score, scored_by, scored_at) VALUES (20, 1, 88, NULL, NULL);
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(
+            "SELECT id, status, updated_at IS NOT NULL FROM application"
+        ).fetchall() == [(10, "applied", 1)]
+        assert conn.execute(
+            "SELECT id, score, scored_by, scored_at IS NOT NULL FROM matchscore"
+        ).fetchall() == [(20, 88, "claude-code", 1)]
+    finally:
+        conn.close()
+
+
+def test_failed_rebuild_leaves_the_legacy_tables_intact(tmp_path, monkeypatch):
+    # The rebuild's DDL must share the copy's transaction: a failure part-way
+    # (here, after application is rebuilt) rolls everything back, so no rows are
+    # stranded in *__pre_profile and the next startup simply retries.
+    db_path = tmp_path / "legacy.db"
+    _make_legacy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        INSERT INTO application (id, job_id, status, updated_at) VALUES (10, 1, 'applied', '2026-08-02');
+        INSERT INTO matchscore (id, job_id, score, scored_by, scored_at) VALUES (20, 1, 88, 'c', '2026-08-01');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from job_applier import models
+    from job_applier.config import settings
+
+    monkeypatch.setattr(settings, "db_path", db_path)
+    monkeypatch.setattr(models.db, "_engine", None)
+    real_rebuild = models.db._rebuild_with_profile
+
+    def failing_rebuild(conn, table, pid, old_cols):  # noqa: ANN001
+        real_rebuild(conn, table, pid, old_cols)
+        if table == "matchscore":
+            raise RuntimeError("disk full")
+
+    monkeypatch.setattr(models.db, "_rebuild_with_profile", failing_rebuild)
+    with pytest.raises(RuntimeError):
+        models.db.create_db_and_tables()
+    models.db.engine().dispose()
+
+    assert "profile_id" not in _cols(db_path, "application")
+    assert "profile_id" not in _cols(db_path, "matchscore")
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT id, status FROM application").fetchall() == [(10, "applied")]
+        assert conn.execute("SELECT id, score FROM matchscore").fetchall() == [(20, 88)]
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name LIKE '%__pre_profile'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(models.db, "_rebuild_with_profile", real_rebuild)
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT id, profile_id FROM application").fetchall() == [(10, 3)]
+        assert conn.execute("SELECT id, profile_id FROM matchscore").fetchall() == [(20, 3)]
+    finally:
+        conn.close()
+
+
 def test_legacy_draft_dirs_move_under_the_profile_once(tmp_path, monkeypatch):
     from job_applier import drafts
     from job_applier.config import settings

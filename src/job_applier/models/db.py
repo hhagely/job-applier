@@ -348,11 +348,20 @@ def _active_profile_id_from(conn) -> Optional[int]:  # noqa: ANN001
 
 
 def _insert_default_profile(conn) -> int:  # noqa: ANN001
+    """Create the active "Default" profile on the active resume, if any. Raw SQL
+    so it can run from ORM events and migrations; ``profiles.load_or_create_profile``
+    is the ORM path and keeps the same shape."""
     return conn.exec_driver_sql(
-        "INSERT INTO searchprofile (name, is_active, role_titles, seniority_terms, "
+        "INSERT INTO searchprofile (name, is_active, resume_id, role_titles, seniority_terms, "
         "required_tech, excluded_tech, extracted_skills, updated_at) "
-        "VALUES ('Default', 1, '[]', '[]', '[]', '[]', '[]', CURRENT_TIMESTAMP)"
+        "VALUES ('Default', 1, (SELECT id FROM resume WHERE is_active = 1 LIMIT 1), "
+        "'[]', '[]', '[]', '[]', '[]', CURRENT_TIMESTAMP)"
     ).lastrowid
+
+
+def _begin(conn) -> None:  # noqa: ANN001
+    """Open a write transaction explicitly so DDL joins it (see the callers)."""
+    conn.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def session_profile_id(session: Session, *, create: bool = False) -> Optional[int]:
@@ -549,6 +558,12 @@ def _ensure_multi_profile_columns() -> None:
     """
     with engine().connect() as conn:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(searchprofile)")}
+        if {"name", "resume_id", "is_active"} <= cols:
+            return
+        # One transaction for the ALTERs and the backfill: the backfill is gated
+        # on ``is_active`` being absent, so a crash between them must not leave
+        # the column behind with nothing linked.
+        _begin(conn)
         if "name" not in cols:
             conn.exec_driver_sql(
                 "ALTER TABLE searchprofile ADD COLUMN name VARCHAR NOT NULL DEFAULT 'Default'"
@@ -570,11 +585,7 @@ def _ensure_multi_profile_columns() -> None:
         has_jobs = conn.exec_driver_sql("SELECT 1 FROM jobposting LIMIT 1").first()
         has_profile = conn.exec_driver_sql("SELECT 1 FROM searchprofile LIMIT 1").first()
         if has_jobs and not has_profile:
-            conn.exec_driver_sql(
-                "INSERT INTO searchprofile (name, role_titles, seniority_terms, "
-                "required_tech, excluded_tech, extracted_skills, updated_at, is_active) "
-                "VALUES ('Default', '[]', '[]', '[]', '[]', '[]', CURRENT_TIMESTAMP, 0)"
-            )
+            _insert_default_profile(conn)
         first = conn.exec_driver_sql("SELECT MIN(id) FROM searchprofile").scalar()
         if first is not None:
             conn.exec_driver_sql(
@@ -701,6 +712,10 @@ def _ensure_per_profile_state() -> None:
         ]
         if not todo:
             return
+        # SQLite DDL is transactional, but pysqlite only opens a transaction
+        # before DML, so without this the rename/create in the rebuild would
+        # autocommit and a failed copy would strand rows in ``*__pre_profile``.
+        _begin(conn)
         pid = _active_profile_id_from(conn)
         if pid is None and any(
             conn.exec_driver_sql(f"SELECT 1 FROM {t} LIMIT 1").first() for t in todo
@@ -738,7 +753,7 @@ def _rebuild_with_profile(conn, table: str, pid: Optional[int], old_cols: set[st
     ``profile_id = pid``. SQLite's documented rebuild: rename the old table aside,
     create the new one from the SQLModel metadata (so a migrated DB can't drift
     from a fresh install), copy, drop the old. Runs inside the caller's
-    transaction, so a failure part-way leaves the original table in place.
+    explicit transaction, so a failure part-way leaves the original table in place.
 
     Foreign-key enforcement is never switched on for this engine (no
     ``PRAGMA foreign_keys``), so the rename/drop can't trip a constraint, and no
@@ -755,11 +770,24 @@ def _rebuild_with_profile(conn, table: str, pid: Optional[int], old_cols: set[st
     ).all():
         conn.exec_driver_sql(f"DROP INDEX {name}")
     SQLModel.metadata.tables[table].create(conn)
-    copied = [c.name for c in SQLModel.metadata.tables[table].columns if c.name in old_cols]
-    col_list = ", ".join(copied)
+    copied = [c for c in SQLModel.metadata.tables[table].columns if c.name in old_cols]
+    # Legacy columns that were nullable are NOT NULL now, so fill their NULLs with
+    # the model's default rather than failing the copy.
+    select_list, params = [], []
+    for c in copied:
+        default = c.default
+        if c.nullable or default is None:
+            select_list.append(c.name)
+        elif default.is_callable:
+            select_list.append(f"COALESCE({c.name}, CURRENT_TIMESTAMP)")
+        else:
+            value = default.arg
+            select_list.append(f"COALESCE({c.name}, ?)")
+            params.append(value.name if isinstance(value, Enum) else value)
     conn.exec_driver_sql(
-        f"INSERT INTO {table} ({col_list}, profile_id) SELECT {col_list}, ? FROM {old}",
-        (pid,),
+        f"INSERT INTO {table} ({', '.join(c.name for c in copied)}, profile_id) "
+        f"SELECT {', '.join(select_list)}, ? FROM {old}",
+        (*params, pid),
     )
     conn.exec_driver_sql(f"DROP TABLE {old}")
 
