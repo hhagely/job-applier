@@ -3,9 +3,15 @@ import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ fetch }) => {
-	const resume = await api.getCurrentResume(fetch, serverApiBase());
-	return { resume };
+export const load: PageServerLoad = async ({ fetch, parent }) => {
+	// Both are the active profile's: the API scopes resumes to it.
+	const [resume, resumes, { profiles }] = await Promise.all([
+		api.getCurrentResume(fetch, serverApiBase()),
+		api.listResumes(fetch, serverApiBase()).catch(() => []),
+		parent()
+	]);
+	const profileName = profiles.find((p) => p.is_active)?.name ?? null;
+	return { resume, resumes, profileName };
 };
 
 /** Can we offer "let the AI read this resume and suggest search criteria"?
@@ -36,6 +42,20 @@ export const actions: Actions = {
 			return { ok: true, resume, staleCount, nextSteps: true, aiCanSuggest: canSuggest };
 		} catch (e) {
 			return fail(422, { error: errorReason(e) });
+		}
+	},
+
+	// Switch this profile to another of its uploads. Scores made against the
+	// previous one go stale, so this raises the same keep / re-score prompt.
+	use: async ({ request, fetch }) => {
+		const id = Number((await request.formData()).get('id'));
+		if (!Number.isInteger(id) || id <= 0) return fail(400, { error: 'Bad resume id.' });
+		try {
+			const resume = await api.useResume(fetch, serverApiBase(), id);
+			const { count: staleCount } = await api.getStaleScoreCount(fetch, serverApiBase());
+			return { ok: true, resume, staleCount, switched: true };
+		} catch (e) {
+			return fail(404, { error: errorReason(e) });
 		}
 	},
 

@@ -33,7 +33,10 @@ _load_or_create_profile = services.load_or_create_profile
 
 
 def profile_out(
-    p: Optional[SearchProfile], *, is_active: Optional[bool] = None
+    p: Optional[SearchProfile],
+    *,
+    is_active: Optional[bool] = None,
+    resume_filename: Optional[str] = None,
 ) -> SearchProfileOut:
     """Present a ``SearchProfile`` ORM row (or ``None``) as the API response DTO.
 
@@ -50,6 +53,7 @@ def profile_out(
         name=p.name,
         is_active=True if is_active is None else is_active,
         resume_id=p.resume_id,
+        resume_filename=resume_filename,
         role_titles=list(p.role_titles or []),
         seniority_terms=list(p.seniority_terms or []),
         required_tech=list(p.required_tech or []),
@@ -69,8 +73,9 @@ _profile_out = profile_out
 def list_search_profiles(session: Session = Depends(get_session)):
     active = profiles.active_profile(session)
     active_id = active.id if active else None
+    filenames = profiles.resume_filenames(session)
     return [
-        _profile_out(p, is_active=p.id == active_id)
+        _profile_out(p, is_active=p.id == active_id, resume_filename=filenames.get(p.id))
         for p in profiles.list_profiles(session)
     ]
 

@@ -97,6 +97,18 @@ def list_resumes(session: Session = Depends(get_session)):
     ]
 
 
+@router.post("/api/resumes/{resume_id}/use", response_model=ResumeOut)
+def use_resume(resume_id: int, session: Session = Depends(get_session)):
+    """Make another of the active profile's uploads the one it scores and
+    tailors with. Scores made against the previous one then read as stale."""
+    profile = profiles.load_or_create_profile(session)
+    try:
+        profiles.update_profile_meta(session, profile.id, resume_id=resume_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    return _resume_out(_active_resume(session))
+
+
 @router.get("/api/resume/current", response_model=ResumeOut)
 def get_current_resume(session: Session = Depends(get_session)):
     return _resume_out(_active_resume(session))

@@ -213,7 +213,16 @@ class SourceSlug(SQLModel, table=True):
 
 
 class Resume(SQLModel, table=True):
+    """An uploaded resume, owned by one profile (profile-scoped like
+    ``Application``). A profile can hold several; the one it uses is
+    ``SearchProfile.resume_id``. Copying a profile copies the row, not the PDF,
+    so two rows may share a ``pdf_path``."""
+
     id: Optional[int] = Field(default=None, primary_key=True)
+    # No foreign key: searchprofile.resume_id already points the other way, and
+    # a cycle would cost create_all its table ordering. Stamped like every other
+    # profile-scoped row (see ``_stamp_profile``).
+    profile_id: int = Field(index=True)
     original_filename: str
     pdf_path: str  # absolute path under settings.resumes_dir
     extracted_text: str
@@ -353,6 +362,7 @@ PROFILE_SCOPED = (
     MatchScoreHistory,
     BlacklistedCompany,
     JobProfileLink,
+    Resume,
 )
 
 current_profile_id: ContextVar[Optional[int]] = ContextVar(
@@ -515,6 +525,7 @@ def create_db_and_tables() -> None:
     # Last: rebuilds tables, so every column helper above must have run first.
     _ensure_per_profile_state()
     _ensure_match_columns()
+    _ensure_resume_owner()
 
 
 def _ensure_cross_source_hash_column() -> None:
@@ -893,6 +904,76 @@ def _ensure_match_columns() -> None:
             )
         if not has_tags:
             conn.exec_driver_sql("ALTER TABLE jobposting ADD COLUMN tags JSON")
+        conn.commit()
+
+
+def _ensure_resume_owner() -> None:
+    """Give every resume an owner profile (multi-profile part 3).
+
+    One-time, gated on ``resume.profile_id``. A profile owns the resume it uses;
+    when two profiles used the same upload, the active one (then the oldest)
+    keeps it and each other gets its own copy of the row (same PDF), with its
+    scores re-pointed at the copy so they don't read as stale. Uploads nobody
+    uses go to the profile whose scores were computed against them, and anything
+    left to the active profile.
+    """
+    with engine().connect() as conn:
+        if "profile_id" in _table_cols(conn, "resume"):
+            return
+        _begin(conn)
+        conn.exec_driver_sql("ALTER TABLE resume ADD COLUMN profile_id INTEGER")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_resume_profile_id ON resume (profile_id)"
+        )
+        copied = ", ".join(
+            c.name
+            for c in SQLModel.metadata.tables["resume"].columns
+            if c.name not in ("id", "profile_id", "is_active")
+        )
+        users = conn.exec_driver_sql(
+            "SELECT id, resume_id FROM searchprofile WHERE resume_id IS NOT NULL "
+            "ORDER BY is_active DESC, id"
+        ).all()
+        for pid, rid in users:
+            row = conn.exec_driver_sql(
+                "SELECT profile_id FROM resume WHERE id = ?", (rid,)
+            ).first()
+            if row is None:
+                continue  # dangling; activate_profile repairs it
+            if row[0] is None:
+                conn.exec_driver_sql(
+                    "UPDATE resume SET profile_id = ? WHERE id = ?", (pid, rid)
+                )
+                continue
+            new_id = conn.exec_driver_sql(
+                f"INSERT INTO resume ({copied}, is_active, profile_id) "
+                f"SELECT {copied}, 0, ? FROM resume WHERE id = ?",
+                (pid, rid),
+            ).lastrowid
+            conn.exec_driver_sql(
+                "UPDATE searchprofile SET resume_id = ? WHERE id = ?", (new_id, pid)
+            )
+            for table in ("matchscore", "matchscorehistory"):
+                conn.exec_driver_sql(
+                    f"UPDATE {table} SET resume_id = ? WHERE resume_id = ? AND profile_id = ?",
+                    (new_id, rid, pid),
+                )
+        conn.exec_driver_sql(
+            "UPDATE resume SET profile_id = ("
+            "  SELECT profile_id FROM ("
+            "    SELECT resume_id, profile_id FROM matchscorehistory"
+            "    UNION ALL SELECT resume_id, profile_id FROM matchscore"
+            "  ) s WHERE s.resume_id = resume.id"
+            "  GROUP BY profile_id ORDER BY COUNT(*) DESC LIMIT 1"
+            ") WHERE profile_id IS NULL"
+        )
+        if conn.exec_driver_sql("SELECT 1 FROM resume WHERE profile_id IS NULL").first():
+            pid = _active_profile_id_from(conn)
+            if pid is None:
+                pid = _insert_default_profile(conn)
+            conn.exec_driver_sql(
+                "UPDATE resume SET profile_id = ? WHERE profile_id IS NULL", (pid,)
+            )
         conn.commit()
 
 

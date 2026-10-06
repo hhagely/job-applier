@@ -38,7 +38,8 @@ function meaningfulLines(text: string): string[] {
 		.filter(Boolean);
 }
 
-function deriveInitials(name: string): string {
+/** 1-2 letter monogram for a name ("Herb Hagely" -> "HH"). */
+export function deriveInitials(name: string): string {
 	const words = name.split(' ').filter((w) => /[a-z]/i.test(w));
 	if (words.length === 0) return name.slice(0, 1).toUpperCase() || '?';
 	if (words.length === 1) return words[0].slice(0, 1).toUpperCase();

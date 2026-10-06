@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { api } from '$lib/api';
 	import Icon from '$lib/Icon.svelte';
+	import { fmtDateTime } from '$lib/date';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import type { ActionData, PageData } from './$types';
@@ -15,6 +16,8 @@
 	// button) replaces `form` and retires it.
 	let staleCount = $derived(form?.staleCount ?? 0);
 	let keptCount = $derived(form?.kept ?? 0);
+	let owner = $derived(data.profileName ?? 'this profile');
+	let switchingId = $state<number | null>(null);
 
 	const rescore = createTaskRunner({
 		kind: 'score_pending',
@@ -26,8 +29,11 @@
 
 <div class="view-head">
 	<div class="vh-titles">
-		<h1>Resume</h1>
-		<div class="vh-sub">The PDF used to score every job. Newest upload wins.</div>
+		<h1>{data.profileName ? `${data.profileName}'s resumes` : 'Resume'}</h1>
+		<div class="vh-sub">
+			The resume in use scores and tailors every job for this profile. A new upload becomes the
+			one in use.
+		</div>
 	</div>
 	<div class="vh-actions">
 		<button type="button" class="btn primary" onclick={() => fileInput?.click()}>
@@ -59,8 +65,8 @@
 						<div style="flex:1">
 							<div style="font-weight:600;font-size:13px">Drop your resume PDF here</div>
 							<div class="hint">
-								The app extracts plain text and stores it as the active resume. Older versions are
-								kept but inactive.
+								The app extracts plain text and saves it to {owner}, as the resume in use. Older
+								uploads stay in the list below, so you can switch back.
 							</div>
 						</div>
 						<input
@@ -135,9 +141,45 @@
 			</div>
 		</div>
 
+		{#if data.resumes.length > 1}
+			<div class="card">
+				<div class="card-h"><h3>All of {owner}'s resumes</h3></div>
+				<div class="card-b">
+					<ul class="rs-list">
+						{#each data.resumes as r (r.id)}
+							<li class:rs-active={r.id === resume?.id}>
+								<span class="rs-name mono">{r.original_filename}</span>
+								<span class="rs-date hint">{fmtDateTime(r.uploaded_at)}</span>
+								{#if r.id === resume?.id}
+									<span class="tag status-applied">in use</span>
+								{:else}
+									<form
+										method="POST"
+										action="?/use"
+										use:enhance={() => {
+											switchingId = r.id;
+											return async ({ update }) => {
+												await update();
+												switchingId = null;
+											};
+										}}
+									>
+										<input type="hidden" name="id" value={r.id} />
+										<button type="submit" class="btn sm" disabled={switchingId !== null}>
+											{switchingId === r.id ? 'Switching…' : 'Use this one'}
+										</button>
+									</form>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				</div>
+			</div>
+		{/if}
+
 		{#if resume}
 			<div class="card">
-				<div class="card-h"><h3>Active resume</h3><span class="tag status-applied" style="margin-left:auto">active</span></div>
+				<div class="card-h"><h3>Resume in use</h3><span class="tag status-applied" style="margin-left:auto">in use</span></div>
 				<div class="card-b">
 					<div class="meta-table">
 						<div class="d-meta-row"><span class="dm-k">Filename</span><span class="dm-v mono">{resume.original_filename}</span></div>
@@ -164,7 +206,9 @@
 				</div>
 			</div>
 		{:else}
-			<div class="card"><div class="card-b"><p class="muted">No resume on file yet. Upload one above.</p></div></div>
+			<div class="card">
+				<div class="card-b"><p class="muted">No resume for {owner} yet. Upload one above.</p></div>
+			</div>
 		{/if}
 	</div>
 </div>
@@ -217,6 +261,37 @@
 	}
 	.stale-choice .hint {
 		margin: 0;
+	}
+	.rs-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.rs-list li {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 10px;
+		border: 1px solid var(--border);
+		border-radius: 9px;
+	}
+	.rs-list li.rs-active {
+		border-color: var(--accent);
+	}
+	.rs-name {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 12.5px;
+	}
+	.rs-date {
+		margin: 0;
+		white-space: nowrap;
 	}
 	.extracted {
 		font-family: var(--mono);

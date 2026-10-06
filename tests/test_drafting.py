@@ -265,7 +265,6 @@ def test_suggest_writes_draft_not_live_profile(monkeypatch):
     monkeypatch.setattr(providers, "run", lambda *a, **k: SUGGEST_JSON)
     e = _engine()
     with Session(e) as s:
-        _seed_resume(s)
         # Pre-existing live profile the suggestion must not touch.
         live = SearchProfile(
             role_titles=["Existing Role"],
@@ -274,6 +273,7 @@ def test_suggest_writes_draft_not_live_profile(monkeypatch):
         )
         s.add(live)
         s.commit()
+        _seed_resume(s)
 
         updated = suggest.suggest_roles(s, "claude")
 

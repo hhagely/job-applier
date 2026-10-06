@@ -227,6 +227,8 @@ class SearchProfileOut(SearchProfileBody):
     name: str = "Default"
     is_active: bool = True
     resume_id: Optional[int] = None
+    # Filled on the profile list only, so every row can say which resume it uses.
+    resume_filename: Optional[str] = None
     recommendations_draft: Optional[dict] = None
     updated_at: Optional[datetime] = None
     using_defaults: bool = False  # True when the filter is falling back
@@ -234,14 +236,14 @@ class SearchProfileOut(SearchProfileBody):
 
 class SearchProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    # Copy criteria + resume from this profile; omitted starts blank (filter
-    # defaults) on the current resume.
+    # Copy criteria + (a copy of) the resume from this profile; omitted starts a
+    # blank profile with filter defaults and no resume.
     clone_from: Optional[int] = None
 
 
 class SearchProfileMetaUpdate(BaseModel):
-    """Rename and/or re-point a profile at an uploaded resume. Criteria go
-    through PUT /api/search-profiles/{id}."""
+    """Rename a profile and/or switch it to another of its own uploads. Criteria
+    go through PUT /api/search-profile, which edits the active profile only."""
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     resume_id: Optional[int] = None
