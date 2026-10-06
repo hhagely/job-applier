@@ -93,25 +93,6 @@
 		<div class="vh-sub">What the ingest filter keeps. One entry per line — commas also work.</div>
 	</div>
 	<div class="vh-actions">
-		{#if !hasProvider}
-			<a class="btn danger" href="/settings" title="Select an AI CLI in Settings">Suggest roles — set up AI</a>
-		{:else}
-			<form
-				method="POST"
-				action="?/suggest"
-				use:enhance={() => {
-					suggesting = true;
-					return async ({ update }) => {
-						await update();
-						suggesting = false;
-					};
-				}}
-			>
-				<button type="submit" class="btn" disabled={suggesting || !data.hasResume}>
-					{suggesting ? 'Analyzing resume…' : 'Suggest roles from resume'}
-				</button>
-			</form>
-		{/if}
 		<button type="submit" form="save-form" class="btn primary" disabled={saving}>{saving ? 'Saving…' : 'Save criteria'}</button>
 	</div>
 </div>
@@ -225,7 +206,7 @@
 			<p class="banner info">
 				This profile's criteria are empty — the filter is using built-in defaults.
 				{#if data.hasResume}
-					Use the Suggest-roles button for recommendations.
+					Use <em>Suggest roles from resume</em> in the Criteria card for recommendations.
 				{:else}
 					Upload a resume first, then suggest roles for recommendations.
 				{/if}
@@ -266,20 +247,48 @@
 			</div>
 		{/if}
 
-		<form
-			id="save-form"
-			method="POST"
-			action="?/save"
-			use:enhance={() => {
-				saving = true;
-				return async ({ update }) => {
-					await update();
-					saving = false;
-				};
-			}}
-		>
-			<div class="card">
-				<div class="card-h"><h2>Criteria · {profile.name}</h2></div>
+		<div class="card">
+			<div class="card-h">
+				<h2>Criteria · {profile.name}</h2>
+				<div class="criteria-actions">
+					{#if !hasProvider}
+						<a class="btn danger sm" href="/settings" title="Select an AI CLI in Settings">Suggest roles — set up AI</a>
+					{:else}
+						<form
+							method="POST"
+							action="?/suggest"
+							use:enhance={() => {
+								suggesting = true;
+								return async ({ update }) => {
+									await update();
+									suggesting = false;
+								};
+							}}
+						>
+							<button
+								type="submit"
+								class="btn sm"
+								disabled={suggesting || !data.hasResume}
+								title={data.hasResume ? undefined : 'Upload a resume first'}
+							>
+								{suggesting ? 'Analyzing resume…' : 'Suggest roles from resume'}
+							</button>
+						</form>
+					{/if}
+				</div>
+			</div>
+			<form
+				id="save-form"
+				method="POST"
+				action="?/save"
+				use:enhance={() => {
+					saving = true;
+					return async ({ update }) => {
+						await update();
+						saving = false;
+					};
+				}}
+			>
 				<div class="card-b">
 					<div class="field state-field">
 						<span>State of residence <span style="color:var(--faint);font-weight:500">(optional)</span></span>
@@ -330,8 +339,8 @@
 						<button type="submit" class="btn primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
 					</div>
 				</div>
-			</div>
-		</form>
+			</form>
+		</div>
 
 		<div class="card">
 			<div class="card-h"><h2>Companies searched</h2></div>
@@ -672,6 +681,12 @@
 		margin-top: 16px;
 	}
 	.rec-actions form {
+		margin: 0;
+	}
+	.criteria-actions {
+		margin-left: auto;
+	}
+	.criteria-actions form {
 		margin: 0;
 	}
 	.bl-add,
