@@ -22,6 +22,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
+from job_applier import profiles
 from job_applier.config import settings
 from job_applier.ingest import normalize_company
 from job_applier.models.db import (
@@ -49,9 +50,9 @@ class JobNotFound(Exception):
 
 
 def active_resume(session: Session) -> Optional[Resume]:
-    return session.exec(
-        select(Resume).where(Resume.is_active == True)  # noqa: E712
-    ).first()
+    """The resume this session's profile scores and drafts with (see
+    ``profiles.active_resume``)."""
+    return profiles.active_resume(session)
 
 
 # ---- scoring persistence --------------------------------------------------
@@ -121,19 +122,36 @@ def adopt_scores(session: Session, *, resume_id: int) -> int:
     each score was really computed against, so the audit trail stays honest. The
     caller owns the judgment that the edit was small enough to keep the numbers.
 
+    Scoped to the active profile's postings: another profile's scores were
+    computed against *its* resume and aren't stale, just not in view — adopting
+    them would stamp them with a resume they were never scored against.
+
     Returns the number of scores adopted.
     """
-    rows = session.exec(
-        select(MatchScore).where(
-            MatchScore.resume_id.is_not(None),  # type: ignore[union-attr]
-            MatchScore.resume_id != resume_id,
-        )
-    ).all()
+    rows = session.exec(stale_scores_stmt(session, resume_id)).all()
     for row in rows:
         row.resume_id = resume_id
         session.add(row)
     session.commit()
     return len(rows)
+
+
+def stale_scores_stmt(session: Session, resume_id: int):
+    """Baseline scores on the active profile's postings not against ``resume_id``.
+
+    Shared by adoption and the stale-count endpoint so the two can't disagree
+    about what "stale" covers.
+    """
+    stmt = select(MatchScore).where(
+        MatchScore.resume_id.is_not(None),  # type: ignore[union-attr]
+        MatchScore.resume_id != resume_id,
+    )
+    profile = profiles.active_profile(session)
+    if profile is not None:
+        stmt = stmt.where(
+            MatchScore.job_id.in_(profiles.profile_job_ids(profile.id))  # type: ignore[attr-defined]
+        )
+    return stmt
 
 
 # ---- pending-match selection ----------------------------------------------
@@ -145,7 +163,9 @@ def select_pending_jobs(
     """Jobs that passed the hard filter and need scoring.
 
     Always includes unscored jobs. With ``include_stale``, also includes jobs
-    whose only score is against a non-active resume.
+    whose only score is against a non-active resume. Limited to the active
+    profile's postings, so a re-score never runs one profile's jobs against
+    another profile's resume.
     """
     # Eager-load the relationships the selection + its consumers read per row
     # (score for _needs_scoring; company/application for the pending-match
@@ -160,6 +180,9 @@ def select_pending_jobs(
         )
         .order_by(JobPosting.ingested_at.desc())
     )
+    profile = profiles.active_profile(session)
+    if profile is not None:
+        stmt = stmt.where(JobPosting.id.in_(profiles.profile_job_ids(profile.id)))  # type: ignore[union-attr]
     jobs = list(session.exec(stmt).all())
     active_id = active_resume(session).id if include_stale and active_resume(session) else None
 
@@ -304,17 +327,11 @@ def search_jobs(session: Session, query: str, *, limit: int = 20) -> list[JobPos
 # ---- search profile -------------------------------------------------------
 
 
-def load_or_create_profile(session: Session) -> SearchProfile:
-    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
-    if p is None:
-        p = SearchProfile()
-        session.add(p)
-        session.flush()
-    return p
+load_or_create_profile = profiles.load_or_create_profile
 
 
 def save_recommendations(session: Session, recommendations: dict) -> SearchProfile:
-    """Persist an LLM proposal as a draft on the profile. Never mutates the active
+    """Persist an LLM proposal as a draft on the active profile. Never mutates the active
     fields — the user reviews + accepts via PUT to apply. ``recommendations`` is a
     plain dict (the router/flow owns the DTO it was validated from)."""
     p = load_or_create_profile(session)

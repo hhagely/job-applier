@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import { US_STATES } from '$lib/usStates';
-	import { DAY_MS, fmtDate } from '$lib/date';
+	import { DAY_MS, fmtDate, fmtDateTime } from '$lib/date';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import type { ActionData, PageData } from './$types';
 
@@ -19,18 +19,35 @@
 	let extracted_skills = $state(untrack(() => joinList(data.profile.extracted_skills)));
 	let home_state = $state(untrack(() => data.profile.home_state ?? ''));
 
-	let lastSeen = $state(untrack(() => data.profile.updated_at));
+	// Re-seed the textareas when the profile changes underneath them: a save or an
+	// accepted draft bumps updated_at, and switching profiles changes the id.
+	let lastSeen = $state(untrack(() => `${data.profile.id}@${data.profile.updated_at}`));
 	$effect(() => {
-		if (profile.updated_at && profile.updated_at !== lastSeen) {
+		const key = `${profile.id}@${profile.updated_at}`;
+		if (profile.updated_at && key !== lastSeen) {
 			role_titles = joinList(profile.role_titles);
 			seniority_terms = joinList(profile.seniority_terms);
 			required_tech = joinList(profile.required_tech);
 			excluded_tech = joinList(profile.excluded_tech);
 			extracted_skills = joinList(profile.extracted_skills);
 			home_state = profile.home_state ?? '';
-			lastSeen = profile.updated_at;
+			lastSeen = key;
 		}
 	});
+
+	// --- Profiles -------------------------------------------------------------
+	let profileBusy = $state(false);
+	const busyEnhance = () => {
+		profileBusy = true;
+		return async ({ update }: { update: () => Promise<void> }) => {
+			await update();
+			profileBusy = false;
+		};
+	};
+	// Re-uploads often keep the same filename and land on the same day, so the
+	// time plus the id is what tells two options apart.
+	const resumeLabel = (r: { id: number; original_filename: string; uploaded_at: string }) =>
+		`${r.original_filename} · ${fmtDateTime(r.uploaded_at)} · #${r.id}`;
 
 	function joinList(items: string[]): string {
 		return items.join('\n');
@@ -72,7 +89,7 @@
 
 <div class="view-head">
 	<div class="vh-titles">
-		<h1>Search profile</h1>
+		<h1>Search profiles</h1>
 		<div class="vh-sub">What the ingest filter keeps. One entry per line — commas also work.</div>
 	</div>
 	<div class="vh-actions">
@@ -101,9 +118,96 @@
 
 <div class="view-body">
 	<div class="stack">
+		<div class="card">
+			<div class="card-h"><h2>Profiles</h2></div>
+			<div class="card-b">
+				<p class="muted" style="margin-bottom:14px">
+					Keep a profile per kind of search, e.g. an IC search and a manager search, each with
+					its own resume. Only the active profile is used: scrapes filter with its criteria,
+					scoring and drafting use its resume, and the queue shows the jobs it found. Switching
+					back to a profile brings back its scores without re-running them.
+				</p>
+
+				{#if form && 'profileError' in form && form.profileError}
+					<p class="err-text" style="margin-bottom:10px">{form.profileError}</p>
+				{/if}
+				{#if form && 'profileMessage' in form && form.profileMessage}
+					<p class="banner ok" style="margin-bottom:10px">{form.profileMessage}</p>
+				{/if}
+
+				<ul class="pf-list">
+					{#each data.profiles as p (p.id)}
+						<li class:pf-active={p.is_active}>
+							<form method="POST" action="?/updateProfileMeta" class="pf-meta" use:enhance={busyEnhance}>
+								<input type="hidden" name="id" value={p.id} />
+								<input
+									class="input pf-name"
+									type="text"
+									name="name"
+									value={p.name}
+									aria-label="Profile name"
+									maxlength="80"
+									required
+								/>
+								<select class="input pf-resume" name="resume_id" aria-label="Resume for {p.name}">
+									{#if p.resume_id === null}
+										<option value="" selected>Current resume</option>
+									{/if}
+									{#each data.resumes as r (r.id)}
+										<option value={r.id} selected={r.id === p.resume_id}>{resumeLabel(r)}</option>
+									{/each}
+								</select>
+								<button type="submit" class="btn sm" disabled={profileBusy}>Save</button>
+							</form>
+							{#if p.is_active}
+								<span class="pill pf-pill">Active</span>
+							{:else}
+								<form method="POST" action="?/activateProfile" use:enhance={busyEnhance}>
+									<input type="hidden" name="id" value={p.id} />
+									<button type="submit" class="btn sm primary" disabled={profileBusy}>Switch to</button>
+								</form>
+								<form method="POST" action="?/deleteProfile" use:enhance={busyEnhance}>
+									<input type="hidden" name="id" value={p.id} />
+									<button
+										type="submit"
+										class="btn ghost sm"
+										disabled={profileBusy}
+										aria-label="Delete {p.name}"
+										onclick={(e) => {
+											if (!confirm(`Delete "${p.name}"? Its jobs stay in the queue under "All profiles".`))
+												e.preventDefault();
+										}}>Delete</button
+									>
+								</form>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+
+				<form method="POST" action="?/createProfile" class="pf-new" use:enhance={busyEnhance}>
+					<input
+						class="input"
+						type="text"
+						name="name"
+						placeholder="New profile name"
+						autocomplete="off"
+						maxlength="80"
+						required
+					/>
+					<select class="input pf-clone" name="clone_from" aria-label="Start new profile from">
+						<option value="">Start blank</option>
+						{#each data.profiles as p (p.id)}
+							<option value={p.id}>Copy of {p.name}</option>
+						{/each}
+					</select>
+					<button type="submit" class="btn" disabled={profileBusy}>Add profile</button>
+				</form>
+			</div>
+		</div>
+
 		{#if profile.using_defaults}
 			<p class="banner info">
-				No profile saved yet — filter is using built-in defaults.
+				This profile's criteria are empty — the filter is using built-in defaults.
 				{#if data.hasResume}
 					Use the Suggest-roles button for recommendations.
 				{:else}
@@ -159,7 +263,7 @@
 			}}
 		>
 			<div class="card">
-				<div class="card-h"><h2>Active criteria</h2></div>
+				<div class="card-h"><h2>Criteria · {profile.name}</h2></div>
 				<div class="card-b">
 					<div class="field state-field">
 						<span>State of residence <span style="color:var(--faint);font-weight:500">(optional)</span></span>
@@ -422,6 +526,58 @@
 </div>
 
 <style>
+	.pf-list {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 14px;
+	}
+	.pf-list li {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+		padding: 10px 0;
+		border-bottom: 1px solid var(--border);
+	}
+	.pf-list li form {
+		margin: 0;
+	}
+	.pf-meta {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: 1;
+		min-width: 0;
+		flex-wrap: wrap;
+	}
+	.pf-name {
+		width: 200px;
+	}
+	.pf-active .pf-name {
+		font-weight: 600;
+	}
+	.pf-resume {
+		flex: 1;
+		min-width: 180px;
+		max-width: 340px;
+	}
+	.pf-pill {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.pf-new {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.pf-new .input {
+		flex: 1;
+		min-width: 160px;
+	}
+	.pf-new .pf-clone {
+		flex: 0 1 220px;
+	}
 	.cov-stats {
 		display: flex;
 		gap: 28px;

@@ -44,17 +44,34 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 	const exclude_archived = statuses.length === 0 && !include_archived;
 
 	const base = serverApiBase();
+
+	// Search-profile scope, also server-side so chip counts and the row budget
+	// cover exactly the scoped set. No param = the active profile (the queue is
+	// "what my current search found"); `all` = every profile's postings.
+	const profiles = await api.listSearchProfiles(fetch, base).catch(() => []);
+	const profileParam = url.searchParams.get('profile');
+	const requested = Number(profileParam);
+	const profile_id: number | undefined =
+		profileParam === 'all'
+			? undefined
+			: profiles.some((p) => p.id === requested)
+				? requested
+				: (profiles.find((p) => p.is_active)?.id ?? undefined);
+
 	const [jobs, counts] = await Promise.all([
 		api.listJobs(fetch, base, {
 			filter_status,
 			include_duplicates,
 			exclude_archived,
+			profile_id,
 			...(statuses.length > 0 ? { status: statuses } : {}),
 			limit: PAGE_LIMIT
 		}),
 		// Chip counts are whole-queue totals. Degrade to null rather than failing
 		// the page — the chips just lose their numbers.
-		api.getStatusCounts(fetch, base, { filter_status, include_duplicates }).catch(() => null)
+		api
+			.getStatusCounts(fetch, base, { filter_status, include_duplicates, profile_id })
+			.catch(() => null)
 	]);
 
 	return {
@@ -65,7 +82,9 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
 		limit: PAGE_LIMIT,
 		filter_status,
 		include_duplicates,
-		include_archived
+		include_archived,
+		profiles,
+		profile_id: profile_id ?? null
 	};
 };
 

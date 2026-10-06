@@ -1,7 +1,8 @@
 """Resume upload + retrieval endpoints.
 
 The active resume is the one scored against and tailored from; uploading a new
-one demotes the previous active (history is preserved).
+one demotes the previous active (history is preserved) and becomes the active
+search profile's resume.
 """
 
 from __future__ import annotations
@@ -10,8 +11,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlmodel import Session, select
 
-from job_applier import resume_io
-from job_applier.api.schemas import ResumeOut
+from job_applier import profiles, resume_io
+from job_applier.api.schemas import ResumeOut, ResumeSummaryOut
 from job_applier.config import settings
 from job_applier.models.db import Resume, get_session
 
@@ -30,7 +31,7 @@ def _resume_out(r: Resume) -> ResumeOut:
 
 
 def _active_resume(session: Session) -> Resume:
-    r = session.exec(select(Resume).where(Resume.is_active == True)).first()  # noqa: E712
+    r = profiles.active_resume(session)
     if r is None:
         raise HTTPException(404, "no active resume — POST /api/resume to upload")
     return r
@@ -62,22 +63,38 @@ async def upload_resume(
 
     pdf_path = resume_io.save_pdf(pdf_bytes, file.filename)
 
-    # Demote any previously-active resumes (history is preserved).
-    for r in session.exec(select(Resume).where(Resume.is_active == True)).all():  # noqa: E712
-        r.is_active = False
-        session.add(r)
-
     resume = Resume(
         original_filename=file.filename,
         pdf_path=str(pdf_path),
         extracted_text=text,
         page_count=page_count,
-        is_active=True,
     )
     session.add(resume)
+    session.flush()
+    # Demotes the previously-active resume (history is preserved).
+    profiles.set_active_resume(session, resume.id)
+    profiles.adopt_uploaded_resume(session, resume.id)
     session.commit()
     session.refresh(resume)
     return _resume_out(resume)
+
+
+@router.get("/api/resumes", response_model=list[ResumeSummaryOut])
+def list_resumes(session: Session = Depends(get_session)):
+    """Every uploaded resume, newest first, for the per-profile resume picker.
+
+    Leaves out the extracted text so the list stays light.
+    """
+    rows = session.exec(select(Resume).order_by(Resume.uploaded_at.desc())).all()
+    return [
+        ResumeSummaryOut(
+            id=r.id,
+            original_filename=r.original_filename,
+            is_active=r.is_active,
+            uploaded_at=r.uploaded_at,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/api/resume/current", response_model=ResumeOut)

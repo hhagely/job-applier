@@ -76,8 +76,8 @@ const PROJECT_CONFIGS = {
     },
     "warningThreshold": 3,
     "mergeExtraInstructions": "5. PRE-EXISTING vs NEW: this is a branch-diff review. Downgrade findings on pre-existing code that the branch only touched incidentally by one severity level (critical->warning, warning->suggestion), UNLESS the finding is a security or data-corruption risk (keep those at full severity). Findings on code the branch actually added/changed stay at full severity.",
-    "preamble": "You are reviewing the changes on a branch vs main in job-applier: a Python 3.12 FastAPI + SQLModel (SQLite) backend with a typer CLI under src/job_applier/, a SvelteKit 2 + Svelte 5 (runes) + TypeScript frontend under web/src/, and an Electron desktop shell under desktop/. Scope is the branch diff, not the whole codebase. Work through every item in the checklist below, reading the relevant code for each. When an item says to grep or search, run the search and base the result on its output. Aim for repeatable results: the same diff should yield the same findings. Read CLAUDE.md (and web/CLAUDE.md for frontend files) and honor its conventions. Report each issue via the structured schema (an item that passes produces no finding); severity must be one of critical, warning, suggestion.",
-    "scopeInstructions": "REVIEW SCOPE = the branch diff vs main. Get the changed files with `git diff main...HEAD --name-only` (exclude web/node_modules/, web/.svelte-kit/, web/build/, desktop/dist/, desktop/node_modules/, data/, applications/, *.lock, package-lock.json) and the full diff with `git diff main...HEAD` (scope to a file with `-- <path>`). Focus findings ONLY on what the diff changed/added; caller-impact and dangling-reference checks may grep the whole repo. Do NOT audit unrelated files.",
+    "preamble": "You are reviewing the changes on a branch vs {{BASE}} in job-applier: a Python 3.12 FastAPI + SQLModel (SQLite) backend with a typer CLI under src/job_applier/, a SvelteKit 2 + Svelte 5 (runes) + TypeScript frontend under web/src/, and an Electron desktop shell under desktop/. Scope is the branch diff, not the whole codebase. Work through every item in the checklist below, reading the relevant code for each. When an item says to grep or search, run the search and base the result on its output. Aim for repeatable results: the same diff should yield the same findings. Read CLAUDE.md (and web/CLAUDE.md for frontend files) and honor its conventions. Report each issue via the structured schema (an item that passes produces no finding); severity must be one of critical, warning, suggestion.",
+    "scopeInstructions": "REVIEW SCOPE = the branch diff vs {{BASE}}. Get the changed files with `git diff {{BASE}}...HEAD --name-only` (exclude web/node_modules/, web/.svelte-kit/, web/build/, desktop/dist/, desktop/node_modules/, data/, applications/, *.lock, package-lock.json) and the full diff with `git diff {{BASE}}...HEAD` (scope to a file with `-- <path>`). Focus findings ONLY on what the diff changed/added; caller-impact and dangling-reference checks may grep the whole repo. Do NOT audit unrelated files.",
     "agents": [
       {
         "key": "test-quality",
@@ -246,8 +246,8 @@ const PROJECT_CONFIGS = {
 /* <<< END GENERATED CONFIGS <<< */
 
 // ---------------------------------------------------------------------------
-// `args` carries ONLY small runtime scope: { configKey, scope: { branch, date,
-// summary, present?, focus?, precomputed? } }. See the header for why the config does
+// `args` carries ONLY small runtime scope: { configKey, scope: { branch, base?,
+// date, summary, present?, focus?, precomputed? } }. See the header for why the config does
 // NOT travel through args. Some harness paths hand `args` over as a JSON
 // string, so normalize — and if that parse fails, say plainly that the payload
 // was truncated rather than surfacing a bare SyntaxError.
@@ -327,6 +327,36 @@ if (!cfg || !Array.isArray(cfg.agents) || cfg.agents.length === 0) {
         : ''),
   )
 }
+
+// `scope.base` is the diff base the launcher resolved at run time: the open PR's
+// base branch (often an integration branch, not the default one), an explicit
+// user-supplied base, or the default branch. It is runtime scope, so it can't be
+// baked into the static config: a diff config writes `{{BASE}}` wherever it names
+// the base (e.g. `git diff {{BASE}}...HEAD`), and the engine substitutes it here,
+// falling back to cfg.defaultBranch when the launcher passed none. A config
+// emitted before the token existed hardcodes its branch; if the launcher asks
+// for a different base on such a config, throw rather than silently reviewing
+// the wrong diff.
+const BASE_TOKEN = '{{BASE}}'
+const base = typeof scope.base === 'string' && scope.base.trim() ? scope.base.trim() : cfg.defaultBranch || null
+if (cfg.mode === 'diff') {
+  const usesToken = String(cfg.scopeInstructions || '').includes(BASE_TOKEN)
+  if (usesToken && !base) {
+    throw new Error(
+      `review-engine: this config diffs against ${BASE_TOKEN} but no base was given — pass ` +
+        'scope.base or set defaultBranch in the config.',
+    )
+  }
+  // `origin/<default>` is the same base as `<default>` — the launcher prefers the remote ref.
+  if (!usesToken && scope.base && base.replace(/^origin\//, '') !== cfg.defaultBranch) {
+    throw new Error(
+      `review-engine: asked to diff against "${base}", but this config's scopeInstructions hardcode ` +
+        `the base instead of using ${BASE_TOKEN}, so the agents would review the diff against ` +
+        `"${cfg.defaultBranch}". Re-run update-project-skills to adopt the ${BASE_TOKEN} token.`,
+    )
+  }
+}
+const withBase = (text) => (typeof text === 'string' && base ? text.split(BASE_TOKEN).join(base) : text)
 
 // One findings schema, reused by every audit agent. severity is a hard enum so
 // the model is forced to classify; file+description are required; line/fix are
@@ -427,7 +457,8 @@ const skippedAgents = cfg.agents.filter((a) => !isActive(a))
 
 log(
   `${modeLabel} of ${cfg.projectName}: ${activeAgents.length}/${cfg.agents.length} agents over ` +
-    `${scope.summary || 'the configured source roots'} (branch ${scope.branch}, ${scope.date})`,
+    `${scope.summary || 'the configured source roots'} (branch ${scope.branch}` +
+    `${cfg.mode === 'diff' && base ? ` vs ${base}` : ''}, ${scope.date})`,
 )
 if (focus) log(`Scope narrowed to: ${focus.join(', ')}`)
 if (skippedAgents.length) {
@@ -451,10 +482,10 @@ const raw = await parallel(
   activeAgents.map((a) => () =>
     agent(
       [
-        cfg.preamble,
+        withBase(cfg.preamble),
         '',
         '## Scope — the files you must examine',
-        cfg.scopeInstructions,
+        withBase(cfg.scopeInstructions),
         ...(focus
           ? [
               '',
@@ -468,7 +499,7 @@ const raw = await parallel(
           : []),
         '',
         `## Your audit dimension: ${a.label}`,
-        a.prompt,
+        withBase(a.prompt),
         '',
         'Return each issue you found as a structured finding. Checklist items that pass produce no finding; a clean dimension returns an empty findings array. ' +
           'Set file to a repo-relative path and include a line number/range whenever you can pinpoint one. ' +
@@ -539,7 +570,7 @@ if (useAgentMerge) {
     '4. Preserve each finding\'s category (one of: ' + cfg.categoryOrder.join(', ') + ').',
   ]
   // mode:'diff' adds the pre-existing-vs-new downgrade rule (code-review only).
-  if (cfg.mergeExtraInstructions) mergeLines.push(cfg.mergeExtraInstructions)
+  if (cfg.mergeExtraInstructions) mergeLines.push(withBase(cfg.mergeExtraInstructions))
   mergeLines.push('', 'Raw findings JSON:', JSON.stringify(collected))
   const merged = await agent(mergeLines.join('\n'), {
     label: 'merge:semantic-dedup',
@@ -613,6 +644,7 @@ return {
   mode: cfg.mode || 'audit',
   project: cfg.projectName,
   branch: scope.branch,
+  base: cfg.mode === 'diff' ? base : null,
   date: scope.date,
   focus,
   agentCount: activeAgents.length,

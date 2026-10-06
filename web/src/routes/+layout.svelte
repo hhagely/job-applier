@@ -110,9 +110,15 @@
 <UpdatePopover />
 
 <div class="shell">
-	<Sidebar counts={data.counts ?? {}} profile={data.profile ?? null} />
+	<Sidebar counts={data.counts ?? {}} profile={data.profile ?? null} profiles={data.profiles ?? []} />
 	<main class="main">
-		{@render children()}
+		<!-- Switching profiles swaps whose statuses, notes, and drafts the page
+		     shows. Pages seed form state from their data once (e.g. the status
+		     card), so remount the page rather than let one person's form linger
+		     over the other's data. -->
+		{#key data.profiles?.find((p) => p.is_active)?.id}
+			{@render children()}
+		{/key}
 	</main>
 </div>
 

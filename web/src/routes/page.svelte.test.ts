@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { STATUS_FACETS, type Application, type FilterStatus, type Job, type StatusCounts, type StatusFacet } from '$lib/api';
+import { STATUS_FACETS, type Application, type FilterStatus, type Job, type SearchProfile, type StatusCounts, type StatusFacet } from '$lib/api';
 import { FILTERS_STORAGE_KEY, type PersistedFilters } from '$lib/queueFilters';
 
 // SvelteKit ambient modules the board imports.
@@ -69,6 +69,8 @@ function data(overrides: Record<string, unknown> = {}) {
 		aiProvider: 'claude' as string | null,
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		profile: null,
+		profiles: [] as SearchProfile[],
+		profile_id: null as number | null,
 		...overrides
 	};
 }

@@ -10,6 +10,9 @@ import Page from './+page.svelte';
 function profile(overrides: Partial<SearchProfile> = {}): SearchProfile {
 	return {
 		id: 1,
+		name: 'Default',
+		is_active: true,
+		resume_id: 1,
 		role_titles: [],
 		seniority_terms: [],
 		required_tech: [],
@@ -26,6 +29,10 @@ function profile(overrides: Partial<SearchProfile> = {}): SearchProfile {
 function data(overrides = {}) {
 	return {
 		profile: profile(),
+		profiles: [profile()],
+		resumes: [
+			{ id: 1, original_filename: 'me.pdf', is_active: true, uploaded_at: '2026-09-01T00:00:00Z' }
+		],
 		hasResume: true,
 		apiBase: '',
 		aiProvider: 'claude' as string | null,

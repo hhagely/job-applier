@@ -1,32 +1,47 @@
 ---
 name: code-review
-description: Perform a full code review of the currently checked out branch against main for this Python (FastAPI/SQLModel) + SvelteKit app. Analyzes tests, DRY code, architecture, Python/TypeScript best practices, error handling, correctness & caller-impact, documentation, DB migration safety, SvelteKit conventions, and AI-sandbox safety across the branch diff. Use when the user asks to review the branch, review a PR, or do a code review.
+description: Perform a full code review of the currently checked out branch against its base — the open PR's base branch (including an integration branch), an explicit base, or main — for this Python (FastAPI/SQLModel) + SvelteKit app. Analyzes tests, DRY code, architecture, Python/TypeScript best practices, error handling, correctness & caller-impact, documentation, DB migration safety, SvelteKit conventions, and AI-sandbox safety across the branch diff. Use when the user asks to review the branch, review a PR, or do a code review.
+argument-hint: "[base-branch | PR number]"
 ---
 
 # code-review
 
-Perform a comprehensive code review of all changes on the currently checked out branch compared to `main`. Scope is limited to the branch diff — for a whole-codebase audit, use `/codebase-audit` instead.
+Perform a comprehensive code review of all changes on the currently checked out branch compared to its **base**: the branch its PR targets (often an integration branch, not `main`), a base the user names, or `main` when neither applies. Scope is limited to the branch diff — for a whole-codebase audit, use `/codebase-audit` instead.
 
 This skill is a **thin launcher** for the shared review engine — a Claude Code Workflow at `.claude/skills/_shared/review-engine.workflow.js` (the SAME engine `/codebase-audit` uses, run with `mode: "diff"`). The engine fans out one agent per review dimension (deterministically — every dimension runs every time), each returns schema-enforced findings, then the engine semantically merges them and computes the verdict in JS. The verbose per-agent reports stay OUT of this conversation. **Auto-fix is NOT part of the workflow** — the engine returns findings only; you (the main loop) run the auto-fix in Step 4. Your job: (1) identify the diff inline, (2) call the Workflow with the review config, (3) present the result, (4) auto-fix on BLOCK/NEEDS WORK, (5) final report.
 
 ## When to Use
 - User asks to review the current branch or an open PR
 - User asks for a code review before merging
-- User invokes `/code-review`
+- User invokes `/code-review`, optionally with a base branch (`/code-review desktop-app`) or a PR number (`/code-review 123`)
 
 ## Instructions
 
 ### Step 1: Identify Changes (inline, in this conversation)
 
-Determine the diff between the current branch and `main`:
+**Resolve the base first.** Never assume `main`: a PR opened against an integration branch (this repo uses the long-lived `desktop-app` branch, one PR per phase) must be reviewed against that branch, or the review sweeps in every change the integration branch already holds. Take the first rule that applies:
+
+1. **The user named a base** (`/code-review desktop-app`, "review against release/v0.3.0") — use it.
+2. **The user gave a PR number or URL** — read its base and head with `gh pr view <n> --json baseRefName,headRefName`. If `headRefName` is not the checked-out branch, stop and tell the user to check the PR out first (`gh pr checkout <n>`); the review reads the working tree, so it can't review a branch that isn't checked out.
+3. **The current branch has an open PR** — `gh pr view --json baseRefName --jq .baseRefName` (no PR, no `gh`, or no GitHub remote → fall through).
+4. **Otherwise** — the default branch, `main`.
+
+Then diff against the remote copy of that branch, so a stale local branch doesn't leak already-merged commits into the review:
 
 ```bash
-git diff main...HEAD --name-only
-git diff main...HEAD --stat
+BASE_BRANCH=<resolved base>
+git fetch origin "$BASE_BRANCH" --quiet 2>/dev/null
+if git rev-parse --verify --quiet "origin/$BASE_BRANCH" >/dev/null; then BASE="origin/$BASE_BRANCH"; else BASE="$BASE_BRANCH"; fi
+git rev-parse --verify --quiet "$BASE" >/dev/null || echo "base $BASE_BRANCH not found"
+
+git diff "$BASE"...HEAD --name-only
+git diff "$BASE"...HEAD --stat
 git rev-parse --abbrev-ref HEAD
 ```
 
-If there are no changes vs main, inform the user and stop. Note which area(s) the diff touches — backend (`src/job_applier/`, `tests/`), frontend (`web/`), desktop (`desktop/`) — so the auto-fix step (Step 4) runs the right verification commands.
+Shell variables don't survive between Bash calls, so write the resolved ref (e.g. `origin/desktop-app`) literally into every later command that uses `$BASE`. If the base can't be found, tell the user which base you resolved and how, and stop — never fall back to `main` silently. State the base and how it was chosen (named / PR #n / default) in the report header.
+
+If there are no changes vs the base, inform the user and stop. Note which area(s) the diff touches — backend (`src/job_applier/`, `tests/`), frontend (`web/`), desktop (`desktop/`) — so the auto-fix step (Step 4) runs the right verification commands.
 
 **Presence signals (for conditional domain agents).** These are the domain agents in this skill's `PROJECT_CONFIGS` entry that are marked `conditional`, with the signals each one needs. The engine runs a conditional agent only when `scope.present` includes at least one of its signals, so this table and the detection lines below must cover every signal it lists.
 
@@ -39,9 +54,9 @@ If there are no changes vs main, inform the user and stop. Note which area(s) th
 Derive the signals from the `--name-only` list, with one detection line per signal in the table:
 
 ```bash
-git diff main...HEAD --name-only | grep -qE '^src/job_applier/models/|^src/job_applier/maintenance\.py|^tests/test_migrations\.py' && echo schema
-git diff main...HEAD --name-only | grep -qE '^web/' && echo web
-git diff main...HEAD --name-only | grep -qE '^src/job_applier/(ai/|drafts\.py|pdf\.py)|^desktop/main\.js|^\.claude/commands/' && echo ai
+git diff "$BASE"...HEAD --name-only | grep -qE '^src/job_applier/models/|^src/job_applier/maintenance\.py|^tests/test_migrations\.py' && echo schema
+git diff "$BASE"...HEAD --name-only | grep -qE '^web/' && echo web
+git diff "$BASE"...HEAD --name-only | grep -qE '^src/job_applier/(ai/|drafts\.py|pdf\.py)|^desktop/main\.js|^\.claude/commands/' && echo ai
 ```
 
 Collect the emitted signals into `scope.present` (e.g. `["schema", "web"]`). When a changed file plausibly belongs to a signal that its pattern missed, add the signal anyway: an extra signal costs one agent run, while a missing one skips a review dimension. Baseline agents are never conditional, so they always run. An empty or omitted `scope.present` runs every agent.
@@ -50,7 +65,7 @@ Collect the emitted signals into `scope.present` (e.g. `["schema", "web"]`). Whe
 
 Call the **Workflow** tool with:
 - `scriptPath`: `.claude/skills/_shared/review-engine.workflow.js`
-- `args`: `{ "configKey": "code-review", "scope": { … } }` — runtime scope ONLY, with `scope.branch` and `scope.present` filled from Step 1.
+- `args`: `{ "configKey": "code-review", "scope": { … } }` — runtime scope ONLY, with `scope.branch`, `scope.base` and `scope.present` filled from Step 1.
 
 > **Keep `args` small — the config does NOT go in it.** A workflow script's only
 > inputs are its own text and `args`; the text has no practical size limit, but a
@@ -67,8 +82,9 @@ Pass exactly this as `args` — nothing else, and never a `config` key:
   "configKey": "code-review",
   "scope": {
     "branch": "<current branch from Step 1>",
+    "base": "<$BASE from Step 1, e.g. origin/desktop-app>",
     "date": "<today>",
-    "summary": "branch diff vs main",
+    "summary": "branch diff vs <base branch>",
     "present": [
       "<signals from Step 1>"
     ]
@@ -82,10 +98,10 @@ Pass exactly this as `args` — nothing else, and never a `config` key:
 
 ### Step 3: Compile & Present Results
 
-The Workflow returns `{ mode, branch, findings[], counts, verdict, topConcerns }`. The engine has already deduplicated (semantic merge), applied the pre-existing-vs-new downgrade, resolved contradictions, sorted by severity then `categoryOrder`, and computed the verdict in JS. Render it:
+The Workflow returns `{ mode, branch, base, findings[], counts, verdict, topConcerns }`. The engine has already deduplicated (semantic merge), applied the pre-existing-vs-new downgrade, resolved contradictions, sorted by severity then `categoryOrder`, and computed the verdict in JS. Render it:
 
 ```
-## Code Review: [branch-name]
+## Code Review: [branch-name] vs [result.base] ([how the base was chosen: named / PR #n / default])
 
 ### Critical Issues
 (Must fix before merging)

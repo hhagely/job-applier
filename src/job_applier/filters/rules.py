@@ -29,10 +29,11 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from job_applier.contracts import RawJob
-from job_applier.models.db import FilterStatus, SearchProfile, engine
+from job_applier.models.db import FilterStatus, engine
+from job_applier.profiles import active_profile
 
 
 def _alt_pattern(terms: list[str]) -> str:
@@ -236,7 +237,7 @@ _BUILTIN_DEFAULT = build_config(
 
 
 def load_active_config(session: Optional[Session] = None) -> FilterConfig:
-    """Load the active filter config from the SearchProfile row.
+    """Load the filter config from the active SearchProfile row.
 
     Falls back to ``_BUILTIN_DEFAULT`` when no profile exists or required lists
     are empty (an empty required-tech list would drop every posting, which is
@@ -247,7 +248,7 @@ def load_active_config(session: Optional[Session] = None) -> FilterConfig:
         session = Session(engine())
         close_after = True
     try:
-        profile = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+        profile = active_profile(session)
     finally:
         if close_after:
             session.close()
