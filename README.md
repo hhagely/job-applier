@@ -252,21 +252,24 @@ make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
 
-Then run the desktop app from source:
+Then start the app, either as the desktop app or in your browser:
 
 ```sh
-make electron       # builds the UI, starts the backend, opens the app window
+make electron       # desktop app: builds the UI, starts the backend, opens the window
+make app-dev        # browser: boots the backend + UI on free ports and opens a tab
 ```
 
-and follow the onboarding wizard. The desktop app is the only supported way to
-use job-applier; the targets below open the same UI in a plain browser and are
-for working on the app, not for everyday use (browser-only quirks such as
-pop-up blocking aren't handled).
+and follow the onboarding wizard. The desktop app is the primary way to use
+job-applier. The browser is supported too while there's no packaged macOS
+build, so Mac users can pick whichever they prefer; once a Mac build ships, the
+browser becomes a dev-only tool.
+
+For working on the app itself:
 
 ```sh
 make electron-dev   # hot-reload dev shell: backend + Vite + Electron
 make api            # FastAPI  → http://127.0.0.1:8000   } UI in a browser,
-make web            # SvelteKit → http://localhost:5174  } for dev and testing
+make web            # SvelteKit → http://localhost:5174  } with hot reload
 ```
 
 The day-to-day flow all lives in the UI, but some maintenance has no button:
@@ -495,8 +498,8 @@ so the `baseline → tailored` delta and prior-resume scores remain visible.
 | `make api`               | Run FastAPI on `:8000` with auto-reload                           |
 | `make electron`          | Run the desktop app from source                                   |
 | `make electron-dev`      | Desktop app with hot reload (backend + Vite + Electron)           |
-| `make web`               | Run SvelteKit dev server on `:5174` (browser; dev/testing only)   |
-| `make app-dev`           | Boot API + built web server and open a browser (dev/testing only) |
+| `make web`               | Run SvelteKit dev server on `:5174` (browser, hot reload)         |
+| `make app-dev`           | Boot API + built web server on free ports and open a browser      |
 | `make ingest`            | Pull jobs from configured sources                                 |
 | `make diagnose-filter`   | Dry-run every source and report what the hard filter drops        |
 | `make refresh-slugs`     | Discover new Greenhouse/Lever/Ashby/Workable/SmartRecruiters slugs from SimplifyJobs |
