@@ -34,6 +34,8 @@ from sqlmodel.sql.expression import SelectOfScalar
 
 from job_applier.models.db import (
     PROFILE_SCOPED,
+    Application,
+    ApplicationStatus,
     AppSetting,
     FilterStatus,
     JobProfileLink,
@@ -142,6 +144,28 @@ def owned_resume(session: Session, profile_id: int, resume_id: int) -> Optional[
         .where(Resume.id == resume_id, Resume.profile_id == profile_id)
         .execution_options(all_profiles=True)
     ).first()
+
+
+# Statuses that mean a profile actually did something with a posting; ``new`` is
+# the untouched default and ``archived`` is the machine's "never pursued" bucket.
+_UNTOUCHED = (ApplicationStatus.new, ApplicationStatus.archived)
+
+
+def other_profile_statuses(
+    session: Session, job_id: int
+) -> list[tuple[int, str, ApplicationStatus]]:
+    """``(profile_id, name, status)`` for every *other* profile that has acted on
+    ``job_id``, oldest profile first."""
+    rows = session.exec(
+        select(Application.profile_id, SearchProfile.name, Application.status)
+        .join(SearchProfile, SearchProfile.id == Application.profile_id)  # type: ignore[arg-type]
+        .where(Application.job_id == job_id)
+        .where(Application.profile_id != session_profile_id(session))
+        .where(Application.status.not_in(_UNTOUCHED))  # type: ignore[attr-defined]
+        .order_by(SearchProfile.id)
+        .execution_options(all_profiles=True)
+    ).all()
+    return [(pid, name, ApplicationStatus(status)) for pid, name, status in rows]
 
 
 def resume_filenames(session: Session) -> dict[int, str]:

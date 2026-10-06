@@ -11,7 +11,8 @@
 		APPLICATION_STATUSES,
 		statusLabel,
 		type Application,
-		type ApplicationStatus
+		type ApplicationStatus,
+		type OtherProfileStatus
 	} from '$lib/api';
 	import { fmtDate, defaultFollowupDate } from '$lib/date';
 	import { toast } from '$lib/toast.svelte';
@@ -20,10 +21,13 @@
 	let {
 		jobId,
 		application,
+		otherProfiles = [],
 		onChange
 	}: {
 		jobId: number;
 		application: Application | null | undefined;
+		/** What other profiles did with this posting; status is per profile. */
+		otherProfiles?: OtherProfileStatus[];
 		/** Called after any mutation succeeds so the host can refresh its data. */
 		onChange?: () => void | Promise<void>;
 	} = $props();
@@ -76,6 +80,15 @@
 	}
 </script>
 
+{#if otherProfiles.length}
+	<p class="banner info other-profiles">
+		Also under
+		{#each otherProfiles as o, i (o.profile_id)}{i > 0 ? ', ' : ' '}<b>{o.name}</b>: {statusLabel(
+				o.status
+			).toLowerCase()}{/each}. Statuses are kept per profile.
+	</p>
+{/if}
+
 <form method="POST" action="?/setStatus" class="row-form" use:enhance={onSaved}>
 	<input type="hidden" name="job_id" value={jobId} />
 	<select class="input" name="status" bind:value={pendingStatus} style="flex:1;min-width:9rem">
@@ -116,3 +129,10 @@
 		<button type="submit" class="btn sm" style="margin-top:8px">Save notes</button>
 	</form>
 {/key}
+
+<style>
+	.other-profiles {
+		margin: 0 0 12px;
+		font-size: 12.5px;
+	}
+</style>

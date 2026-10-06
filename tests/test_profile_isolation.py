@@ -277,3 +277,19 @@ def test_queue_tabs_follow_the_profiles_own_verdicts(setup):
         s.commit()
         unseen_id = unseen.id
     assert c.get(f"/api/jobs/{unseen_id}").json()["filter_status"] is None
+
+
+def test_job_detail_shows_what_other_profiles_did_with_it(setup):
+    # Read-only awareness across profiles: B sees that A applied, A sees nothing
+    # from B until B acts, and the machine's "archived" bucket isn't news.
+    c, _engine, a, b, job = setup
+    assert c.get(f"/api/jobs/{job}").json()["other_profiles"] == []
+    c.patch(f"/api/jobs/{job}/status", json={"status": "applied"})
+
+    _switch(c, b)
+    others = c.get(f"/api/jobs/{job}").json()["other_profiles"]
+    assert others == [{"profile_id": a, "name": "Default", "status": "applied"}]
+    c.patch(f"/api/jobs/{job}/status", json={"status": "archived"})
+
+    _switch(c, a)
+    assert c.get(f"/api/jobs/{job}").json()["other_profiles"] == []

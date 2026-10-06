@@ -34,6 +34,7 @@ from job_applier.api.schemas import (
     CompanyOut,
     FollowupUpdate,
     JobDetail,
+    OtherProfileStatus,
     JobOut,
     NotesUpdate,
     PendingMatchJob,
@@ -262,7 +263,11 @@ def get_job(
     summary = _job_summary(
         job, _resume_filename_map(session), _active_resume_id(session)
     )
-    return JobDetail(**summary.model_dump(), description=job.description)
+    others = [
+        OtherProfileStatus(profile_id=pid, name=name, status=status)
+        for pid, name, status in profiles.other_profile_statuses(session, job.id)
+    ]
+    return JobDetail(**summary.model_dump(), description=job.description, other_profiles=others)
 
 
 # Status-transition logic lives in services (shared with the background scorer's

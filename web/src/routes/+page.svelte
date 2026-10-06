@@ -23,9 +23,12 @@
 	import Icon from '$lib/Icon.svelte';
 	import { sourceInfo, type Ease } from '$lib/sources';
 	import { toast } from '$lib/toast.svelte';
+	import { profileLabel } from '$lib/profiles';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+	// Whose view this is, shown only when there's more than one profile.
+	const whose = $derived(profileLabel(data.profiles));
 
 	const isManual = $derived(data.filter_status === 'manual');
 
@@ -395,7 +398,9 @@
 	<div class="vh-titles">
 		<h1>{isManual ? 'Manual review' : 'Queue'}</h1>
 		<div class="vh-sub">
-			{visible.length}{visible.length === data.jobs.length ? '' : ` of ${data.jobs.length}`} jobs · sorted by match score
+			{#if whose}<b>{whose}</b>{' · '}{/if}{visible.length}{visible.length === data.jobs.length
+				? ''
+				: ` of ${data.jobs.length}`} jobs · sorted by match score
 		</div>
 	</div>
 	<div class="vh-actions">

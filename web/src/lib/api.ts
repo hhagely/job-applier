@@ -188,8 +188,17 @@ export interface Job {
 	duplicate_of?: number | null;
 }
 
+/** Another profile's status on the same posting (read-only). */
+export interface OtherProfileStatus {
+	profile_id: number;
+	name: string;
+	status: ApplicationStatus;
+}
+
 export interface JobDetail extends Job {
 	description: string;
+	/** Other profiles that have acted on this posting (never `new` / `archived`). */
+	other_profiles: OtherProfileStatus[];
 }
 
 export interface Draft {
