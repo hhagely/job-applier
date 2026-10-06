@@ -102,6 +102,7 @@
 					<StatusTrackingCard
 						jobId={job.id}
 						application={job.application}
+						otherProfiles={job.other_profiles}
 						onChange={() => invalidateAll()}
 					/>
 				</div>

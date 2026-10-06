@@ -131,8 +131,20 @@ class JobOut(BaseModel):
     duplicate_of: Optional[int] = None
 
 
+class OtherProfileStatus(BaseModel):
+    """Another profile's status on the same posting (read-only)."""
+
+    profile_id: int
+    name: str
+    status: ApplicationStatus
+
+
 class JobDetail(JobOut):
     description: str
+    # Other profiles that have done something with this posting. Profiles are
+    # separate, so applying under one doesn't mark it under another; this is
+    # what warns someone who uses two profiles as two searches.
+    other_profiles: list[OtherProfileStatus] = []
 
 
 class StatusUpdate(BaseModel):

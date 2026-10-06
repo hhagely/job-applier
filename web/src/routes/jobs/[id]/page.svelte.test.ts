@@ -20,7 +20,8 @@ function job(): JobDetail {
 		score: null,
 		application: null,
 		duplicate_of: null,
-		description: 'We use TypeScript.'
+		description: 'We use TypeScript.',
+		other_profiles: []
 	};
 }
 
@@ -71,5 +72,21 @@ describe('job detail Generate-draft button', () => {
 		expect(
 			screen.getByRole('button', { name: /Regenerate tailored draft/ })
 		).toBeInTheDocument();
+	});
+});
+
+describe('job detail status card', () => {
+	it('says what another profile did with this job', () => {
+		const shared = {
+			...job(),
+			other_profiles: [{ profile_id: 2, name: 'Sam', status: 'applied' as const }]
+		};
+		render(Page, { props: { data: data({ job: shared }) } });
+		expect(screen.getByText(/Also under/)).toHaveTextContent('Also under Sam: applied.');
+	});
+
+	it('says nothing when no other profile touched it', () => {
+		render(Page, { props: { data: data() } });
+		expect(screen.queryByText(/Also under/)).not.toBeInTheDocument();
 	});
 });

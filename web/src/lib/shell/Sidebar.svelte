@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/Icon.svelte';
 	import type { SearchProfile } from '$lib/api';
+	import { activeProfile } from '$lib/profiles';
 	import { NAV, activeNavId, type CountKey } from './nav';
 	import { deriveInitials, type ShellProfile } from './profile';
 
@@ -18,7 +19,7 @@
 		profiles?: SearchProfile[];
 	} = $props();
 
-	const active = $derived(profiles.find((p) => p.is_active) ?? null);
+	const active = $derived(activeProfile(profiles));
 	// Under the profile's name: whose resume it is, else their headline.
 	const chipSub = $derived.by(() => {
 		if (!profile) return 'No resume yet';

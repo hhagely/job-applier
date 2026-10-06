@@ -4,9 +4,12 @@
 	import type { Job } from '$lib/api';
 	import { daysOverdue, fmtDate, formatOverdue } from '$lib/date';
 	import { daysSinceContact } from '$lib/jobFilters';
+	import { profileLabel } from '$lib/profiles';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+	// Whose view this is, shown only when there's more than one profile.
+	const whose = $derived(profileLabel(data.profiles));
 
 	function appliedAt(job: Job): string | null | undefined {
 		return job.application?.applied_at;
@@ -90,7 +93,7 @@
 	<div class="vh-titles">
 		<h1>Follow-ups</h1>
 		<div class="vh-sub">
-			<b class="num">{data.jobs.length}</b> due
+			{#if whose}<b>{whose}</b>{' · '}{/if}<b class="num">{data.jobs.length}</b> due
 			{#if overdueCount > 0}· <span style="color:var(--weak)">{overdueCount} overdue by 14+ days</span>{/if}
 		</div>
 	</div>

@@ -11,9 +11,12 @@
 	import { type Job } from '$lib/api';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import { daysOverdue as overdueDays, fmtDate, formatOverdue } from '$lib/date';
+	import { profileLabel } from '$lib/profiles';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+	// Whose view this is, shown only when there's more than one profile.
+	const whose = $derived(profileLabel(data.profiles));
 	let k = $derived(data.kpis);
 
 	const distMax = $derived(Math.max(1, ...data.dist.map((d) => d.n)));
@@ -52,7 +55,8 @@
 	<div class="vh-titles">
 		<h1>Dashboard</h1>
 		<div class="vh-sub">
-			<b class="num">{k.jobs}</b> jobs in queue · <b class="num">{k.scored}</b> scored
+			{#if whose}<b>{whose}</b>{' · '}{/if}<b class="num">{k.jobs}</b> jobs in queue ·
+			<b class="num">{k.scored}</b> scored
 		</div>
 	</div>
 	<div class="vh-actions">
