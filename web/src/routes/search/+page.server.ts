@@ -42,7 +42,7 @@ function readProfile(form: FormData): SearchProfileBody {
 }
 
 export const actions: Actions = {
-	// --- Profiles: only one is active; it drives ingest and owns the active resume.
+	// --- Profiles: only one is active, the one the UI shows; it owns the resume in use.
 	createProfile: async ({ request, fetch }) => {
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '').trim();

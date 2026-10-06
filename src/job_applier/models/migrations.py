@@ -130,7 +130,7 @@ def _ensure_multi_profile_columns() -> None:
     unlinked rather than being swept into whichever profile is active.
     """
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(searchprofile)")}
+        cols = _table_cols(conn, "searchprofile")
         if {"name", "resume_id", "is_active"} <= cols:
             return
         # One transaction for the ALTERs and the backfill: the backfill is gated
@@ -289,13 +289,10 @@ def _ensure_per_profile_state() -> None:
     """
     with engine().connect() as conn:
 
-        def cols(table: str) -> set[str]:
-            return {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
-
         todo = [
             t
             for t in ("application", "matchscore", "matchscorehistory", "blacklistedcompany")
-            if "profile_id" not in cols(t)
+            if "profile_id" not in _table_cols(conn, t)
         ]
         if not todo:
             return
@@ -311,7 +308,7 @@ def _ensure_per_profile_state() -> None:
 
         for table in ("application", "matchscore"):
             if table in todo:
-                _rebuild_with_profile(conn, table, pid, cols(table))
+                _rebuild_with_profile(conn, table, pid, _table_cols(conn, table))
         for table in ("matchscorehistory", "blacklistedcompany"):
             if table in todo:
                 conn.exec_driver_sql(

@@ -282,8 +282,8 @@ def ingest_one(
     if duplicate_of is not None:
         stats.flagged_jd_similar += 1
 
-    posting.filter_status = decision.status
-    posting.filter_reason = decision.reason
+    # Only shared-rule passes get here; the posting's own filter columns keep
+    # their "passed" default. Each profile's verdict is its JobProfileLink.
     stats.passed_filter += 1
 
     session.add(posting)

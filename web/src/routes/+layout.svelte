@@ -15,6 +15,7 @@
 	import { initTheme, theme } from '$lib/theme.svelte';
 	import { initAppearance } from '$lib/appearance.svelte';
 	import { NAV } from '$lib/shell/nav';
+	import { activeProfile } from '$lib/profiles';
 	import type { LayoutData } from './$types';
 
 	let { children, data }: { children: import('svelte').Snippet; data: LayoutData } = $props();
@@ -116,7 +117,7 @@
 		     shows. Pages seed form state from their data once (e.g. the status
 		     card), so remount the page rather than let one person's form linger
 		     over the other's data. -->
-		{#key data.profiles?.find((p) => p.is_active)?.id}
+		{#key activeProfile(data.profiles)?.id}
 			{@render children()}
 		{/key}
 	</main>

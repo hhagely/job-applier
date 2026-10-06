@@ -24,10 +24,13 @@ export function getApiBase(): string {
 	return '';
 }
 
-// `dropped` is intentionally omitted from the client type: dropped jobs are
-// never persisted, so the API never emits them. Keep in sync with FilterStatus
-// in models/db.py, which does include `dropped`.
+/** The queue's two tabs: a profile's passed and manual verdicts. List endpoints
+ * only return these. */
 export type FilterStatus = 'passed' | 'manual';
+/** Any verdict a profile can hold on a posting (models/db.py FilterStatus). Job
+ * detail and Cmd-K search can return `dropped`, the active profile's verdict on a
+ * posting outside its queue. */
+export type Verdict = FilterStatus | 'dropped';
 export type ApplicationStatus =
 	| 'new'
 	| 'interested'
@@ -180,7 +183,7 @@ export interface Job {
 	posted_at?: string | null;
 	ingested_at: string;
 	/** The active profile's verdict; null when it never matched this posting. */
-	filter_status: FilterStatus | null;
+	filter_status: Verdict | null;
 	filter_reason?: string | null;
 	company?: Company | null;
 	score?: Score | null;
@@ -215,7 +218,8 @@ export interface Draft {
 export interface SearchProfile {
 	id: number | null;
 	name: string;
-	/** Exactly one profile is active: it drives ingest and owns the active resume. */
+	/** Exactly one profile is active: the one the UI shows (its queue, statuses,
+	 * scores), and whose resume is in use. */
 	is_active: boolean;
 	/** The one of its own resumes this profile scores and tailors with; null until it has one. */
 	resume_id: number | null;
@@ -423,6 +427,16 @@ async function call<T>(
 	return res.json() as Promise<T>;
 }
 
+/** An idempotent DELETE: already gone (404) counts as success; any other
+ * failure throws an `ApiError` carrying the server's reason. */
+async function callDelete(fetchFn: FetchFn, base: string, path: string): Promise<void> {
+	const res = await fetchWithRetry(fetchFn, `${base}${path}`, { method: 'DELETE' });
+	if (!res.ok && res.status !== 404) {
+		const body = await res.text();
+		throw new ApiError(`API ${path} -> ${res.status}: ${body}`, res.status, parseDetail(body));
+	}
+}
+
 async function callOptional<T>(
 	fetchFn: FetchFn,
 	base: string,
@@ -628,14 +642,8 @@ export const api = {
 		call<SearchProfile>(fetchFn, base, `/api/search-profiles/${id}/activate`, { method: 'POST' }),
 
 	/** 409 for the active profile — the detail says to switch first. */
-	deleteSearchProfile: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
-		const path = `/api/search-profiles/${id}`;
-		const res = await fetchWithRetry(fetchFn, `${base}${path}`, { method: 'DELETE' });
-		if (!res.ok && res.status !== 404) {
-			const body = await res.text();
-			throw new ApiError(`API ${path} -> ${res.status}: ${body}`, res.status, parseDetail(body));
-		}
-	},
+	deleteSearchProfile: (fetchFn: FetchFn, base: string, id: number) =>
+		callDelete(fetchFn, base, `/api/search-profiles/${id}`),
 
 	getProviders: (fetchFn: FetchFn, base: string) =>
 		call<ProvidersResponse>(fetchFn, base, '/api/ai/providers'),
@@ -718,12 +726,8 @@ export const api = {
 			body: JSON.stringify({ name, reason })
 		}),
 
-	removeBlacklist: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
-		const res = await fetchWithRetry(fetchFn, `${base}/api/blacklist/${id}`, { method: 'DELETE' });
-		if (!res.ok && res.status !== 404) {
-			throw new Error(`API /api/blacklist/${id} -> ${res.status}: ${await res.text()}`);
-		}
-	},
+	removeBlacklist: (fetchFn: FetchFn, base: string, id: number) =>
+		callDelete(fetchFn, base, `/api/blacklist/${id}`),
 
 	listWatchedCompanies: (fetchFn: FetchFn, base: string) =>
 		call<WatchedCompany[]>(fetchFn, base, '/api/watched-companies'),
@@ -735,12 +739,6 @@ export const api = {
 			body: JSON.stringify({ query })
 		}),
 
-	removeWatchedCompany: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
-		const res = await fetchWithRetry(fetchFn, `${base}/api/watched-companies/${id}`, {
-			method: 'DELETE'
-		});
-		if (!res.ok && res.status !== 404) {
-			throw new Error(`API /api/watched-companies/${id} -> ${res.status}: ${await res.text()}`);
-		}
-	}
+	removeWatchedCompany: (fetchFn: FetchFn, base: string, id: number) =>
+		callDelete(fetchFn, base, `/api/watched-companies/${id}`)
 };

@@ -8,9 +8,10 @@ manual, or dropped. A profile's queue is its passed/manual links.
 
 Recording drops too is what keeps re-scrapes cheap: a link's existence means
 "this profile has evaluated this posting", so a normal run only evaluates
-postings the profile hasn't seen. ``rematch=True`` re-evaluates everything the
-profile can see — after its criteria, home state, or blacklist change, or when
-it's created — without touching the network. ~0.65 ms per posting, so a full
+postings the profile hasn't seen. ``rematch=True`` re-evaluates every recent
+posting plus every one the profile already has a verdict on — after its
+criteria, home state, or blacklist change, or when it's created — without
+touching the network. ~0.65 ms per posting, so a full
 re-match of a ~15k-posting store is ~10 s: callers run it as a background task.
 
 Same write discipline as ingest (never hold SQLite's write lock across slow
@@ -20,6 +21,7 @@ are written ``MATCH_BATCH`` at a time in short transactions.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -42,6 +44,8 @@ from job_applier.models.db import (
     engine,
 )
 from job_applier.sources.base import RawJob
+
+log = logging.getLogger(__name__)
 
 # Postings older than this aren't matched: they're as good as closed, and the
 # ingest stale rule uses the same window.
@@ -100,8 +104,8 @@ def match_profile(
 ) -> MatchStats:
     """Evaluate ``profile_id``'s rules over stored postings and record verdicts.
 
-    Without ``rematch``, only postings the profile has no verdict for. With it,
-    every posting in the window; an existing verdict is overwritten except that a
+    Without ``rematch``, only recent postings the profile has no verdict for.
+    With it, every recent posting plus every one it already has a verdict on; an existing verdict is overwritten except that a
     posting the profile has already acted on (has an ``Application``) never goes
     from visible to dropped — editing your criteria narrows what's *new*, it
     doesn't hide a job you applied to.
@@ -147,20 +151,21 @@ def match_profile(
                     func.json(JobPosting.raw).not_in(["{}", "null"]),
                 )
             )
-            .where(func.coalesce(JobPosting.posted_at, JobPosting.ingested_at) >= cutoff)
         )
+        recent = func.coalesce(JobPosting.posted_at, JobPosting.ingested_at) >= cutoff
+        linked = select(JobProfileLink.job_id).where(JobProfileLink.profile_id == profile_id)
         acted: set[int] = set()
         if rematch:
             acted = set(
                 s.exec(select(Application.job_id).where(Application.profile_id == profile_id)).all()
             )
+            # Everything recent, plus every posting it already has a verdict on
+            # whatever its age: a blacklist or criteria edit must reach an old
+            # job still sitting in the queue.
+            stmt = stmt.where(or_(recent, JobPosting.id.in_(linked)))  # type: ignore[union-attr]
         else:
-            # "Postings this profile hasn't judged yet."
-            stmt = stmt.where(
-                JobPosting.id.not_in(  # type: ignore[union-attr]
-                    select(JobProfileLink.job_id).where(JobProfileLink.profile_id == profile_id)
-                )
-            )
+            # "Recent postings this profile hasn't judged yet."
+            stmt = stmt.where(recent).where(JobPosting.id.not_in(linked))  # type: ignore[union-attr]
         rows = s.exec(stmt).all()
         current = (
             {
@@ -257,7 +262,11 @@ def match_all_profiles(
         profiles = s.exec(select(SearchProfile.id, SearchProfile.name).order_by(SearchProfile.id)).all()
     out: dict[int, MatchStats] = {}
     for pid, name in profiles:
-        out[pid] = match_profile(pid)
+        try:
+            out[pid] = match_profile(pid)
+        except Exception:  # noqa: BLE001 - one profile's failure must not cost the others their verdicts or fail a committed scrape; its postings stay unlinked, so the next run retries them
+            log.exception("matching failed for profile %s (%s)", pid, name)
+            continue
         if progress_cb is not None:
             progress_cb(name, out[pid])
     return out

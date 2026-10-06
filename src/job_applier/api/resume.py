@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlmodel import Session, select
 
 from job_applier import profiles, resume_io
+from job_applier.api.profile import profile_errors
 from job_applier.api.schemas import ResumeOut, ResumeSummaryOut
 from job_applier.config import settings
 from job_applier.models.db import Resume, get_session
@@ -103,10 +104,8 @@ def use_resume(resume_id: int, session: Session = Depends(get_session)):
     """Make another of the active profile's uploads the one it scores and
     tailors with. Scores made against the previous one then read as stale."""
     profile = profiles.load_or_create_profile(session)
-    try:
+    with profile_errors():
         profiles.update_profile_meta(session, profile.id, resume_id=resume_id)
-    except LookupError as e:
-        raise HTTPException(404, str(e)) from e
     return _resume_out(_active_resume(session))
 
 

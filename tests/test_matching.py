@@ -266,3 +266,40 @@ def test_a_scrape_runs_every_profile_through_matching(fresh_db):
     assert reported == ["A", "B"]
     assert _verdicts(fresh_db, a) == {ts_job: FilterStatus.passed, unmatched: FilterStatus.dropped}
     assert _verdicts(fresh_db, b) == {ts_job: FilterStatus.dropped, unmatched: FilterStatus.dropped}
+
+
+def test_rematch_reaches_old_postings_already_in_the_queue(fresh_db):
+    # Blacklisting a company must hide its old postings too, not only the last
+    # MATCH_WINDOW_DAYS: those still sit in the queue with a "passed" verdict.
+    p = _profile(fresh_db, "A", **TS)
+    (job,) = _store(fresh_db, _raw(1, company_name="Initech"))
+    matching.match_profile(p)
+    with Session(fresh_db) as s:
+        old = s.get(JobPosting, job)
+        old.posted_at = old.ingested_at = datetime.now(timezone.utc) - timedelta(
+            days=matching.MATCH_WINDOW_DAYS + 10
+        )
+        s.add(old)
+        s.info["profile_id"] = p
+        services.add_blacklisted_company(s, "Initech")
+        s.commit()
+    matching.match_profile(p, rematch=True)
+    assert _verdicts(fresh_db, p) == {job: FilterStatus.dropped}
+
+
+def test_one_profiles_matching_failure_does_not_stop_the_others(fresh_db, monkeypatch):
+    a = _profile(fresh_db, "A", **TS)
+    b = _profile(fresh_db, "B", **TS)
+    (job,) = _store(fresh_db, _raw(1))
+    real = matching.match_profile
+
+    def flaky(pid, **kw):
+        if pid == a:
+            raise RuntimeError("database is locked")
+        return real(pid, **kw)
+
+    monkeypatch.setattr(matching, "match_profile", flaky)
+    out = matching.match_all_profiles()
+    assert set(out) == {b}
+    assert _verdicts(fresh_db, b) == {job: FilterStatus.passed}
+    assert _verdicts(fresh_db, a) == {}  # unlinked, so the next run retries it

@@ -81,10 +81,10 @@ class JobPosting(SQLModel, table=True):
     # would have been at ingest. Null on postings saved before the column.
     tags: Optional[list[str]] = Field(default=None, sa_column=Column(JSON))
 
-    # The *shared* rules' verdict (remote, US, sales, crypto); always ``passed``
-    # for anything stored (legacy per-profile verdicts are moved onto the links
-    # and reset by the migration). Each profile's own verdict is on its
-    # JobProfileLink, and that is what the API reports.
+    # Legacy: always ``passed`` (only postings that pass the shared rules are
+    # stored, and the migration moved old per-profile verdicts onto the links).
+    # Nothing writes or reads these; a profile's verdict is
+    # ``JobProfileLink.filter_status``. Kept so existing DBs and old rows load.
     filter_status: FilterStatus = FilterStatus.passed
     filter_reason: Optional[str] = None
 
@@ -234,19 +234,18 @@ class Resume(SQLModel, table=True):
 class SearchProfile(SQLModel, table=True):
     """A saved set of job-search criteria. Many rows, exactly one active.
 
-    The active row drives the hard filter at ingest time. When its lists are
+    Every profile's own rules run at match time (``matching``) over the shared
+    postings; the active one is the profile the UI shows. When its lists are
     empty, the filter falls back to built-in defaults so a fresh install still
-    works. Switching profiles also switches the active resume — see
-    ``services.activate_profile`` for the invariant.
+    works. Lifecycle (activate, switch resume) is in ``profiles``.
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = "Default"
-    # Exactly one row is active. Readers go through ``services.active_profile``,
+    # Exactly one row is active. Readers go through ``profiles.active_profile``,
     # which falls back to the oldest row if none is flagged.
     is_active: bool = Field(default=False, index=True)
-    # The resume scored against and tailored from while this profile is active.
-    # Null until the profile is first activated with a resume on file.
+    # The profile's in-use resume (one of its own); null until it has one.
     resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")
     # Human-readable role titles the user wants surfaced
     # (e.g. ["Senior Software Engineer", "Staff Backend Engineer"]).

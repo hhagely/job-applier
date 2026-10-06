@@ -20,7 +20,8 @@ from job_applier.dedupe import (
     jd_hamming_distance,
     jd_simhash,
 )
-from job_applier.models import Application, ApplicationStatus, JobPosting, engine
+from job_applier.models import Application, ApplicationStatus, JobPosting, JobProfileLink, engine
+from job_applier.models.db import FilterStatus
 
 # Postings that match prune criteria have their description + raw blob cleared
 # to keep the DB small. The dedupe columns (source/source_id/dedupe_hash/
@@ -68,8 +69,9 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
     fingerprinted (if it wasn't already) *before* its description is cleared.
 
     Statuses are per profile, and a posting is shared: it counts as
-    archived/rejected only when every profile that tracked it says so, and as
-    applied when *any* profile applied. Rows are never deleted (the hashes are
+    archived/rejected only when every profile that tracked it says so (a posting
+    still in a profile's queue, untouched, counts as open), and as applied when
+    *any* profile applied. Rows are never deleted (the hashes are
     what keep a re-scrape from re-adding them); this is also what keeps the
     scrape-once store small, since postings no profile matched are lightened
     like any other untouched posting.
@@ -79,8 +81,20 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
     ingested_cutoff = now - timedelta(days=PRUNE_INGESTED_AFTER_DAYS)
 
     statuses_by_job: dict[int, set[ApplicationStatus]] = {}
+    tracked: set[tuple[int, int]] = set()
     for a in session.exec(select(Application).execution_options(all_profiles=True)).all():
         statuses_by_job.setdefault(a.job_id, set()).add(ApplicationStatus(a.status))
+        tracked.add((a.job_id, a.profile_id))
+    # A posting sitting in a profile's queue with no Application yet is still
+    # open for that profile: count it as "new", so another profile closing it
+    # can't blank the JD this one hasn't read.
+    for job_id, pid in session.exec(
+        select(JobProfileLink.job_id, JobProfileLink.profile_id)
+        .where(JobProfileLink.filter_status != FilterStatus.dropped)
+        .execution_options(all_profiles=True)
+    ).all():
+        if (job_id, pid) not in tracked:
+            statuses_by_job.setdefault(job_id, set()).add(ApplicationStatus.new)
     closed = {ApplicationStatus.archived, ApplicationStatus.rejected}
 
     stats = PruneStats()

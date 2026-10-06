@@ -1,7 +1,7 @@
-"""Company-blacklist endpoints: list, add, and remove companies the user never
-wants surfaced. The blacklist is applied at ingest time (see
-``ingest.ingest_one``); editing it here only affects future ingests, never rows
-already persisted.
+"""Company-blacklist endpoints: list, add, and remove companies the active
+profile never wants surfaced. Each profile has its own list, applied at match
+time (``matching``); adding or removing an entry re-matches the active profile
+in the background, with no scrape, so it reaches postings already stored.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def list_blacklist(session: Session = Depends(get_session)):
 
 @router.post("/api/blacklist", response_model=BlacklistedCompanyOut)
 def add_blacklist(body: BlacklistAddIn, session: Session = Depends(get_session)):
-    """Add a company to the ingest blacklist.
+    """Add a company to this profile's blacklist.
 
     Idempotent on the normalized name: re-adding a company already present (under
     any spelling variant) returns the existing entry rather than erroring.

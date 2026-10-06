@@ -19,6 +19,9 @@ caller that owns a browser engine drives the actual print. See
 
 from __future__ import annotations
 
+import logging
+import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -122,8 +125,48 @@ class DraftStatus:
     updated_at: datetime | None
 
 
+log = logging.getLogger(__name__)
+
+
+def profile_dir(profile_id: int) -> Path:
+    """Where one profile's drafts live: ``<applications>/profile-<id>/``."""
+    return settings.applications_dir / f"profile-{profile_id}"
+
+
 def draft_dir(job_id: int, *, profile_id: int) -> Path:
-    return settings.applications_dir / f"profile-{profile_id}" / str(job_id)
+    return profile_dir(profile_id) / str(job_id)
+
+
+def legacy_draft_dirs() -> list[Path]:
+    """Pre-profile draft folders (``<applications>/<job_id>/``) still to move.
+    The new layout's ``profile-`` prefix can never match."""
+    root = settings.applications_dir
+    if not root.is_dir():
+        return []
+    return [e for e in root.iterdir() if e.is_dir() and e.name.isdigit()]
+
+
+def set_aside_profile_drafts(profile_id: int) -> Path | None:
+    """Rename a profile's drafts folder out of the way before the profile is
+    deleted, so a later profile that reuses the id never finds them. Raises
+    ``OSError`` when it can't (on Windows, a PDF open in a viewer), before
+    anything has been deleted. Returns the new path, or None when there were no
+    drafts."""
+    folder = profile_dir(profile_id)
+    if not folder.exists():
+        return None
+    doomed = folder.with_name(f"{folder.name}.deleted-{uuid.uuid4().hex[:8]}")
+    folder.rename(doomed)
+    return doomed
+
+
+def remove_set_aside(path: Path) -> None:
+    """Best-effort removal of a folder from ``set_aside_profile_drafts``; what
+    can't be removed is logged and left (its name is unique, so it's inert)."""
+    shutil.rmtree(
+        path,
+        onexc=lambda _fn, p, exc: log.warning("couldn't remove deleted draft %s: %s", p, exc),
+    )
 
 
 def move_legacy_draft_dirs(profile_id: int) -> int:
@@ -135,19 +178,20 @@ def move_legacy_draft_dirs(profile_id: int) -> int:
     alone rather than overwritten. A rename within one directory tree is atomic per
     directory, so an interrupted run just finishes on the next start.
     """
-    root = settings.applications_dir
-    if not root.is_dir():
-        return 0
-    dest_root = root / f"profile-{profile_id}"
+    dest_root = profile_dir(profile_id)
     moved = 0
-    for entry in root.iterdir():
-        if not (entry.is_dir() and entry.name.isdigit()):
-            continue
+    for entry in legacy_draft_dirs():
         dest = dest_root / entry.name
         if dest.exists():
             continue
         dest_root.mkdir(parents=True, exist_ok=True)
-        entry.rename(dest)
+        try:
+            entry.rename(dest)
+        except OSError as exc:
+            # Best effort at startup: a file open in a viewer blocks the rename
+            # on Windows. Leave it for the next start rather than refuse to boot.
+            log.warning("couldn't move legacy draft folder %s: %s", entry, exc)
+            continue
         moved += 1
     return moved
 

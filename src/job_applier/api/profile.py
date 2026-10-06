@@ -10,6 +10,8 @@ calls them.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -69,6 +71,18 @@ def profile_out(
 _profile_out = profile_out
 
 
+@contextmanager
+def profile_errors(*, conflict: int = 422) -> Iterator[None]:
+    """Map the profile lifecycle's errors to HTTP: a missing profile or resume
+    is 404, a request it refuses is ``conflict`` (422, or 409 for delete)."""
+    try:
+        yield
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except profiles.ProfileError as exc:
+        raise HTTPException(conflict, str(exc)) from exc
+
+
 @router.get("/api/search-profiles", response_model=list[SearchProfileOut])
 def list_search_profiles(session: Session = Depends(get_session)):
     active = profiles.active_profile(session)
@@ -88,12 +102,8 @@ def create_search_profile(
     # current criteria stay the active profile rather than the new blank one.
     _load_or_create_profile(session)
     session.commit()
-    try:
+    with profile_errors():
         p = profiles.create_profile(session, name=body.name, clone_from=body.clone_from)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except profiles.ProfileError as exc:
-        raise HTTPException(422, str(exc)) from exc
     # A new person gets a full queue from what's already stored: no scrape.
     matching.start_rematch(p.id)
     return _profile_out(p, is_active=False)
@@ -105,36 +115,26 @@ def update_search_profile_meta(
     body: SearchProfileMetaUpdate,
     session: Session = Depends(get_session),
 ):
-    try:
+    with profile_errors():
         p = profiles.update_profile_meta(
             session, profile_id, name=body.name, resume_id=body.resume_id
         )
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except profiles.ProfileError as exc:
-        raise HTTPException(422, str(exc)) from exc
     active = profiles.active_profile(session)
     return _profile_out(p, is_active=active is not None and active.id == p.id)
 
 
 @router.delete("/api/search-profiles/{profile_id}", status_code=204)
 def delete_search_profile(profile_id: int, session: Session = Depends(get_session)):
-    try:
+    with profile_errors(conflict=409):
         profiles.delete_profile(session, profile_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except profiles.ProfileError as exc:
-        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post(
     "/api/search-profiles/{profile_id}/activate", response_model=SearchProfileOut
 )
 def activate_search_profile(profile_id: int, session: Session = Depends(get_session)):
-    try:
+    with profile_errors():
         p = profiles.activate_profile(session, profile_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
     return _profile_out(p)
 
 

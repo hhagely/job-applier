@@ -4,6 +4,7 @@
 	import Icon from '$lib/Icon.svelte';
 	import type { SearchProfile } from '$lib/api';
 	import { activeProfile } from '$lib/profiles';
+	import { toast } from '$lib/toast.svelte';
 	import { NAV, activeNavId, type CountKey } from './nav';
 	import { deriveInitials, type ShellProfile } from './profile';
 
@@ -71,7 +72,15 @@
 						action="/search?/activateProfile"
 						use:enhance={() => {
 							switching = true;
-							return async ({ update }) => {
+							return async ({ result, update }) => {
+								// Only /search renders the action's error, so say it here too.
+								if (result.type === 'failure' || result.type === 'error') {
+									const reason =
+										result.type === 'failure'
+											? (result.data?.profileError as string | undefined)
+											: undefined;
+									toast(reason ?? 'Could not switch profile.');
+								}
 								await update();
 								switching = false;
 								menuOpen = false;

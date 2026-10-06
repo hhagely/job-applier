@@ -23,7 +23,6 @@ import it without a cycle.
 from __future__ import annotations
 
 import logging
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -32,6 +31,7 @@ from sqlalchemy import delete, update
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
+from job_applier.contracts import profile_pref_prefix
 from job_applier.models.db import (
     Application,
     ApplicationStatus,
@@ -313,13 +313,14 @@ def delete_profile(session: Session, profile_id: int) -> None:
     active = active_profile(session)
     if active is not None and active.id == p.id:
         raise ProfileError("can't delete the active profile — switch to another first")
-    # Move the drafts aside first, so a reused id never finds them even if the
-    # delete below fails (a PDF open in a viewer blocks it on Windows).
-    folder = drafts.settings.applications_dir / f"profile-{p.id}"
-    doomed = folder.with_name(f"{folder.name}.deleted")
-    if folder.exists():
-        shutil.rmtree(doomed, ignore_errors=True)
-        folder.rename(doomed)
+    # Drafts go aside first, so a reused id never finds them. If that's blocked,
+    # nothing has been deleted yet and a retry is safe.
+    try:
+        doomed = drafts.set_aside_profile_drafts(p.id)
+    except OSError as exc:
+        raise ProfileError(
+            f"couldn't remove this profile's drafts; close any of its open PDFs and try again ({exc})"
+        ) from exc
     pdfs = set(
         session.exec(
             select(Resume.pdf_path)
@@ -333,7 +334,9 @@ def delete_profile(session: Session, profile_id: int) -> None:
             .where(model.profile_id == p.id)
             .execution_options(all_profiles=True)
         )
-    session.execute(delete(AppSetting).where(AppSetting.key.startswith(f"pref:{p.id}:")))  # type: ignore[union-attr]
+    session.execute(
+        delete(AppSetting).where(AppSetting.key.startswith(profile_pref_prefix(p.id)))  # type: ignore[union-attr]
+    )
     session.delete(p)
     session.commit()
     # A copied profile's resume rows share the PDF; only remove files nobody
@@ -353,13 +356,8 @@ def delete_profile(session: Session, profile_id: int) -> None:
                 path.unlink(missing_ok=True)
             except OSError as e:
                 log.warning("couldn't remove deleted profile's resume %s: %s", path, e)
-    if doomed.exists():
-        shutil.rmtree(
-            doomed,
-            onexc=lambda _fn, path, exc: log.warning(
-                "couldn't remove deleted profile's draft %s: %s", path, exc
-            ),
-        )
+    if doomed is not None:
+        drafts.remove_set_aside(doomed)
 
 
 def adopt_uploaded_resume(session: Session, resume_id: int) -> None:
@@ -381,10 +379,7 @@ def adopt_legacy_drafts() -> int:
     from job_applier import drafts
     from job_applier.models.db import engine
 
-    root = drafts.settings.applications_dir
-    if not root.is_dir() or not any(
-        e.is_dir() and e.name.isdigit() for e in root.iterdir()
-    ):
+    if not drafts.legacy_draft_dirs():
         return 0
     with Session(engine()) as session:
         pid = session_profile_id(session, create=True)

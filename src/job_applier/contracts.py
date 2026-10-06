@@ -63,13 +63,18 @@ MIN_GHOSTED_AFTER_DAYS = 7
 MAX_GHOSTED_AFTER_DAYS = 365
 
 
+def profile_pref_prefix(profile_id: int) -> str:
+    """Key prefix shared by every one of ``profile_id``'s preferences."""
+    return f"pref:{profile_id}:"
+
+
 def profile_pref_key(profile_id: int, key: str) -> str:
     """Setting key for a per-profile preference. Preferences are personal (two
     people sharing the app keep their own ghosted-after cut-off), so each profile
     stores its own value under ``pref:<profile_id>:<key>``; the un-prefixed
     legacy key is the fallback, which is how the migrated Default keeps its value.
     """
-    return f"pref:{profile_id}:{key}"
+    return f"{profile_pref_prefix(profile_id)}{key}"
 
 
 def ai_model_key(provider: str) -> str:

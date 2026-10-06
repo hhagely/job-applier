@@ -1,4 +1,5 @@
-import { api, errorReason } from '$lib/api';
+import { ApiError, api, errorReason } from '$lib/api';
+import { activeProfile } from '$lib/profiles';
 import { serverApiBase } from '$lib/apiBase.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
@@ -10,7 +11,7 @@ export const load: PageServerLoad = async ({ fetch, parent }) => {
 		api.listResumes(fetch, serverApiBase()).catch(() => []),
 		parent()
 	]);
-	const profileName = profiles.find((p) => p.is_active)?.name ?? null;
+	const profileName = activeProfile(profiles)?.name ?? null;
 	return { resume, resumes, profileName };
 };
 
@@ -50,13 +51,17 @@ export const actions: Actions = {
 	use: async ({ request, fetch }) => {
 		const id = Number((await request.formData()).get('id'));
 		if (!Number.isInteger(id) || id <= 0) return fail(400, { error: 'Bad resume id.' });
+		let resume;
 		try {
-			const resume = await api.useResume(fetch, serverApiBase(), id);
-			const { count: staleCount } = await api.getStaleScoreCount(fetch, serverApiBase());
-			return { ok: true, resume, staleCount, switched: true };
+			resume = await api.useResume(fetch, serverApiBase(), id);
 		} catch (e) {
-			return fail(404, { error: errorReason(e) });
+			return fail(e instanceof ApiError ? e.status : 502, { error: errorReason(e) });
 		}
+		// The switch already happened: a failed count only costs the prompt.
+		const { count: staleCount } = await api
+			.getStaleScoreCount(fetch, serverApiBase())
+			.catch(() => ({ count: 0 }));
+		return { ok: true, resume, staleCount, switched: true };
 	},
 
 	// The two answers to the "N scores are now stale" prompt the upload raises.

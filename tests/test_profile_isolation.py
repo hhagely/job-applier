@@ -288,3 +288,101 @@ def test_job_detail_shows_what_other_profiles_did_with_it(setup):
 
     _switch(c, a)
     assert c.get(f"/api/jobs/{job}").json()["other_profiles"] == []
+
+
+def test_prune_keeps_a_jd_still_open_in_another_profiles_queue(setup):
+    # B hasn't touched the job (a link, no Application): A rejecting it must not
+    # blank the description B is about to read.
+    from job_applier.maintenance import prune_old_postings
+
+    c, engine, _a, _b, job = setup
+    c.patch(f"/api/jobs/{job}/status", json={"status": "rejected"})
+    with Session(engine) as s:
+        assert prune_old_postings(s).lightened == 0
+        assert s.get(JobPosting, job).description
+
+
+def test_print_html_serves_the_requested_profiles_draft(setup, monkeypatch):
+    # The PDF driver passes profile_id so a mid-render switch still prints the
+    # starting profile's markdown, never the newly active person's.
+    c, _, a, b, job = setup
+    monkeypatch.setattr(pdf, "render_to_pdf", lambda _url: b"%PDF fake")
+    c.post(f"/api/jobs/{job}/draft", json={"resume_md": "# Only A\n"})
+    _switch(c, b)
+    r = c.get(f"/api/jobs/{job}/draft/resume/print.html?profile_id={a}")
+    assert r.status_code == 200 and "Only A" in r.text
+    assert c.get(f"/api/jobs/{job}/draft/resume/print.html").status_code == 404
+
+
+def test_a_migrated_preference_falls_back_to_the_shared_value(setup):
+    from job_applier.contracts import GHOSTED_AFTER_DAYS_KEY
+
+    c, engine, _a, _b, _job = setup
+    with Session(engine) as s:
+        s.add(AppSetting(key=GHOSTED_AFTER_DAYS_KEY, value="20"))
+        s.commit()
+    assert c.get("/api/preferences").json()["ghosted_after_days"] == 20
+    c.patch("/api/preferences", json={"ghosted_after_days": 30})
+    assert c.get("/api/preferences").json()["ghosted_after_days"] == 30
+    with Session(engine) as s:
+        assert s.get(AppSetting, GHOSTED_AFTER_DAYS_KEY).value == "20"  # legacy row untouched
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "status"),
+    [
+        ("patch", "/api/search-profiles/{a}", {"name": "   "}, 422),
+        ("patch", "/api/search-profiles/9999", {"name": "X"}, 404),
+        ("patch", "/api/search-profiles/{a}", {"resume_id": 9999}, 404),
+        ("post", "/api/search-profiles", {"name": "   "}, 422),
+        ("post", "/api/search-profiles", {"name": "X", "clone_from": 9999}, 404),
+        ("post", "/api/search-profiles/9999/activate", None, 404),
+        ("delete", "/api/search-profiles/9999", None, 404),
+    ],
+)
+def test_profile_api_error_mapping(setup, method, path, body, status):
+    c, _, a, _b, _job = setup
+    kwargs = {"json": body} if body is not None else {}
+    assert getattr(c, method)(path.format(a=a), **kwargs).status_code == status
+
+
+def test_profile_api_renames(setup):
+    c, _, _a, b, _job = setup
+    r = c.patch(f"/api/search-profiles/{b}", json={"name": " Sam "})
+    assert r.status_code == 200 and r.json()["name"] == "Sam"
+    assert "Sam" in [p["name"] for p in c.get("/api/search-profiles").json()]
+
+
+def test_deleting_a_profile_whose_drafts_are_locked_changes_nothing(setup, monkeypatch):
+    # Windows refuses to move a folder with a PDF open in a viewer: the delete
+    # must fail cleanly (409, a reason) before anything is removed.
+    from job_applier import drafts
+
+    def locked(_pid):
+        raise PermissionError("in use")
+
+    c, _, _a, b, _job = setup
+    monkeypatch.setattr(drafts, "set_aside_profile_drafts", locked)
+    r = c.delete(f"/api/search-profiles/{b}")
+    assert r.status_code == 409 and "close any of its open PDFs" in r.json()["detail"]
+    assert b in [p["id"] for p in c.get("/api/search-profiles").json()]
+
+
+def test_a_background_task_runs_as_the_profile_that_started_it():
+    import threading
+
+    seen: list[int | None] = []
+    done = threading.Event()
+
+    def fn(_state):
+        seen.append(current_profile_id.get())
+        done.set()
+
+    tasks.start_task("unit_pin", 1, fn, profile_id=7)
+    assert done.wait(5)
+    # The same lane's worker runs the next task: the pin must not carry over.
+    done.clear()
+    tasks.start_task("unit_pin", 1, fn)
+    assert done.wait(5)
+    assert seen == [7, None]
+    assert current_profile_id.get() is None

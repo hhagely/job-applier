@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlmodel import Session
 
-from job_applier import drafts, pdf
+from job_applier import drafts, pdf, profiles
 from job_applier.ai import tasks as ai_tasks
 from job_applier.api import ai as ai_endpoints
 from job_applier.api.deps import require_ai_ready, require_job
@@ -47,9 +47,16 @@ def _draft_out(job_id: int, profile_id: int, *, include_markdown: bool = False) 
 
 
 def _profile(session: Session) -> int:
-    """The profile whose drafts this request reads and writes. ``create`` so a
-    fresh install's first draft has a profile directory to land in."""
-    return session_profile_id(session, create=True)
+    """The profile whose drafts this request reads and writes.
+
+    A fresh install has no profile yet: the Default one is created and committed
+    here, in its own short transaction, so no request holds SQLite's write lock
+    while it renders PDFs (a loopback request plus a browser engine)."""
+    pid = session_profile_id(session)
+    if pid is None:
+        pid = profiles.load_or_create_profile(session).id
+        session.commit()
+    return pid
 
 
 @router.get("/api/jobs/{job_id}/draft", response_model=DraftOut)

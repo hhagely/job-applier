@@ -48,6 +48,17 @@ describe('use resume action', () => {
 		expect(api.useResume).toHaveBeenCalledWith(expect.anything(), 'http://test', 4);
 	});
 
+	it('still reports the switch when only the stale count fails', async () => {
+		api.useResume.mockResolvedValue({ id: 4 });
+		api.getStaleScoreCount.mockRejectedValue(new ApiError('locked', 503));
+		expect(await use({ id: '4' })).toEqual({
+			ok: true,
+			resume: { id: 4 },
+			staleCount: 0,
+			switched: true
+		});
+	});
+
 	it("refuses another profile's resume with the API's reason", async () => {
 		api.useResume.mockRejectedValue(
 			new ApiError('nope', 404, 'resume 9 not found for this profile')

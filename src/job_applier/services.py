@@ -21,9 +21,15 @@ from typing import Literal, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
+from sqlmodel.sql.expression import SelectOfScalar
 
 from job_applier import profiles
 from job_applier.config import settings
+from job_applier.contracts import (
+    DEFAULT_GHOSTED_AFTER_DAYS,
+    GHOSTED_AFTER_DAYS_KEY,
+    profile_pref_key,
+)
 from job_applier.ingest import normalize_company
 from job_applier.models.db import (
     Application,
@@ -37,7 +43,10 @@ from job_applier.models.db import (
     Resume,
     SearchProfile,
     SourceSlug,
+    get_setting,
+    set_setting,
 )
+from job_applier.models.scoping import session_profile_id
 from job_applier.sources import discover
 
 
@@ -136,7 +145,7 @@ def adopt_scores(session: Session, *, resume_id: int) -> int:
     return len(rows)
 
 
-def stale_scores_stmt(session: Session, resume_id: int):
+def stale_scores_stmt(session: Session, resume_id: int) -> SelectOfScalar[MatchScore]:
     """Baseline scores on the active profile's postings not against ``resume_id``.
 
     Shared by adoption and the stale-count endpoint so the two can't disagree
@@ -147,6 +156,40 @@ def stale_scores_stmt(session: Session, resume_id: int):
         MatchScore.resume_id != resume_id,
         MatchScore.job_id.in_(profiles.queue_job_ids(session)),  # type: ignore[attr-defined]
     )
+
+
+# ---- per-profile preferences ----------------------------------------------
+
+
+def get_profile_pref(session: Session, key: str) -> Optional[str]:
+    """This profile's value for preference ``key``, else the pre-profile shared
+    value (which is how a migrated Default keeps its setting)."""
+    pid = session_profile_id(session)
+    if pid is not None:
+        own = get_setting(session, profile_pref_key(pid, key))
+        if own is not None:
+            return own
+    return get_setting(session, key)
+
+
+def set_profile_pref(session: Session, key: str, value: str) -> None:
+    pid = session_profile_id(session, create=True)
+    set_setting(session, profile_pref_key(pid, key), value)
+
+
+def ghosted_after_days(session: Session) -> int:
+    """The configured ghost cut-off, or the default.
+
+    ``AppSetting`` values are strings, so a row hand-edited to "" or "soon" would
+    otherwise blow up every read of ``/followups``. An unparseable value falls
+    back rather than raising: a broken preference should not take down the page
+    it configures.
+    """
+    raw = get_profile_pref(session, GHOSTED_AFTER_DAYS_KEY)
+    try:
+        return int(raw) if raw is not None else DEFAULT_GHOSTED_AFTER_DAYS
+    except ValueError:
+        return DEFAULT_GHOSTED_AFTER_DAYS
 
 
 # ---- pending-match selection ----------------------------------------------
