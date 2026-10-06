@@ -18,6 +18,8 @@ from job_applier import resume_io, services
 from job_applier.api.app import COMPANY_CHECKED_KEY, app
 from job_applier.config import settings
 from job_applier.models.db import (
+    JobProfileLink,
+    session_profile_id,
     Application,
     ApplicationStatus,
     Company,
@@ -68,6 +70,8 @@ def _seed_job(session, *, title="Senior Engineer", company="Acme", source_id="t-
     )
     session.add(j)
     session.flush()
+    # In the current profile's queue: matching gave it a passed verdict.
+    session.add(JobProfileLink(job_id=j.id, profile_id=session_profile_id(session, create=True)))
     if ingested_at is not None:
         j.ingested_at = ingested_at
         session.add(j)

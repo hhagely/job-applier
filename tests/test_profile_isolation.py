@@ -16,8 +16,9 @@ from job_applier import pdf
 from job_applier.ai import tasks
 from job_applier.api.app import app
 from job_applier.config import settings
-from job_applier.models import Application, JobPosting, MatchScore
+from job_applier.models import Application, JobPosting, JobProfileLink, MatchScore
 from job_applier.models.db import (
+    AppSetting,
     FilterStatus,
     current_profile_id,
     get_session,
@@ -53,6 +54,10 @@ def setup(tmp_path, monkeypatch):
                 filter_status=FilterStatus.passed,
             )
             s.add(job)
+            s.flush()
+            # Both profiles' rules passed it: it's in both queues.
+            s.add(JobProfileLink(job_id=job.id, profile_id=a_id))
+            s.add(JobProfileLink(job_id=job.id, profile_id=b_id))
             s.commit()
             job_id = job.id
         assert a["using_defaults"] is True
@@ -176,3 +181,63 @@ def test_running_task_dedupe_is_per_profile():
     finally:
         with tasks._lock:
             tasks._tasks.pop("t-a", None)
+
+
+def test_deleting_a_profile_removes_only_its_own_data(setup, monkeypatch):
+    c, engine, a, b, job = setup
+    monkeypatch.setattr(pdf, "render_to_pdf", lambda _url: b"%PDF fake")
+    c.patch(f"/api/jobs/{job}/status", json={"status": "applied"})
+    _switch(c, b)
+    c.patch(f"/api/jobs/{job}/status", json={"status": "interested"})
+    c.post(f"/api/jobs/{job}/score", json={"score": 50, "rubric": {}})
+    c.post("/api/blacklist", json={"name": "Initech"})
+    c.patch("/api/preferences", json={"ghosted_after_days": 90})
+    c.post(f"/api/jobs/{job}/draft", json={"resume_md": "# B\n"})
+    _switch(c, a)
+
+    assert c.delete(f"/api/search-profiles/{b}").status_code == 204
+
+    with Session(engine) as s:
+        for model in (Application, MatchScore, JobProfileLink):
+            rows = s.exec(select(model).execution_options(all_profiles=True)).all()
+            assert {r.profile_id for r in rows} <= {a}, model.__name__
+        assert s.exec(select(AppSetting).where(AppSetting.key.startswith(f"pref:{b}:"))).all() == []
+    assert not (settings.applications_dir / f"profile-{b}").exists()
+    # A's data and the shared posting survive.
+    assert c.get(f"/api/jobs/{job}").json()["application"]["status"] == "applied"
+
+
+def test_changes_to_what_a_profile_accepts_rematch_it(setup, monkeypatch):
+    from job_applier.api import blacklist as blacklist_api
+    from job_applier.api import profile as profile_api
+
+    c, _engine, a, _b, _job = setup
+    started: list[int] = []
+    monkeypatch.setattr(profile_api, "start_rematch", started.append)
+    monkeypatch.setattr(blacklist_api, "start_rematch", started.append)
+
+    c.put("/api/search-profile", json={"seniority_terms": ["staff"], "required_tech": ["go"]})
+    new = c.post("/api/search-profiles", json={"name": "Third"}).json()["id"]
+    entry = c.post("/api/blacklist", json={"name": "Initech"}).json()
+    c.delete(f"/api/blacklist/{entry['id']}")
+    assert started == [a, new, a, a]
+
+
+def test_prune_keeps_a_jd_another_profile_applied_to(setup):
+    # Prune reads statuses across every profile: A archiving a job must not
+    # blank the description of the posting B applied to.
+    from job_applier.maintenance import prune_old_postings
+
+    c, engine, a, b, job = setup
+    c.patch(f"/api/jobs/{job}/status", json={"status": "archived"})
+    _switch(c, b)
+    c.patch(f"/api/jobs/{job}/status", json={"status": "applied"})
+    with Session(engine) as s:
+        assert prune_old_postings(s).lightened == 0
+        assert s.get(JobPosting, job).description
+
+    _switch(c, a)  # B gives up too: now every tracker has it closed
+    _switch(c, b)
+    c.patch(f"/api/jobs/{job}/status", json={"status": "rejected"})
+    with Session(engine) as s:
+        assert prune_old_postings(s).lightened == 1

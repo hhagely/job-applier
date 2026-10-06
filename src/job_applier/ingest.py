@@ -1,5 +1,11 @@
 """Ingestion pipeline: pull raw jobs from sources, dedupe, filter, persist.
 
+Scrape once for every profile: ingest applies only the *shared* rules
+(``filters.evaluate_shared``: remote, US, sales, crypto) and stores each
+surviving posting once. Each profile's personal rules and blacklist run
+afterwards, locally, in ``matching`` -- so one scrape fills every profile's
+queue, and adding or editing a profile never needs another scrape.
+
 The fingerprint/normalization primitives live in :mod:`job_applier.dedupe` and the
 offline batch jobs (prune, backfills) in :mod:`job_applier.maintenance`; both are
 re-exported here so existing ``from job_applier.ingest import ...`` call sites keep
@@ -12,9 +18,10 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from job_applier.dedupe import (
@@ -26,7 +33,8 @@ from job_applier.dedupe import (
     normalize_company,
     normalize_title,
 )
-from job_applier.filters import FilterConfig, evaluate, load_active_config
+from job_applier import matching, profiles
+from job_applier.filters import config_for, evaluate_shared, union_title_config
 from job_applier.maintenance import (
     PRUNE_INGESTED_AFTER_DAYS,
     PRUNE_POSTED_AFTER_DAYS,
@@ -43,8 +51,7 @@ from job_applier.models import (
     JobProfileLink,
     engine,
 )
-from job_applier.models.db import FilterStatus
-from job_applier.profiles import load_or_create_profile
+from job_applier.models.db import FilterStatus, SearchProfile
 from job_applier.sources import RawJob, SourceAdapter, get_all_sources
 
 log = logging.getLogger(__name__)
@@ -87,15 +94,12 @@ class IngestStats:
     inserted: int = 0
     skipped_duplicate: int = 0
     skipped_cross_source: int = 0
+    # Passed the shared rules (and so was stored). Whether it suits a given
+    # profile is matching's call, reported separately.
     passed_filter: int = 0
     dropped_filter: int = 0
-    dropped_blacklist: int = 0
-    manual_review: int = 0
     stale: int = 0
     flagged_jd_similar: int = 0
-    # Already-saved postings (found under another profile) that pass the active
-    # profile's filter and were linked to it instead of being re-inserted.
-    linked_existing: int = 0
 
 
 def _is_stale(posted_at: datetime | None, now: datetime) -> bool:
@@ -155,32 +159,24 @@ class _IngestCaches:
     incoming job*, so the cost of a batch grew with the product of the two.
     """
 
-    # Each dedupe key maps to the posting holding it, so a duplicate the active
-    # profile hasn't seen yet can be linked to that posting.
-    # JobPosting.dedupe_hash -> id, for every posting.
-    hashes: dict[str, int]
-    # Non-null JobPosting.cross_source_hash -> id (first holder wins).
-    cross: dict[str, int]
-    # (source, company_id, normalized title) -> id (first holder wins).
-    titles: dict[tuple[str, int, str], int]
+    # JobPosting.dedupe_hash for every posting.
+    hashes: set[str]
+    # Non-null JobPosting.cross_source_hash for every posting.
+    cross: set[str]
+    # (source, company_id, normalized title) for every posting.
+    titles: set[tuple[str, int, str]]
     # (canonical posting id, fingerprint) for postings recent enough to match a
     # near-duplicate JD against. Canonical means the row's ``duplicate_of`` when
     # it is itself a dup, so a later match never links to a link.
     jd: list[tuple[int, str]]
     # company name -> (id, is_blocked)
     companies: dict[str, tuple[int, bool]]
-    # Posting ids already linked to the profile this run ingests for.
-    linked: set[int]
+    # Postings inserted this run, for the post-scrape matching / raw trim.
+    new_ids: list[int] = field(default_factory=list)
 
     @classmethod
-    def load(
-        cls,
-        session: Session,
-        *,
-        now: datetime | None = None,
-        profile_id: int | None = None,
-    ) -> "_IngestCaches":
-        """Snapshot the dedupe state from the DB. Five queries, once per run."""
+    def load(cls, session: Session, *, now: datetime | None = None) -> "_IngestCaches":
+        """Snapshot the dedupe state from the DB. Four queries, once per run."""
         cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=JD_LOOKBACK_DAYS)
         rows = session.exec(
             select(
@@ -190,8 +186,7 @@ class _IngestCaches:
                 JobPosting.location,
                 JobPosting.dedupe_hash,
                 JobPosting.cross_source_hash,
-                JobPosting.id,
-            ).order_by(JobPosting.id)
+            )
         ).all()
         jd_rows = session.exec(
             select(JobPosting.id, JobPosting.duplicate_of, JobPosting.jd_fingerprint)
@@ -201,48 +196,15 @@ class _IngestCaches:
         company_rows = session.exec(
             select(Company.id, Company.name, Company.is_blocked)
         ).all()
-        linked: set[int] = set()
-        if profile_id is not None:
-            linked = set(
-                session.exec(
-                    select(JobProfileLink.job_id).where(
-                        JobProfileLink.search_profile_id == profile_id
-                    )
-                ).all()
-            )
-        cross: dict[str, int] = {}
-        titles: dict[tuple[str, int, str], int] = {}
-        for r in rows:
-            if r[5] is not None:
-                cross.setdefault(r[5], r[6])
-            if r[1] is not None:
-                titles.setdefault((r[0], r[1], normalize_title(r[2], r[3])), r[6])
         return cls(
-            hashes={r[4]: r[6] for r in rows},
-            cross=cross,
-            titles=titles,
+            hashes={r[4] for r in rows},
+            cross={r[5] for r in rows if r[5] is not None},
+            titles={
+                (r[0], r[1], normalize_title(r[2], r[3])) for r in rows if r[1] is not None
+            },
             jd=[(dup_of or pid, fp) for pid, dup_of, fp in jd_rows],
             companies={name: (cid, blocked) for cid, name, blocked in company_rows},
-            linked=linked,
         )
-
-
-def _link_existing(
-    session: Session,
-    posting_id: int,
-    profile_id: int | None,
-    caches: _IngestCaches,
-    stats: IngestStats,
-) -> bool:
-    """Link an already-saved posting to the profile being ingested for, if it
-    isn't yet. Returns True when a link was added (the caller counts it instead
-    of a duplicate skip)."""
-    if profile_id is None or posting_id in caches.linked:
-        return False
-    session.add(JobProfileLink(job_id=posting_id, search_profile_id=profile_id))
-    caches.linked.add(posting_id)
-    stats.linked_existing += 1
-    return True
 
 
 def ingest_one(
@@ -250,17 +212,13 @@ def ingest_one(
     raw: RawJob,
     stats: IngestStats,
     *,
-    filter_config: FilterConfig | None = None,
-    blacklist: frozenset[str] | None = None,
     caches: "_IngestCaches | None" = None,
-    profile_id: int | None = None,
 ) -> None:
-    """Dedupe, filter, and (if it survives) persist one raw job into ``session``.
+    """Dedupe, apply the shared rules, and (if it survives) persist one raw job.
 
-    ``profile_id`` is the search profile this run ingests for. New postings are
-    linked to it, and so is an already-saved posting when the job passes *this*
-    profile's filter: it was saved under another profile and dedupe would
-    otherwise keep it from ever surfacing here. ``None`` skips linking.
+    No profile's rules run here -- see ``matching``. A blacklisted company is
+    therefore stored like any other; each profile's blacklist drops it from that
+    profile's queue at match time.
 
     ``caches`` carries the dedupe state across calls; ``run_ingest`` builds it
     once per run. When omitted it is loaded from ``session`` on every call, which
@@ -268,43 +226,23 @@ def ingest_one(
     handful of rows a test or a one-off script pushes through, not for a real run.
     """
     if caches is None:
-        caches = _IngestCaches.load(session, profile_id=profile_id)
+        caches = _IngestCaches.load(session)
 
     stats.fetched += 1
 
-    # User company blacklist: drop before any other work so a blacklisted
-    # employer never lands in the queue, even the first time we see them (no
-    # Company row need exist yet). Matches on the same normalized key as
-    # cross-source dedupe, so naming variants collapse.
-    if blacklist and normalize_company(raw.company_name) in blacklist:
-        stats.dropped_blacklist += 1
-        return
-
     h = dedupe_hash(raw)
-    stale = _is_stale(raw.posted_at, datetime.now(timezone.utc))
 
-    existing_id = caches.hashes.get(h)
-    if existing_id is not None and (
-        profile_id is None or existing_id in caches.linked or stale
-    ):
-        # Already saved, nothing to link: the cheap path, no filter run.
+    if h in caches.hashes:
         stats.skipped_duplicate += 1
         return
 
-    if stale:
+    if _is_stale(raw.posted_at, datetime.now(timezone.utc)):
         stats.stale += 1
         return
 
-    decision = evaluate(raw, filter_config)
+    decision = evaluate_shared(raw)
     if decision.status == FilterStatus.dropped:
-        if existing_id is not None:
-            stats.skipped_duplicate += 1
-        else:
-            stats.dropped_filter += 1
-        return
-
-    if existing_id is not None:
-        _link_existing(session, existing_id, profile_id, caches, stats)
+        stats.dropped_filter += 1
         return
 
     company_id, is_blocked = _upsert_company(session, raw.company_name, caches)
@@ -317,14 +255,12 @@ def ingest_one(
     # title as a duplicate so we don't flood the queue.
     title_key = (raw.source, company_id, normalize_title(raw.title, raw.location))
     if title_key in caches.titles:
-        if not _link_existing(session, caches.titles[title_key], profile_id, caches, stats):
-            stats.skipped_duplicate += 1
+        stats.skipped_duplicate += 1
         return
 
     cross_h = cross_source_hash(raw)
     if cross_h is not None and cross_h in caches.cross:
-        if not _link_existing(session, caches.cross[cross_h], profile_id, caches, stats):
-            stats.skipped_cross_source += 1
+        stats.skipped_cross_source += 1
         return
 
     jd_fp = jd_simhash(raw.description)
@@ -352,6 +288,7 @@ def ingest_one(
         jd_fingerprint=jd_fp,
         duplicate_of=duplicate_of,
         raw=raw.raw,
+        tags=list(raw.tags),
         company_id=company_id,
     )
     if duplicate_of is not None:
@@ -359,25 +296,20 @@ def ingest_one(
 
     posting.filter_status = decision.status
     posting.filter_reason = decision.reason
-    if decision.status == FilterStatus.passed:
-        stats.passed_filter += 1
-    else:
-        stats.manual_review += 1
+    stats.passed_filter += 1
 
     session.add(posting)
-    # Flush to get the assigned PK: the dedupe caches map keys to it, the profile
-    # link needs it, and it's the canonical target for a later near-duplicate JD.
+    # Flush for the PK: matching needs the new ids, and the row may be the
+    # canonical target for a later near-duplicate JD.
     session.flush()
-    if profile_id is not None:
-        session.add(JobProfileLink(job_id=posting.id, search_profile_id=profile_id))
-        caches.linked.add(posting.id)
+    caches.new_ids.append(posting.id)
 
     # Keep the caches level with the session, so rows added earlier in this run
     # dedupe against rows added later exactly as they would have via a re-query.
-    caches.hashes[h] = posting.id
+    caches.hashes.add(h)
     if cross_h is not None:
-        caches.cross.setdefault(cross_h, posting.id)
-    caches.titles[title_key] = posting.id
+        caches.cross.add(cross_h)
+    caches.titles.add(title_key)
     if jd_fp is not None:
         caches.jd.append((duplicate_of or posting.id, jd_fp))
 
@@ -406,10 +338,7 @@ def _write_batch(
     batch: list[RawJob],
     stats: IngestStats,
     *,
-    filter_config: FilterConfig | None,
-    blacklist: frozenset[str] | None,
     caches: _IngestCaches,
-    profile_id: int | None = None,
 ) -> None:
     """Persist one batch in its own short-lived session + transaction.
 
@@ -420,15 +349,7 @@ def _write_batch(
     with Session(engine()) as session:
         try:
             for raw in batch:
-                ingest_one(
-                    session,
-                    raw,
-                    stats,
-                    filter_config=filter_config,
-                    blacklist=blacklist,
-                    caches=caches,
-                    profile_id=profile_id,
-                )
+                ingest_one(session, raw, stats, caches=caches)
             session.commit()
         except Exception:
             session.rollback()
@@ -441,11 +362,14 @@ def run_ingest(
     progress_cb: Callable[[int, int, str, IngestStats], None] | None = None,
     *,
     batch_size: int = INGEST_BATCH_SIZE,
+    match_cb: Callable[[str, "matching.MatchStats"], None] | None = None,
 ) -> IngestStats:
-    """Fetch, dedupe, filter, and persist from every source.
+    """Fetch, dedupe, apply the shared rules, and persist from every source, then
+    match every profile against what's new.
 
     ``progress_cb(done, total, source_name, cumulative_stats)`` is invoked after
-    each source finishes (optional).
+    each source finishes; ``match_cb(profile_name, stats)`` after each profile is
+    matched (both optional).
 
     **No DB transaction is ever held across network I/O.** Adapters fetch lazily —
     one HTTP request per company slug — so writing as we consume the generator
@@ -468,38 +392,64 @@ def run_ingest(
     """
     stats = IngestStats()
     with Session(engine()) as session:
-        filter_config = load_active_config(session)
-        # The active profile owns every posting this run saves or links. Created
-        # on a fresh install so the first ingest is already scoped.
-        profile_id = load_or_create_profile(session).id
+        # A fresh install has no profile yet; make the Default one so this first
+        # scrape has somebody to match for.
+        profiles.load_or_create_profile(session)
         session.commit()
-        blacklist = load_blacklisted_names(session)
         if sources is None:
-            sources = get_all_sources(filter_config=filter_config)
-        caches = _IngestCaches.load(session, profile_id=profile_id)
+            # Adapters that pre-skip detail fetches by title may only skip a title
+            # every profile would reject.
+            configs = [config_for(p) for p in session.exec(select(SearchProfile)).all()]
+            sources = get_all_sources(filter_config=union_title_config(configs))
+        caches = _IngestCaches.load(session)
 
     total = len(sources)
     for i, source in enumerate(sources):
         try:
             for batch in _batched(source.fetch(), batch_size):
-                _write_batch(
-                    batch,
-                    stats,
-                    filter_config=filter_config,
-                    blacklist=blacklist,
-                    caches=caches,
-                    profile_id=profile_id,
-                )
+                _write_batch(batch, stats, caches=caches)
         except Exception as exc:  # noqa: BLE001 - one source can't abort the run
             log.warning("source %s failed during ingest, skipping: %s", source.name, exc)
             # A rolled-back batch leaves the caches holding rows that were never
             # committed, which would make the next source skip real jobs as
             # duplicates. Reload from what actually landed.
+            new_ids = caches.new_ids
             with Session(engine()) as session:
-                caches = _IngestCaches.load(session, profile_id=profile_id)
+                caches = _IngestCaches.load(session)
+            # Keep the ids already committed; a rolled-back batch's ids may name
+            # no row, which matching and the trim below both tolerate.
+            caches.new_ids = new_ids
         if progress_cb is not None:
             progress_cb(i + 1, total, source.name, stats)
+
+    matching.match_all_profiles(progress_cb=match_cb)
+    _trim_unmatched_raw(caches.new_ids)
     return stats
+
+
+def _trim_unmatched_raw(job_ids: list[int]) -> int:
+    """Drop the source payload (``raw``, ~14 KB each) from this run's postings
+    that no profile matched. Most stored postings fail every profile's personal
+    rules, and ``raw`` is only kept for debugging a parse; the description stays,
+    so a profile added later can still be matched against them. Batched, short
+    transactions like the rest of ingest."""
+    trimmed = 0
+    for start in range(0, len(job_ids), 500):
+        chunk = job_ids[start : start + 500]
+        matched = select(JobProfileLink.job_id).where(
+            JobProfileLink.filter_status != FilterStatus.dropped
+        )
+        with Session(engine()) as session:
+            result = session.execute(
+                update(JobPosting)
+                .where(JobPosting.id.in_(chunk))  # type: ignore[union-attr]
+                .where(JobPosting.id.not_in(matched))  # type: ignore[union-attr]
+                .values(raw={})
+                .execution_options(all_profiles=True)
+            )
+            session.commit()
+            trimmed += result.rowcount or 0
+    return trimmed
 
 
 def archive_existing_duplicates(session: Session) -> int:

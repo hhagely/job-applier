@@ -19,9 +19,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from job_applier.models.db import (
+    FilterStatus,
     JobProfileLink,
     Resume,
     SearchProfile,
@@ -210,21 +212,35 @@ def update_profile_meta(
 
 
 def delete_profile(session: Session, profile_id: int) -> None:
-    """Delete an inactive profile and its job links.
+    """Delete an inactive profile and everything that is only its: verdicts,
+    statuses + notes, scores + history, blacklist, preferences, and tailored
+    drafts on disk. Shared postings and uploaded resumes stay.
 
-    The postings themselves stay — an applied job is history regardless of which
-    profile found it — and remain reachable under "All profiles".
+    Profiles can be different people, so a profile's rows are that person's
+    data; leaving them behind would orphan rows pointing at a deleted profile.
     """
+    import shutil
+
+    from job_applier import drafts
+    from job_applier.models.db import (
+        PROFILE_SCOPED,
+        AppSetting,
+    )
+
     p = get_profile(session, profile_id)
     active = active_profile(session)
     if active is not None and active.id == p.id:
         raise ProfileError("can't delete the active profile — switch to another first")
-    for link in session.exec(
-        select(JobProfileLink).where(JobProfileLink.search_profile_id == p.id)
-    ).all():
-        session.delete(link)
+    for model in PROFILE_SCOPED:
+        session.execute(
+            delete(model)
+            .where(model.profile_id == p.id)
+            .execution_options(all_profiles=True)
+        )
+    session.execute(delete(AppSetting).where(AppSetting.key.startswith(f"pref:{p.id}:")))  # type: ignore[union-attr]
     session.delete(p)
     session.commit()
+    shutil.rmtree(drafts.settings.applications_dir / f"profile-{p.id}", ignore_errors=True)
 
 
 def adopt_uploaded_resume(session: Session, resume_id: int) -> None:
@@ -257,8 +273,14 @@ def adopt_legacy_drafts() -> int:
     return drafts.move_legacy_draft_dirs(pid)
 
 
-def profile_job_ids(profile_id: int):
-    """Subquery of posting ids linked to ``profile_id``, for ``IN (...)`` filters."""
-    return select(JobProfileLink.job_id).where(
-        JobProfileLink.search_profile_id == profile_id
+def queue_job_ids(session: Session, status: Optional[FilterStatus] = None):
+    """Subquery of the posting ids in this session's profile's queue, for
+    ``IN (...)`` filters: its verdict is ``status``, or anything but ``dropped``
+    when ``status`` is None. Postings the profile hasn't been matched against, or
+    that its rules dropped, are never in its queue."""
+    stmt = select(JobProfileLink.job_id).where(
+        JobProfileLink.profile_id == session_profile_id(session)
     )
+    if status is None:
+        return stmt.where(JobProfileLink.filter_status != FilterStatus.dropped)
+    return stmt.where(JobProfileLink.filter_status == status)

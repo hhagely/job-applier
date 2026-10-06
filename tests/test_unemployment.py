@@ -10,6 +10,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from job_applier.api.app import app
 from job_applier.models import JobPosting
 from job_applier.models.db import (
+    JobProfileLink,
+    session_profile_id,
     Application,
     ApplicationStatus,
     FilterStatus,
@@ -48,6 +50,9 @@ def _seed_job(engine, *, source_id: str = "u-1") -> int:
             filter_status=FilterStatus.passed,
         )
         s.add(job)
+        s.flush()
+        # In the current profile's queue: matching gave it a passed verdict.
+        s.add(JobProfileLink(job_id=job.id, profile_id=session_profile_id(s, create=True)))
         s.commit()
         s.refresh(job)
         return job.id

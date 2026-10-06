@@ -70,7 +70,6 @@ function data(overrides: Record<string, unknown> = {}) {
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		profile: null,
 		profiles: [] as SearchProfile[],
-		profile_id: null as number | null,
 		...overrides
 	};
 }

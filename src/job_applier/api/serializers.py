@@ -96,8 +96,10 @@ def job_summary(
         employment_type=j.employment_type,
         posted_at=j.posted_at,
         ingested_at=j.ingested_at,
-        filter_status=j.filter_status,
-        filter_reason=j.filter_reason,
+        # The active profile's own verdict when it has one (matching writes it);
+        # the shared verdict otherwise (e.g. a Cmd-K hit it never matched).
+        filter_status=j.link.filter_status if j.link else j.filter_status,
+        filter_reason=j.link.filter_reason if j.link else j.filter_reason,
         company=company_out(j.company),
         score=score_out(
             j.score,
