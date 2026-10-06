@@ -7,7 +7,6 @@
 	import { type ApplicationStatus, type Job, type StatusFacet } from '$lib/api';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import { defaultFollowupDate } from '$lib/date';
-	import { isElectron } from '$lib/desktop';
 	import { draftCart } from '$lib/draftCart.svelte';
 	import { isUsedForUnemployment } from '$lib/jobFilters';
 	import {
@@ -208,17 +207,9 @@
 		if (urls.length > OPEN_ALL_CONFIRM_AT && !confirm(`Open ${urls.length} postings in your browser?`)) {
 			return;
 		}
-		// In the desktop shell these are handed to the OS browser by main.js's
-		// window-open handler, which denies the Electron window — so window.open
-		// returns null there even on success, and only a plain browser's null
-		// means the pop-up blocker ate the tab.
-		let blocked = 0;
-		for (const url of urls) {
-			if (!window.open(url, '_blank', 'noopener') && !isElectron()) blocked++;
-		}
-		if (blocked > 0) {
-			toast(`Your browser blocked ${blocked} of ${urls.length} tabs — allow pop-ups for this site.`);
-		}
+		// main.js's window-open handler hands each URL to the OS browser and denies
+		// the Electron window, so window.open's return value says nothing here.
+		for (const url of urls) window.open(url, '_blank', 'noopener');
 	}
 
 	const allVisibleSelected = $derived(

@@ -252,15 +252,22 @@ make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
 
-Then run the two halves in two terminals:
+Then run the desktop app from source:
 
 ```sh
-make api    # FastAPI  → http://127.0.0.1:8000
-make web    # SvelteKit → http://localhost:5174
+make electron       # builds the UI, starts the backend, opens the app window
 ```
 
-Open http://localhost:5174 and follow the onboarding wizard. `make app-dev` is a
-one-command alternative that boots both on free ports and opens a browser.
+and follow the onboarding wizard. The desktop app is the only supported way to
+use job-applier; the targets below open the same UI in a plain browser and are
+for working on the app, not for everyday use (browser-only quirks such as
+pop-up blocking aren't handled).
+
+```sh
+make electron-dev   # hot-reload dev shell: backend + Vite + Electron
+make api            # FastAPI  → http://127.0.0.1:8000   } UI in a browser,
+make web            # SvelteKit → http://localhost:5174  } for dev and testing
+```
 
 The day-to-day flow all lives in the UI, but some maintenance has no button:
 
@@ -333,7 +340,7 @@ The shared rules, always applied:
 - **Not crypto / blockchain / web3** — matched against the whole posting, not just
   the title.
 
-Then the per-profile rules, edited at http://localhost:5174/search:
+Then the per-profile rules, edited on the **Search profile** page:
 
 - **Company blacklist (checked first)** — a job whose employer is on the profile's
   blacklist is dropped for that profile. Matching normalizes the company name
@@ -416,7 +423,7 @@ as a wide net for *valid* slugs, not relevant ones. Failed fetches during
 ingest log a warning but don't break the run.
 
 **Checking or adding one company by hand.** Use **Check a company** on
-http://localhost:5174/search: type the employer's name and the app derives slug
+the **Search profile** page: type the employer's name and the app derives slug
 candidates and probes every source it can check from a bare slug (applying the
 same `board_exists` rule above), or paste the URL of their job board for an
 exact match. A URL is the only way to add a Workday tenant, whose slug packs
@@ -486,8 +493,10 @@ so the `baseline → tailored` delta and prior-resume scores remain visible.
 | ------------------------ | ----------------------------------------------------------------- |
 | `make setup`             | `uv sync` + `npm install` for the web app                         |
 | `make api`               | Run FastAPI on `:8000` with auto-reload                           |
-| `make web`               | Run SvelteKit dev server on `:5174`                               |
-| `make app-dev`           | Boot API + built web server on free ports and open a browser      |
+| `make electron`          | Run the desktop app from source                                   |
+| `make electron-dev`      | Desktop app with hot reload (backend + Vite + Electron)           |
+| `make web`               | Run SvelteKit dev server on `:5174` (browser; dev/testing only)   |
+| `make app-dev`           | Boot API + built web server and open a browser (dev/testing only) |
 | `make ingest`            | Pull jobs from configured sources                                 |
 | `make diagnose-filter`   | Dry-run every source and report what the hard filter drops        |
 | `make refresh-slugs`     | Discover new Greenhouse/Lever/Ashby/Workable/SmartRecruiters slugs from SimplifyJobs |
