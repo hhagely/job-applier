@@ -16,7 +16,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
-from job_applier import profiles, services
+from job_applier import matching, profiles, services
+from job_applier.ai import tasks
 from job_applier.api.schemas import (
     SearchProfileBody,
     SearchProfileCreate,
@@ -65,6 +66,34 @@ def profile_out(
 _profile_out = profile_out
 
 
+def start_rematch(profile_id: int) -> str:
+    """Re-match one profile against every stored posting, in the background.
+
+    Called whenever what the profile accepts changes (criteria, home state,
+    blacklist) or a profile is created. Local only, no scrape, but ~10 s over a
+    full store, so it's a task: progress rides the shared task stream as kind
+    ``match`` (ref = profile id), and the layout refreshes the queue when it
+    settles. Runs in the network lane, so it queues behind an in-flight scrape
+    rather than racing its writes.
+    """
+
+    def _run(state: tasks.TaskState) -> None:
+        def _progress(done: int, total: int) -> None:
+            state.total = total
+            state.done = done
+            state.publish()
+
+        stats = matching.match_profile(profile_id, rematch=True, progress_cb=_progress)
+        state.results.append(
+            f"{stats.passed} in your queue, {stats.manual} to review, "
+            f"{stats.dropped} filtered out"
+        )
+
+    return tasks.start_task(
+        "match", 0, _run, ref=str(profile_id), profile_id=profile_id
+    )
+
+
 @router.get("/api/search-profiles", response_model=list[SearchProfileOut])
 def list_search_profiles(session: Session = Depends(get_session)):
     active = profiles.active_profile(session)
@@ -89,6 +118,8 @@ def create_search_profile(
         raise HTTPException(404, str(exc)) from exc
     except profiles.ProfileError as exc:
         raise HTTPException(422, str(exc)) from exc
+    # A new person gets a full queue from what's already stored: no scrape.
+    start_rematch(p.id)
     return _profile_out(p, is_active=False)
 
 
@@ -155,6 +186,7 @@ def put_search_profile(
     session.add(p)
     session.commit()
     session.refresh(p)
+    start_rematch(p.id)
     return _profile_out(p)
 
 

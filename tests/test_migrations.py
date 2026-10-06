@@ -262,7 +262,7 @@ def test_migration_makes_existing_profile_the_active_default(tmp_path, monkeypat
             "SELECT name, is_active, resume_id FROM searchprofile"
         ).fetchall() == [("Default", 1, 2)]
         assert conn.execute(
-            "SELECT job_id, search_profile_id FROM jobprofilelink ORDER BY job_id"
+            "SELECT job_id, profile_id FROM jobprofilelink ORDER BY job_id"
         ).fetchall() == [(1, 7), (2, 7)]
     finally:
         conn.close()
@@ -295,7 +295,7 @@ def test_migration_creates_default_profile_for_orphaned_postings(tmp_path, monke
         rows = conn.execute("SELECT id, name, is_active FROM searchprofile").fetchall()
         assert [(r[1], r[2]) for r in rows] == [("Default", 1)]
         assert conn.execute(
-            "SELECT job_id, search_profile_id FROM jobprofilelink"
+            "SELECT job_id, profile_id FROM jobprofilelink"
         ).fetchall() == [(1, rows[0][0])]
     finally:
         conn.close()

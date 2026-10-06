@@ -157,26 +157,23 @@ def list_jobs(
     unscored_only: bool = False,
     include_duplicates: bool = False,
     exclude_archived: bool = False,
-    profile_id: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
     session: Session = Depends(get_session),
 ):
-    """Queue listing. ``profile_id`` limits it to the postings that search profile
-    surfaced; omitted means every profile's postings."""
+    """The active profile's queue: postings its rules passed (``filter_status``
+    is *its* verdict; ``None`` means passed or manual)."""
     # Eager-load the 1:1/n:1 relationships _job_summary reads, so rendering N rows
     # is a constant handful of queries instead of ~3 lazy loads per row (N+1).
     stmt = select(JobPosting).options(
         selectinload(JobPosting.company),
         selectinload(JobPosting.score),
         selectinload(JobPosting.application),
+        selectinload(JobPosting.link),
     )
-    if filter_status is not None:
-        stmt = stmt.where(JobPosting.filter_status == filter_status)
+    stmt = stmt.where(JobPosting.id.in_(profiles.queue_job_ids(session, filter_status)))  # type: ignore[union-attr]
     if not include_duplicates:
         stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
-    if profile_id is not None:
-        stmt = stmt.where(JobPosting.id.in_(profiles.profile_job_ids(profile_id)))  # type: ignore[union-attr]
     stmt = stmt.order_by(JobPosting.ingested_at.desc())
     jobs = list(session.exec(stmt).all())
 
@@ -210,7 +207,6 @@ def list_jobs(
 def job_status_counts(
     filter_status: Optional[FilterStatus] = FilterStatus.passed,
     include_duplicates: bool = False,
-    profile_id: Optional[int] = None,
     session: Session = Depends(get_session),
 ):
     """Per-status totals across the whole queue, for the filter chips.
@@ -225,12 +221,9 @@ def job_status_counts(
         .outerjoin(Application, Application.job_id == JobPosting.id)  # type: ignore[arg-type]
         .group_by(Application.status)  # type: ignore[arg-type]
     )
-    if filter_status is not None:
-        stmt = stmt.where(JobPosting.filter_status == filter_status)
+    stmt = stmt.where(JobPosting.id.in_(profiles.queue_job_ids(session, filter_status)))  # type: ignore[union-attr]
     if not include_duplicates:
         stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
-    if profile_id is not None:
-        stmt = stmt.where(JobPosting.id.in_(profiles.profile_job_ids(profile_id)))  # type: ignore[union-attr]
 
     counts = {facet: 0 for facet in StatusFacet}
     for raw_status, n in session.exec(stmt).all():  # type: ignore[call-overload]
@@ -579,9 +572,13 @@ def _run_ingest_task(state: "ai_tasks.TaskState") -> None:
         )
         state.publish()
 
-    stats = ingest.run_ingest(progress_cb=_cb)
+    def _matched(name: str, m) -> None:  # noqa: ANN001
+        state.results.append(f"{name}: {m.passed} new in queue, {m.manual} to review")
+        state.publish()
+
+    stats = ingest.run_ingest(progress_cb=_cb, match_cb=_matched)
     state.results.append(
-        f"done: {stats.inserted} new, {stats.passed_filter} passed, {stats.fetched} fetched"
+        f"done: {stats.fetched} fetched, {stats.inserted} new postings stored"
     )
 
 
