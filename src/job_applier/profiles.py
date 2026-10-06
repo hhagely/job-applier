@@ -5,11 +5,10 @@ filter at ingest, scopes the queue / pending-match / stale-score adoption to the
 postings it surfaced (``JobProfileLink``), and owns the active resume.
 
 **Invariant:** the active profile's ``resume_id`` is the active resume
-(``Resume.is_active``). Everything that scores or drafts reads
-``Resume.is_active``, so rather than teach each of them about profiles, the two
-places that can break the invariant keep it: ``activate_profile`` moves the
-active resume to the profile's, and a resume upload (``adopt_uploaded_resume``)
-points the active profile at the new file.
+(``Resume.is_active``). Every reader goes through ``active_resume``, which
+resolves via the profile; ``set_active_resume`` is the only writer of the flag,
+called by ``activate_profile``, ``update_profile_meta`` and the resume upload
+(which also calls ``adopt_uploaded_resume`` to point the profile at the file).
 
 Depends only on the models so the filter, ingest, and the services layer can all
 import it without a cycle.
@@ -51,10 +50,34 @@ def active_profile(session: Session) -> Optional[SearchProfile]:
     return session.get(SearchProfile, pid) if pid is not None else None
 
 
-def _active_resume_id(session: Session) -> Optional[int]:
+def _flagged_resume_id(session: Session) -> Optional[int]:
     return session.exec(
         select(Resume.id).where(Resume.is_active == True)  # noqa: E712
     ).first()
+
+
+def active_resume(session: Session) -> Optional[Resume]:
+    """The resume this session's profile scores and drafts with — the one
+    reader of "which resume is active" (staleness, scoring, drafting).
+
+    Resolved through the profile rather than ``Resume.is_active`` alone, so a
+    background task pinned to one person keeps using their resume even if the
+    user switches profiles (which moves ``is_active``) mid-run. Falls back to the
+    flagged row when the profile has no resume on file.
+    """
+    profile = active_profile(session)
+    if profile is not None and profile.resume_id is not None:
+        resume = session.get(Resume, profile.resume_id)
+        if resume is not None:
+            return resume
+    return session.exec(
+        select(Resume).where(Resume.is_active == True)  # noqa: E712
+    ).first()
+
+
+def active_resume_id(session: Session) -> Optional[int]:
+    resume = active_resume(session)
+    return resume.id if resume is not None else None
 
 
 def load_or_create_profile(session: Session) -> SearchProfile:
@@ -65,7 +88,7 @@ def load_or_create_profile(session: Session) -> SearchProfile:
     p = active_profile(session)
     if p is None:
         p = SearchProfile(
-            name="Default", is_active=True, resume_id=_active_resume_id(session)
+            name="Default", is_active=True, resume_id=_flagged_resume_id(session)
         )
         session.add(p)
         session.flush()
@@ -98,7 +121,7 @@ def create_profile(
     A blank profile starts on the current active resume, so activating it never
     leaves the app without one.
     """
-    p = SearchProfile(name=_clean_name(name), resume_id=_active_resume_id(session))
+    p = SearchProfile(name=_clean_name(name), resume_id=_flagged_resume_id(session))
     if clone_from is not None:
         src = get_profile(session, clone_from)
         p.role_titles = list(src.role_titles or [])
@@ -114,7 +137,9 @@ def create_profile(
     return p
 
 
-def _set_active_resume(session: Session, resume_id: int) -> None:
+def set_active_resume(session: Session, resume_id: int) -> None:
+    """Flag ``resume_id`` as the active resume and demote every other row (caller
+    commits). The only writer of ``Resume.is_active``."""
     if session.get(Resume, resume_id) is None:
         raise LookupError(f"resume {resume_id} not found")
     for r in session.exec(select(Resume).where(Resume.is_active == True)).all():  # noqa: E712
@@ -129,8 +154,8 @@ def _set_active_resume(session: Session, resume_id: int) -> None:
 def activate_profile(session: Session, profile_id: int) -> SearchProfile:
     """Make ``profile_id`` the active profile and its resume the active resume.
 
-    A profile with no resume yet adopts the current one rather than leaving the
-    app resume-less. Scores then read stale or fresh by the usual id comparison —
+    A profile with no resume yet (or a deleted one) adopts the current one rather
+    than leaving the app resume-less. Scores then read stale or fresh by the usual id comparison —
     switching back to a profile brings its scores back without re-running them.
     """
     target = get_profile(session, profile_id)
@@ -141,10 +166,12 @@ def activate_profile(session: Session, profile_id: int) -> SearchProfile:
             p.is_active = False
             session.add(p)
     target.is_active = True
-    if target.resume_id is None:
-        target.resume_id = _active_resume_id(session)
-    elif session.get(Resume, target.resume_id) is not None:
-        _set_active_resume(session, target.resume_id)
+    if target.resume_id is None or session.get(Resume, target.resume_id) is None:
+        # No resume (or its row is gone): adopt the current one, so the profile
+        # and ``Resume.is_active`` never disagree.
+        target.resume_id = _flagged_resume_id(session)
+    if target.resume_id is not None:
+        set_active_resume(session, target.resume_id)
     target.updated_at = _now()
     session.add(target)
     session.commit()
@@ -174,7 +201,7 @@ def update_profile_meta(
         p.resume_id = resume_id
         active = active_profile(session)
         if active is not None and active.id == p.id:
-            _set_active_resume(session, resume_id)
+            set_active_resume(session, resume_id)
     p.updated_at = _now()
     session.add(p)
     session.commit()

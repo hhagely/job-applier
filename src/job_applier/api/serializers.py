@@ -11,6 +11,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
+from job_applier import profiles
 from job_applier.api.schemas import ApplicationOut, CompanyOut, JobOut, ScoreOut
 from job_applier.models.db import (
     Application,
@@ -72,9 +73,7 @@ def resume_filename_map(session: Session) -> dict[int, str]:
 
 
 def active_resume_id(session: Session) -> Optional[int]:
-    return session.exec(
-        select(Resume.id).where(Resume.is_active == True)  # noqa: E712
-    ).first()
+    return profiles.active_resume_id(session)
 
 
 def job_summary(

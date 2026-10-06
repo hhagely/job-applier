@@ -31,7 +31,7 @@ def _resume_out(r: Resume) -> ResumeOut:
 
 
 def _active_resume(session: Session) -> Resume:
-    r = session.exec(select(Resume).where(Resume.is_active == True)).first()  # noqa: E712
+    r = profiles.active_resume(session)
     if r is None:
         raise HTTPException(404, "no active resume — POST /api/resume to upload")
     return r
@@ -63,20 +63,16 @@ async def upload_resume(
 
     pdf_path = resume_io.save_pdf(pdf_bytes, file.filename)
 
-    # Demote any previously-active resumes (history is preserved).
-    for r in session.exec(select(Resume).where(Resume.is_active == True)).all():  # noqa: E712
-        r.is_active = False
-        session.add(r)
-
     resume = Resume(
         original_filename=file.filename,
         pdf_path=str(pdf_path),
         extracted_text=text,
         page_count=page_count,
-        is_active=True,
     )
     session.add(resume)
     session.flush()
+    # Demotes the previously-active resume (history is preserved).
+    profiles.set_active_resume(session, resume.id)
     profiles.adopt_uploaded_resume(session, resume.id)
     session.commit()
     session.refresh(resume)

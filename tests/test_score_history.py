@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from job_applier import profiles
 from job_applier.api.app import app
 from job_applier.models import JobPosting, Resume
 from job_applier.models.db import FilterStatus, get_session
@@ -73,13 +74,12 @@ def test_rescoring_snapshots_previous_score_with_resume(client):
     assert first.json()["resume_id"] == r1
     assert first.json()["resume_filename"] == "v1.pdf"
 
-    # Swap active resume; re-score with new payload.
+    # Swap active resume the way an upload does; re-score with new payload.
+    r2 = _seed_resume(engine, filename="v2.pdf", active=False)
     with Session(engine) as s:
-        old = s.get(Resume, r1)
-        old.is_active = False
-        s.add(old)
+        profiles.set_active_resume(s, r2)
+        profiles.adopt_uploaded_resume(s, r2)
         s.commit()
-    r2 = _seed_resume(engine, filename="v2.pdf", active=True)
 
     second = c.post(
         f"/api/jobs/{job_id}/score",
