@@ -20,11 +20,12 @@ router = APIRouter(tags=["resume"])
 
 
 def _resume_out(r: Resume) -> ResumeOut:
+    # Only ever called with the active profile's resume in use.
     return ResumeOut(
         id=r.id,
         original_filename=r.original_filename,
         page_count=r.page_count,
-        is_active=r.is_active,
+        is_active=True,
         uploaded_at=r.uploaded_at,
         extracted_text=r.extracted_text,
     )
@@ -81,16 +82,16 @@ async def upload_resume(
 
 @router.get("/api/resumes", response_model=list[ResumeSummaryOut])
 def list_resumes(session: Session = Depends(get_session)):
-    """Every uploaded resume, newest first, for the per-profile resume picker.
-
-    Leaves out the extracted text so the list stays light.
+    """The active profile's uploaded resumes, newest first; ``is_active`` marks
+    the one in use. Leaves out the extracted text so the list stays light.
     """
+    in_use = profiles.active_resume_id(session)
     rows = session.exec(select(Resume).order_by(Resume.uploaded_at.desc())).all()
     return [
         ResumeSummaryOut(
             id=r.id,
             original_filename=r.original_filename,
-            is_active=r.is_active,
+            is_active=r.id == in_use,
             uploaded_at=r.uploaded_at,
         )
         for r in rows

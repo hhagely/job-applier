@@ -21,9 +21,9 @@ from job_applier.models.db import (
     Resume,
     SearchProfile,
     get_session,
-    session_profile_id,
     set_setting,
 )
+from job_applier.models.scoping import session_profile_id
 
 SCORE_JSON = (
     '{"score": 88, "rubric": {"skills_overlap": {"points": 28, "note": "x"}, '

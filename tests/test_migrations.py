@@ -522,14 +522,14 @@ def test_failed_rebuild_leaves_the_legacy_tables_intact(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "db_path", db_path)
     monkeypatch.setattr(models.db, "_engine", None)
-    real_rebuild = models.db._rebuild_with_profile
+    real_rebuild = models.migrations._rebuild_with_profile
 
     def failing_rebuild(conn, table, pid, old_cols):  # noqa: ANN001
         real_rebuild(conn, table, pid, old_cols)
         if table == "matchscore":
             raise RuntimeError("disk full")
 
-    monkeypatch.setattr(models.db, "_rebuild_with_profile", failing_rebuild)
+    monkeypatch.setattr(models.migrations, "_rebuild_with_profile", failing_rebuild)
     with pytest.raises(RuntimeError):
         models.db.create_db_and_tables()
     models.db.engine().dispose()
@@ -546,7 +546,7 @@ def test_failed_rebuild_leaves_the_legacy_tables_intact(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    monkeypatch.setattr(models.db, "_rebuild_with_profile", real_rebuild)
+    monkeypatch.setattr(models.migrations, "_rebuild_with_profile", real_rebuild)
     models.db.create_db_and_tables()
     conn = sqlite3.connect(db_path)
     try:
@@ -658,25 +658,25 @@ def test_migrated_legacy_tables_have_every_model_column(tmp_path, monkeypatch, t
     missing = model_cols - _cols(db_path, table)
     assert not missing, (
         f"{table} is missing {sorted(missing)} after migration — add an "
-        f"_ensure_* helper for it in models/db.py (a fresh install would hide "
+        f"_ensure_* helper for it in models/migrations.py (a fresh install would hide "
         f"this, an upgraded DB would not)."
     )
 
 
 def test_no_ensure_helper_is_orphaned():
-    """Every ``_ensure_*`` migration helper defined in models/db.py must be called
-    from ``create_db_and_tables``; an orphaned helper silently skips its migration
+    """Every ``_ensure_*`` migration helper defined in models/migrations.py must be
+    called from ``migrations.run``; an orphaned helper silently skips its migration
     on every existing DB."""
     import inspect
 
-    from job_applier.models import db
+    from job_applier.models import migrations
 
     helpers = [
         name
-        for name in dir(db)
-        if name.startswith("_ensure_") and callable(getattr(db, name))
+        for name in dir(migrations)
+        if name.startswith("_ensure_") and callable(getattr(migrations, name))
     ]
-    assert helpers, "expected _ensure_* migration helpers in models/db.py"
-    startup_src = inspect.getsource(db.create_db_and_tables)
+    assert helpers, "expected _ensure_* migration helpers in models/migrations.py"
+    startup_src = inspect.getsource(migrations.run)
     orphaned = [h for h in helpers if h not in startup_src]
     assert not orphaned, f"migration helpers never called from startup: {orphaned}"

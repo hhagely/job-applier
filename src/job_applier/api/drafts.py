@@ -17,7 +17,8 @@ from job_applier.ai import tasks as ai_tasks
 from job_applier.api import ai as ai_endpoints
 from job_applier.api.deps import require_ai_ready, require_job
 from job_applier.api.schemas import DraftIn, DraftOut, StartTaskOut
-from job_applier.models.db import JobPosting, get_session, session_profile_id
+from job_applier.models.db import JobPosting, get_session
+from job_applier.models.scoping import session_profile_id
 from job_applier.pdf import PdfRendererUnavailable
 
 router = APIRouter(tags=["drafts"])

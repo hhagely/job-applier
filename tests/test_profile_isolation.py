@@ -17,13 +17,8 @@ from job_applier.ai import tasks
 from job_applier.api.app import app
 from job_applier.config import settings
 from job_applier.models import Application, JobPosting, JobProfileLink, MatchScore
-from job_applier.models.db import (
-    AppSetting,
-    FilterStatus,
-    current_profile_id,
-    get_session,
-    session_profile_id,
-)
+from job_applier.models.db import AppSetting, FilterStatus, get_session
+from job_applier.models.scoping import current_profile_id, session_profile_id
 
 
 @pytest.fixture

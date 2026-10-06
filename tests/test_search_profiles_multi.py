@@ -301,3 +301,53 @@ def test_use_resume_endpoint_switches_only_to_the_profiles_own(client, engine):
     ]
     assert client.post(f"/api/resumes/{theirs_id}/use").status_code == 404
     assert {x["id"] for x in client.get("/api/resumes").json()} == {first_id, second_id}
+
+
+def _flagged(session: Session) -> list[int]:
+    session.expire_all()
+    return [
+        r.id
+        for r in session.exec(
+            select(Resume).where(Resume.is_active == True).execution_options(all_profiles=True)  # noqa: E712
+        ).all()
+    ]
+
+
+def test_the_active_flag_always_mirrors_the_profiles_resume(session):
+    # resume_id is the source of truth; Resume.is_active only mirrors it. Walk
+    # every writer and check the mirror never disagrees with what readers use.
+    first = _resume(session, "first.pdf")
+    a = profiles.load_or_create_profile(session)
+    session.commit()
+    assert profiles.active_resume_id(session) == first.id  # newest own, flag unset
+
+    second = _resume(session, "second.pdf")
+    profiles.set_active_resume(session, second.id)
+    profiles.adopt_uploaded_resume(session, second.id)  # what the upload does
+    session.commit()
+    assert _flagged(session) == [profiles.active_resume_id(session)] == [second.id]
+
+    profiles.update_profile_meta(session, a.id, resume_id=first.id)
+    assert _flagged(session) == [profiles.active_resume_id(session)] == [first.id]
+
+    b = profiles.create_profile(session, name="B", clone_from=a.id)
+    profiles.activate_profile(session, b.id)
+    assert _flagged(session) == [profiles.active_resume_id(session)] == [b.resume_id]
+
+    blank = profiles.create_profile(session, name="Blank")
+    profiles.activate_profile(session, blank.id)
+    assert _flagged(session) == [] and profiles.active_resume_id(session) is None
+
+    profiles.activate_profile(session, a.id)
+    assert _flagged(session) == [profiles.active_resume_id(session)] == [first.id]
+
+
+def test_a_stray_flag_never_decides_the_resume(session):
+    # Even if the mirror is wrong (a hand edit, an old row), readers follow the profile.
+    mine = _resume(session, "mine.pdf")
+    p = profiles.load_or_create_profile(session)
+    session.commit()
+    other = profiles.create_profile(session, name="Other")
+    _resume(session, "theirs.pdf", active=True, profile_id=other.id)
+    assert p.resume_id == mine.id
+    assert profiles.active_resume_id(session) == mine.id

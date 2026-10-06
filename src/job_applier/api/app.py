@@ -60,9 +60,9 @@ from job_applier.models.db import (
     engine,
     get_session,
     get_setting,
-    session_profile_id,
     set_setting,
 )
+from job_applier.models.scoping import session_profile_id
 from job_applier.sources import refresh as refresh_mod
 from job_applier.sources.refresh import refresh_slugs, seed_if_empty
 from job_applier.updates import check_for_update

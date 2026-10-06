@@ -11,12 +11,12 @@ from job_applier.api.app import app
 from job_applier.models import JobPosting
 from job_applier.models.db import (
     JobProfileLink,
-    session_profile_id,
     Application,
     ApplicationStatus,
     FilterStatus,
     get_session,
 )
+from job_applier.models.scoping import session_profile_id
 
 
 @pytest.fixture

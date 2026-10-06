@@ -19,7 +19,6 @@ from job_applier.api.app import COMPANY_CHECKED_KEY, app
 from job_applier.config import settings
 from job_applier.models.db import (
     JobProfileLink,
-    session_profile_id,
     Application,
     ApplicationStatus,
     Company,
@@ -29,6 +28,7 @@ from job_applier.models.db import (
     get_session,
     set_setting,
 )
+from job_applier.models.scoping import session_profile_id
 
 
 def _engine():

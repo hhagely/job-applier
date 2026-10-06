@@ -11,7 +11,8 @@ from sqlmodel import Session
 
 from job_applier import matching, services
 from job_applier.api.schemas import BlacklistAddIn, BlacklistedCompanyOut
-from job_applier.models.db import BlacklistedCompany, get_session, session_profile_id
+from job_applier.models.db import BlacklistedCompany, get_session
+from job_applier.models.scoping import session_profile_id
 
 router = APIRouter(tags=["blacklist"])
 

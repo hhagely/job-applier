@@ -10,11 +10,11 @@ Each profile owns its resumes (``Resume`` is profile-scoped) and uses one of
 them, ``SearchProfile.resume_id``; a new blank profile has none until its person
 uploads one.
 
-**Invariant:** the active profile's ``resume_id`` is the active resume
-(``Resume.is_active``). Every reader goes through ``active_resume``, which
-resolves via the profile; ``set_active_resume`` is the only writer of the flag,
-called by ``activate_profile``, ``update_profile_meta`` and the resume upload
-(which also calls ``adopt_uploaded_resume`` to point the profile at the file).
+**Which resume is in use** has one source of truth: the profile's
+``resume_id`` (or, while that's unset, its newest upload). Every reader goes
+through ``active_resume``. ``Resume.is_active`` is only a mirror of the active
+profile's choice, written by ``set_active_resume`` and read by nothing in the
+app; it exists for the API's ``is_active`` field and the legacy slash commands.
 
 Depends only on the models so the filter, ingest, and the services layer can all
 import it without a cycle.
@@ -33,7 +33,6 @@ from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from job_applier.models.db import (
-    PROFILE_SCOPED,
     Application,
     ApplicationStatus,
     AppSetting,
@@ -41,9 +40,8 @@ from job_applier.models.db import (
     JobProfileLink,
     Resume,
     SearchProfile,
-    forget_active_profile,
-    session_profile_id,
 )
+from job_applier.models.scoping import PROFILE_SCOPED, forget_active_profile, session_profile_id
 
 
 log = logging.getLogger(__name__)
@@ -69,29 +67,23 @@ def active_profile(session: Session) -> Optional[SearchProfile]:
     return session.get(SearchProfile, pid) if pid is not None else None
 
 
-def _flagged_resume_id(session: Session) -> Optional[int]:
-    return session.exec(
-        select(Resume.id).where(Resume.is_active == True)  # noqa: E712
-    ).first()
-
-
 def active_resume(session: Session) -> Optional[Resume]:
     """The resume this session's profile scores and drafts with — the one
-    reader of "which resume is active" (staleness, scoring, drafting).
+    reader of "which resume is in use" (staleness, scoring, drafting).
 
-    Resolved through the profile rather than ``Resume.is_active`` alone, so a
-    background task pinned to one person keeps using their resume even if the
-    user switches profiles (which moves ``is_active``) mid-run. Falls back to the
-    flagged row when the profile has no resume on file.
+    Resolved through the profile, so a background task pinned to one person
+    keeps using their resume even if the user switches profiles mid-run. A
+    profile whose ``resume_id`` is unset (or not its own) uses its newest upload.
     """
     profile = active_profile(session)
-    if profile is not None and profile.resume_id is not None:
-        resume = session.get(Resume, profile.resume_id)
+    if profile is None:
+        return None
+    if profile.resume_id is not None:
+        resume = owned_resume(session, profile.id, profile.resume_id)
         if resume is not None:
             return resume
-    return session.exec(
-        select(Resume).where(Resume.is_active == True)  # noqa: E712
-    ).first()
+    newest = _newest_resume_id(session, profile.id)
+    return owned_resume(session, profile.id, newest) if newest is not None else None
 
 
 def active_resume_id(session: Session) -> Optional[int]:
@@ -106,16 +98,15 @@ def load_or_create_profile(session: Session) -> SearchProfile:
     """
     p = active_profile(session)
     if p is None:
-        p = SearchProfile(
-            name="Default", is_active=True, resume_id=_flagged_resume_id(session)
-        )
+        p = SearchProfile(name="Default", is_active=True)
         session.add(p)
         session.flush()
-    elif p.resume_id is None:
-        # Made by the flush that saved its first resume, before that row existed.
-        p.resume_id = _flagged_resume_id(session) or _newest_resume_id(session, p.id)
-        session.add(p)
-        session.flush()
+    if p.resume_id is None:
+        # e.g. made by the flush that saved its first resume, before that row existed.
+        p.resume_id = _newest_resume_id(session, p.id)
+        if p.resume_id is not None:
+            session.add(p)
+            session.flush()
     return p
 
 

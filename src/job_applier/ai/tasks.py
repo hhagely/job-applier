@@ -169,7 +169,7 @@ def _run(state: TaskState, fn: Callable[[TaskState], None]) -> None:
     if state.profile_id is not None:
         # Imported here so this module stays free of DB imports; setting the
         # ContextVar touches no database.
-        from job_applier.models.db import current_profile_id
+        from job_applier.models.scoping import current_profile_id
 
         token = current_profile_id.set(state.profile_id)
     try:
@@ -182,7 +182,7 @@ def _run(state: TaskState, fn: Callable[[TaskState], None]) -> None:
         # Always emit the terminal snapshot so subscribers stop waiting.
         publish(state)
         if token is not None:
-            from job_applier.models.db import current_profile_id
+            from job_applier.models.scoping import current_profile_id
 
             current_profile_id.reset(token)
 

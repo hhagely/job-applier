@@ -18,12 +18,8 @@ from job_applier import services
 from job_applier.ai import bans, providers, scoring
 from job_applier.ai.templates import render_job_prompt
 from job_applier.config import settings
-from job_applier.models.db import (
-    ApplicationStatus,
-    JobPosting,
-    Session,
-    session_profile_id,
-)
+from job_applier.models.db import ApplicationStatus, JobPosting, Session
+from job_applier.models.scoping import session_profile_id
 
 log = logging.getLogger(__name__)
 

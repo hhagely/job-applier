@@ -43,13 +43,8 @@ from job_applier.contracts import (
     LEGACY_AI_MODEL_PROVIDER,
     ai_model_key,
 )
-from job_applier.models.db import (
-    JobPosting,
-    get_session,
-    get_setting,
-    session_profile_id,
-    set_setting,
-)
+from job_applier.models.db import JobPosting, get_session, get_setting, set_setting
+from job_applier.models.scoping import session_profile_id
 
 # The AppSetting key names live in ``job_applier.contracts`` (dependency-free) so
 # api/deps.py and api/drafts.py read the same constants instead of re-typing the

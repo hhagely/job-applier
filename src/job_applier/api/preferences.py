@@ -19,7 +19,8 @@ from job_applier.contracts import (
     profile_pref_key,
 )
 from job_applier.api.schemas import PreferencesOut, PreferencesUpdate
-from job_applier.models.db import get_session, get_setting, session_profile_id, set_setting
+from job_applier.models.db import get_session, get_setting, set_setting
+from job_applier.models.scoping import session_profile_id
 
 router = APIRouter(tags=["preferences"])
 
