@@ -205,3 +205,64 @@ def test_title_preskip_only_skips_a_title_every_profile_rejects():
     assert title_quick_fail("Junior Engineer", union)
     # Sales titles are a shared rule: skipped regardless.
     assert title_quick_fail("Senior Account Executive", union)
+
+
+def test_a_deleted_profile_gets_no_links(fresh_db):
+    # A re-match queued before its profile was deleted must not write links
+    # back for it (they'd undo delete_profile and land on a reused id).
+    p = _profile(fresh_db, "A", **TS)
+    _store(fresh_db, _raw(1))
+    with Session(fresh_db) as s:
+        s.delete(s.get(SearchProfile, p))
+        s.commit()
+    assert matching.match_profile(p, rematch=True) == matching.MatchStats()
+    assert _verdicts(fresh_db, p) == {}
+
+
+def test_postings_without_a_description_are_matched_but_pruned_ones_are_not(fresh_db):
+    p = _profile(fresh_db, "A", **TS)
+    no_desc, pruned = _store(
+        fresh_db,
+        # The source sent no description; its tags still carry the stack.
+        _raw(1, description="", tags=["TypeScript"], raw={"id": 1}),
+        _raw(2, title="Senior Platform Engineer"),
+    )
+    with Session(fresh_db) as s:
+        row = s.get(JobPosting, pruned)
+        row.description, row.raw = "", {}  # what prune leaves behind
+        s.add(row)
+        s.commit()
+    assert matching.match_profile(p).evaluated == 1
+    assert _verdicts(fresh_db, p) == {no_desc: FilterStatus.passed}
+
+
+class _Source:
+    name = "fake"
+
+    def __init__(self, *jobs: RawJob) -> None:
+        self._jobs = jobs
+
+    def fetch(self):
+        return iter(self._jobs)
+
+
+def test_a_scrape_runs_every_profile_through_matching(fresh_db):
+    # run_ingest's tail: every profile gets verdicts on what was just stored,
+    # match_cb reports each profile, and nobody-matched raw payloads are trimmed.
+    a = _profile(fresh_db, "A", **TS)
+    b = _profile(fresh_db, "B", **RUST)
+    reported: list[str] = []
+    ingest.run_ingest(
+        sources=[_Source(_raw(1, raw={"p": 1}), _raw(2, title="Software Engineer", raw={"p": 2}))],
+        match_cb=lambda name, _stats: reported.append(name),
+    )
+    with Session(fresh_db) as s:
+        ts_job, unmatched = (
+            s.exec(select(JobPosting.id).where(JobPosting.source_id == sid)).one()
+            for sid in ("t-1", "t-2")
+        )
+        assert s.get(JobPosting, ts_job).raw == {"p": 1}
+        assert s.get(JobPosting, unmatched).raw == {}
+    assert reported == ["A", "B"]
+    assert _verdicts(fresh_db, a) == {ts_job: FilterStatus.passed, unmatched: FilterStatus.dropped}
+    assert _verdicts(fresh_db, b) == {ts_job: FilterStatus.dropped, unmatched: FilterStatus.dropped}

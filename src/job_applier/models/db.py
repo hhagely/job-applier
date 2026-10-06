@@ -85,7 +85,9 @@ class JobPosting(SQLModel, table=True):
     tags: Optional[list[str]] = Field(default=None, sa_column=Column(JSON))
 
     # The *shared* rules' verdict (remote, US, sales, crypto); always ``passed``
-    # for anything stored. Each profile's own verdict is on its JobProfileLink.
+    # for anything stored (legacy per-profile verdicts are moved onto the links
+    # and reset by the migration). Each profile's own verdict is on its
+    # JobProfileLink, and that is what the API reports.
     filter_status: FilterStatus = FilterStatus.passed
     filter_reason: Optional[str] = None
 
@@ -382,6 +384,19 @@ def _insert_default_profile(conn) -> int:  # noqa: ANN001
     ).lastrowid
 
 
+def _table_cols(conn, table: str) -> set[str]:  # noqa: ANN001
+    return {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+
+
+def _reset_posting_verdicts(conn) -> None:  # noqa: ANN001
+    """After legacy verdicts are copied onto the links, leave the posting columns
+    meaning only the shared verdict (every stored posting passed it)."""
+    conn.exec_driver_sql(
+        "UPDATE jobposting SET filter_status = 'passed', filter_reason = NULL "
+        "WHERE filter_status IS NOT 'passed' OR filter_reason IS NOT NULL"
+    )
+
+
 def _begin(conn) -> None:  # noqa: ANN001
     """Open a write transaction explicitly so DDL joins it (see the callers)."""
     conn.exec_driver_sql("BEGIN IMMEDIATE")
@@ -621,10 +636,7 @@ def _ensure_multi_profile_columns() -> None:
             # from create_all at today's shape (profile_id + a NOT NULL verdict);
             # one migrated by the first multi-profile build still has the old
             # column, which _ensure_match_columns renames afterwards.
-            link_cols = {
-                r[1] for r in conn.exec_driver_sql("PRAGMA table_info(jobprofilelink)")
-            }
-            if "profile_id" in link_cols:
+            if "profile_id" in _table_cols(conn, "jobprofilelink"):
                 conn.exec_driver_sql(
                     "INSERT OR IGNORE INTO jobprofilelink "
                     "(job_id, profile_id, filter_status, filter_reason, linked_at) "
@@ -632,6 +644,7 @@ def _ensure_multi_profile_columns() -> None:
                     "FROM jobposting",
                     (first,),
                 )
+                _reset_posting_verdicts(conn)
             else:
                 conn.exec_driver_sql(
                     "INSERT OR IGNORE INTO jobprofilelink (job_id, search_profile_id, linked_at) "
@@ -842,13 +855,17 @@ def _ensure_match_columns() -> None:
       profile's filter, so they backfill from the posting's columns.
     - ``jobposting.tags`` keeps the source tags so later matching sees what
       ingest saw. Existing postings stay null (treated as no tags).
+
+    The verdict backfill is one-time (gated on the column), so everything runs in
+    one explicit transaction: a crash part-way can't leave the column added with
+    the backfill lost.
     """
     with engine().connect() as conn:
-
-        def cols(table: str) -> set[str]:
-            return {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
-
-        link_cols = cols("jobprofilelink")
+        link_cols = _table_cols(conn, "jobprofilelink")
+        has_tags = "tags" in _table_cols(conn, "jobposting")
+        if "filter_status" in link_cols and "profile_id" in link_cols and has_tags:
+            return
+        _begin(conn)
         if "search_profile_id" in link_cols and "profile_id" not in link_cols:
             conn.exec_driver_sql("DROP INDEX IF EXISTS ix_jobprofilelink_search_profile_id")
             conn.exec_driver_sql(
@@ -869,11 +886,12 @@ def _ensure_match_columns() -> None:
                 "filter_status = COALESCE((SELECT filter_status FROM jobposting WHERE jobposting.id = job_id), 'passed'), "
                 "filter_reason = (SELECT filter_reason FROM jobposting WHERE jobposting.id = job_id)"
             )
+            _reset_posting_verdicts(conn)
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_jobprofilelink_profile_status "
                 "ON jobprofilelink (profile_id, filter_status)"
             )
-        if "tags" not in cols("jobposting"):
+        if not has_tags:
             conn.exec_driver_sql("ALTER TABLE jobposting ADD COLUMN tags JSON")
         conn.commit()
 

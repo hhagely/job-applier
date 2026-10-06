@@ -95,10 +95,13 @@ which is why the page asks you to judge it, right then:
 
 ### 3. Fill out your search profile
 
-**Search profile** in the sidebar. These fields drive the *hard filter*, which runs
-during ingest — a posting that fails is dropped before it ever reaches your queue.
-That makes this the highest-leverage screen in the app, and the easiest one to
-over-tighten.
+**Search profile** in the sidebar. These fields drive your profile's half of the
+*hard filter*. A scrape stores every posting that passes the shared rules (remote,
+US, not sales, not crypto) once, for every profile; then each profile's own rules
+run over the stored postings, and a posting that fails yours never reaches your
+queue. That makes this the highest-leverage screen in the app, and the easiest one
+to over-tighten. Saving it re-checks the jobs already found, in the background,
+with no new scrape.
 
 | Field | Effect |
 | --- | --- |
@@ -113,18 +116,20 @@ read your resume and propose a whole profile. It's saved as a *draft* and change
 nothing until you review and accept it.
 
 **Start broader than feels right.** The filter is unforgiving and silent: a profile
-that's too narrow doesn't warn you, it just hands you an empty queue, and the
-postings it dropped are gone rather than waiting somewhere. Widen first, then tighten
-once you can see what's coming through. The **Manual review** tab on the queue is
+that's too narrow doesn't warn you, it just hands you an empty queue. The postings
+it dropped are still stored, so widening the profile brings back the ones from the
+last 30 days without a new scrape. Widen first, then tighten once you can see what's
+coming through. The **Manual review** tab on the queue is
 where the ambiguous calls land — worth a look, since a thin queue often means good
 roles are piling up there.
 
 Two more tools on the same page, both aimed at *which employers* get searched:
 
-- **Company blacklist** — employers you never want to see. Checked before every other
-  rule, so their postings are dropped without a row being written. Matching normalizes
-  the name, so `Meta`, `Meta Inc`, and `Meta, Inc.` are one entry however a source
-  spells it. Edits only affect future ingests, not rows you already have.
+- **Company blacklist** — employers you never want to see. Each profile has its own,
+  checked before your profile's other rules, so their postings never reach your queue
+  (they stay stored for other profiles). Matching normalizes the name, so `Meta`,
+  `Meta Inc`, and `Meta, Inc.` are one entry however a source spells it. Adding or
+  removing an entry re-checks the jobs already found, with no new scrape.
 - **Check a company** — name an employer to find out whether your scrapes already
   cover them, and add their job board if not. About 1,300 company boards ship seeded,
   so the usual answer is "already covered". See
@@ -310,38 +315,35 @@ data/resumes/        # uploaded PDFs (gitignored)
 
 ## Hard filter rules
 
-Applied at ingest time. Jobs that fail the role criteria are dropped before
-persistence (cheap to re-evaluate on every ingest). Jobs that fail the location
-or remote checks are still written to the DB so they're auditable.
+Two stages. The **shared rules** run at scrape time for everyone: a posting that
+fails one is never stored. Every posting that passes is stored once, and then each
+profile's **per-profile rules** run over the stored postings (`matching.py`),
+recording that profile's verdict (passed, manual, or dropped) as a
+`JobProfileLink` row. A profile's queue is its passed and manual verdicts. Editing
+a profile's criteria, home state, or blacklist re-matches the postings from the
+last 30 days in the background, with no new scrape.
 
-**Company blacklist (checked first).** Before any rule runs, a job whose employer
-is on your company blacklist is dropped outright — no row is written, even the
-first time that company is seen. The list is edited at
-http://localhost:5174/search alongside the profile. Matching normalizes the
-company name (casing, punctuation, and one trailing legal suffix), so `Meta`,
-`Meta Inc`, and `Meta, Inc.` all match however a source spells it. Editing the
-list only affects future ingests, not rows already saved.
-
-The role-specific criteria — seniority terms, required tech, excluded tech — live
-on the `SearchProfile` row and are edited at http://localhost:5174/search. The
-fixed rules, always applied, are:
+The shared rules, always applied:
 
 - **Remote only** — drops `hybrid`, `on-site`, anything mentioning relocation.
 - **US-locatable** — if the posting names a non-US country/region and has no US
   marker, drop. Specific "City, Region" locations without a US hint also drop.
-- **State allow-list must include your home state** — postings that say "we can
-  only hire in X, Y, Z" and don't list your state drop. Phrased as "any US state"
-  or "nationwide" overrides. Set your state of residence at
-  http://localhost:5174/search; **when it's left unset this rule is skipped
-  entirely** (no state is assumed). Your state is used only for this ingest filter,
-  stored locally, and never sent anywhere.
 - **Not a sales / pre-sales / biz-dev title** — `Senior Solutions Engineer`,
   `Head of Partnerships`, etc. are dropped even when they pass seniority.
 - **Not crypto / blockchain / web3** — matched against the whole posting, not just
   the title.
 
-Then the per-profile rules:
+Then the per-profile rules, edited at http://localhost:5174/search:
 
+- **Company blacklist (checked first)** — a job whose employer is on the profile's
+  blacklist is dropped for that profile. Matching normalizes the company name
+  (casing, punctuation, and one trailing legal suffix), so `Meta`, `Meta Inc`, and
+  `Meta, Inc.` all match however a source spells it.
+- **State allow-list must include your home state** — postings that say "we can
+  only hire in X, Y, Z" and don't list your state drop. Phrased as "any US state"
+  or "nationwide" overrides. **When the profile's state is left unset this rule is
+  skipped entirely** (no state is assumed). Your state is used only for this
+  filter, stored locally, and never sent anywhere.
 - **Seniority** — title must contain one of `seniority_terms`.
 - **Required tech** — posting body or tags must reference one of `required_tech`.
   Short tokens (≤2 chars, e.g. `js`, `ts`, `go`) only mark a posting as `manual`

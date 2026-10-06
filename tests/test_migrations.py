@@ -281,6 +281,59 @@ def test_migration_makes_existing_profile_the_active_default(tmp_path, monkeypat
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "link_table",
+    [
+        # Straight from a pre-profile release: no link table, so create_all builds
+        # it at today's shape and the verdicts are copied as the links are made.
+        "DROP TABLE jobprofilelink;",
+        # Migrated by the first multi-profile build: the old link table is
+        # renamed and its verdicts backfilled from the postings.
+        "",
+    ],
+    ids=["create", "rename"],
+)
+def test_legacy_verdicts_move_onto_the_links(tmp_path, monkeypatch, link_table):
+    # The posting columns held what was each profile's verdict before scrape-once;
+    # they move onto the Default profile's links, and the posting columns are
+    # left meaning only the shared verdict (passed).
+    seed = """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title, filter_status, filter_reason)
+            VALUES (1, 'gh', 'a', 'u', 'A', 'passed', NULL),
+                   (2, 'gh', 'b', 'u', 'B', 'manual', 'tech only implied'),
+                   (3, 'gh', 'c', 'u', 'C', NULL, NULL);
+    """
+    if not link_table:
+        seed += """
+        INSERT INTO jobprofilelink (job_id, search_profile_id, linked_at)
+            VALUES (1, 3, '2026-08-01'), (2, 3, '2026-08-01'), (3, 3, '2026-08-01');
+        """
+    db_path, models = _run_startup_with(tmp_path, monkeypatch, link_table + seed)
+
+    def state():
+        conn = sqlite3.connect(db_path)
+        try:
+            links = conn.execute(
+                "SELECT job_id, profile_id, filter_status, filter_reason "
+                "FROM jobprofilelink ORDER BY job_id"
+            ).fetchall()
+            postings = conn.execute(
+                "SELECT DISTINCT filter_status, filter_reason FROM jobposting"
+            ).fetchall()
+            return links, postings
+        finally:
+            conn.close()
+
+    expected = (
+        [(1, 3, "passed", None), (2, 3, "manual", "tech only implied"), (3, 3, "passed", None)],
+        [("passed", None)],
+    )
+    assert state() == expected
+    models.db.create_db_and_tables()
+    assert state() == expected
+
+
 def test_migration_creates_default_profile_for_orphaned_postings(tmp_path, monkeypatch):
     # Postings but no profile row (filter ran on built-in defaults): a Default
     # profile is created so those postings aren't left out of every scoped view.

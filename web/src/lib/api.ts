@@ -179,7 +179,8 @@ export interface Job {
 	employment_type?: string | null;
 	posted_at?: string | null;
 	ingested_at: string;
-	filter_status: FilterStatus;
+	/** The active profile's verdict; null when it never matched this posting. */
+	filter_status: FilterStatus | null;
 	filter_reason?: string | null;
 	company?: Company | null;
 	score?: Score | null;

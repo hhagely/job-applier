@@ -31,6 +31,22 @@ def _isolate_user_data(tmp_path_factory):
         mp.setattr(db, "_engine", None)
 
 
+@pytest.fixture(autouse=True)
+def rematches(monkeypatch) -> list[int]:
+    """Record the profiles whose criteria/blacklist edits asked for a re-match,
+    instead of starting the real background task.
+
+    The real task opens its own ``engine()`` session, not the test's overridden
+    one, so it could outlive the test and write links into a later test's DB.
+    ``match_profile`` is tested directly in test_matching.py.
+    """
+    from job_applier import matching
+
+    started: list[int] = []
+    monkeypatch.setattr(matching, "start_rematch", started.append)
+    return started
+
+
 @pytest.fixture
 def make_raw() -> Callable[..., RawJob]:
     """Factory for `RawJob` instances with sensible defaults that pass the hard filter.

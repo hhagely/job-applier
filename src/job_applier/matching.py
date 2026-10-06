@@ -24,10 +24,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
+from job_applier.ai import tasks
 from job_applier.dedupe import normalize_company
 from job_applier.filters import FilterConfig, config_for, evaluate_profile
 from job_applier.models.db import (
@@ -109,7 +110,12 @@ def match_profile(
     """
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=MATCH_WINDOW_DAYS)
     with _pinned(profile_id) as s:
-        cfg = config_for(s.get(SearchProfile, profile_id))
+        profile = s.get(SearchProfile, profile_id)
+        if profile is None:
+            # Deleted while this run was queued: writing links for it would undo
+            # delete_profile's cleanup (and hand them to a reused id).
+            return MatchStats()
+        cfg = config_for(profile)
         # Explicit profile filters below, not just the session pin: these feed
         # subqueries and bulk writes, where being literal beats being clever.
         blacklist = frozenset(
@@ -133,7 +139,14 @@ def match_profile(
                 Company.name.label("company_name"),
             )
             .join(Company, Company.id == JobPosting.company_id, isouter=True)  # type: ignore[arg-type]
-            .where(JobPosting.description != "")
+            # Skip pruned rows (description and raw both cleared), not postings
+            # whose source simply sent no description.
+            .where(
+                or_(
+                    JobPosting.description != "",
+                    func.json(JobPosting.raw).not_in(["{}", "null"]),
+                )
+            )
             .where(func.coalesce(JobPosting.posted_at, JobPosting.ingested_at) >= cutoff)
         )
         acted: set[int] = set()
@@ -195,11 +208,44 @@ def match_profile(
             },
         )
         with _pinned(profile_id) as s:
+            if s.get(SearchProfile, profile_id) is None:
+                return stats  # deleted mid-run; see above
             s.execute(stmt)
             s.commit()
         if progress_cb is not None:
             progress_cb(min(start + MATCH_BATCH, total), total)
     return stats
+
+
+MATCH_TASK_KIND = "match"
+
+
+def start_rematch(profile_id: int) -> str:
+    """Re-match one profile against every stored posting, in the background.
+
+    Called whenever what the profile accepts changes (criteria, home state,
+    blacklist) or a profile is created. Local only, no scrape, but ~10 s over a
+    full store, so it's a task: progress rides the shared task stream as kind
+    ``match`` (ref = profile id), and the layout refreshes the queue when it
+    settles. Runs in the network lane, so it queues behind an in-flight scrape
+    rather than racing its writes.
+    """
+
+    def _run(state: tasks.TaskState) -> None:
+        def _progress(done: int, total: int) -> None:
+            state.total = total
+            state.done = done
+            state.publish()
+
+        stats = match_profile(profile_id, rematch=True, progress_cb=_progress)
+        state.results.append(
+            f"{stats.passed} in your queue, {stats.manual} to review, "
+            f"{stats.dropped} filtered out"
+        )
+
+    return tasks.start_task(
+        MATCH_TASK_KIND, 0, _run, ref=str(profile_id), profile_id=profile_id
+    )
 
 
 def match_all_profiles(
