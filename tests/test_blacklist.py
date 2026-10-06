@@ -1,5 +1,5 @@
 """Coverage for the user company blacklist: the service layer (normalize +
-idempotent add, guard, remove), the ingest drop, and the REST endpoints."""
+idempotent add, guard, remove) and the REST endpoints."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from job_applier import ingest, services
+from job_applier import services
 from job_applier.api.app import app
 from job_applier.models.db import get_session
 from job_applier.sources.base import RawJob
@@ -93,14 +93,8 @@ class TestBlacklistService:
         assert services.list_blacklisted_companies(session) == []
 
 
-class TestBlacklistIngest:
-    def test_load_blacklisted_names_returns_normalized_set(self, session):
-        services.add_blacklisted_company(session, "Meta, Inc.")
-        services.add_blacklisted_company(session, "Acme")
-        assert ingest.load_blacklisted_names(session) == frozenset({"meta", "acme"})
-
-    # Dropping a blacklisted company's postings is matching's job now (per
-    # profile, at match time): see tests/test_matching.py.
+# Dropping a blacklisted company's postings is matching's job (per profile, at
+# match time): see tests/test_matching.py.
 
 
 class TestBlacklistApi:

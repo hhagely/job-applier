@@ -1,15 +1,21 @@
-"""Hard-rule filter applied at ingestion.
+"""Hard-rule filter, in two stages.
 
-Rules (drop on any failure):
+Shared rules (``evaluate_shared``, run by ingest for everyone; a failure means
+the posting is never stored, and they never return ``manual``):
   1. Must be fully remote.
   2. Location must not be non-US-only (when a country is named).
-  3. If the posting names an explicit US-state allow-list, the user's configured
-     home state must be in it. Skipped when no home state is configured.
-  4. Title must indicate one of the configured seniority terms.
-  5. Title must not be a sales / pre-sales / biz-dev role.
-  6. Posting must not be a crypto / blockchain / web3 role.
+  3. Title must not be a sales / pre-sales / biz-dev role.
+  4. Posting must not be a crypto / blockchain / web3 role.
+
+Per-profile rules (``evaluate_profile``, run by ``matching`` for each profile
+over the stored postings; the verdict lands on that profile's JobProfileLink):
+  5. If the posting names an explicit US-state allow-list, the profile's home
+     state must be in it. Skipped when no home state is configured.
+  6. Title must indicate one of the configured seniority terms.
   7. Posting must reference one of the configured required-tech terms.
   8. A configured excluded-tech term as the primary stack disqualifies.
+
+``evaluate`` composes the two.
 
 Ambiguous postings (e.g. tech implied via short tokens only, exclusion mentioned
 in description with no positive signal) are marked `manual` so the user can

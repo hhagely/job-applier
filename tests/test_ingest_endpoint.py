@@ -9,7 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from job_applier import ingest
 from job_applier.api.app import app
 from job_applier.models import db
-from job_applier.models.db import JobPosting, get_session
+from job_applier.models.db import JobPosting, JobProfileLink, get_session
 from job_applier.sources.base import RawJob
 
 
@@ -99,6 +99,13 @@ def test_run_ingest_isolates_a_failing_source(monkeypatch):
     with Session(e) as s:
         companies = {j.company.name for j in s.exec(select(JobPosting)).all()}
     assert companies == {"Alpha Co", "Gamma Co"}
+    # Matching still ran over what was saved, including the source before the
+    # failure: every surviving posting has a verdict for the profile.
+    with Session(e) as s:
+        linked = set(
+            s.exec(select(JobProfileLink.job_id).execution_options(all_profiles=True)).all()
+        )
+        assert linked == set(s.exec(select(JobPosting.id)).all())
     # Stats reflect only the two good rows (the failed source's counts were restored).
     assert stats.inserted == 2
 

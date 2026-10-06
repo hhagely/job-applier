@@ -9,8 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel import Session
 
-from job_applier import services
-from job_applier.api.profile import start_rematch
+from job_applier import matching, services
 from job_applier.api.schemas import BlacklistAddIn, BlacklistedCompanyOut
 from job_applier.models.db import BlacklistedCompany, get_session, session_profile_id
 
@@ -45,7 +44,7 @@ def add_blacklist(body: BlacklistAddIn, session: Session = Depends(get_session))
         raise HTTPException(422, str(exc)) from exc
     # Blacklisting is per profile and applied at match time, so re-match to
     # take the company out of this profile's queue now, not at the next scrape.
-    start_rematch(row.profile_id)
+    matching.start_rematch(row.profile_id)
     return _blacklist_out(row)
 
 
@@ -53,5 +52,5 @@ def add_blacklist(body: BlacklistAddIn, session: Session = Depends(get_session))
 def remove_blacklist(blacklist_id: int, session: Session = Depends(get_session)):
     if not services.remove_blacklisted_company(session, blacklist_id):
         raise HTTPException(404, "blacklist entry not found")
-    start_rematch(session_profile_id(session))
+    matching.start_rematch(session_profile_id(session))
     return Response(status_code=204)

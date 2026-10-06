@@ -207,20 +207,15 @@ def test_deleting_a_profile_removes_only_its_own_data(setup, monkeypatch):
     assert c.get(f"/api/jobs/{job}").json()["application"]["status"] == "applied"
 
 
-def test_changes_to_what_a_profile_accepts_rematch_it(setup, monkeypatch):
-    from job_applier.api import blacklist as blacklist_api
-    from job_applier.api import profile as profile_api
-
+def test_changes_to_what_a_profile_accepts_rematch_it(setup, rematches):
     c, _engine, a, _b, _job = setup
-    started: list[int] = []
-    monkeypatch.setattr(profile_api, "start_rematch", started.append)
-    monkeypatch.setattr(blacklist_api, "start_rematch", started.append)
+    rematches.clear()
 
     c.put("/api/search-profile", json={"seniority_terms": ["staff"], "required_tech": ["go"]})
     new = c.post("/api/search-profiles", json={"name": "Third"}).json()["id"]
     entry = c.post("/api/blacklist", json={"name": "Initech"}).json()
     c.delete(f"/api/blacklist/{entry['id']}")
-    assert started == [a, new, a, a]
+    assert rematches == [a, new, a, a]
 
 
 def test_prune_keeps_a_jd_another_profile_applied_to(setup):
@@ -241,3 +236,44 @@ def test_prune_keeps_a_jd_another_profile_applied_to(setup):
     c.patch(f"/api/jobs/{job}/status", json={"status": "rejected"})
     with Session(engine) as s:
         assert prune_old_postings(s).lightened == 1
+
+
+def test_queue_tabs_follow_the_profiles_own_verdicts(setup):
+    # The queue and its "Needs review" tab come from the active profile's link
+    # verdicts, and what the API reports for a posting is that verdict too.
+    c, engine, a, _b, passed_job = setup
+    with Session(engine) as s:
+        ids = {}
+        for sid in ("manual", "dropped"):
+            j = JobPosting(
+                source="test", source_id=sid, url=f"https://example.com/{sid}",
+                title=f"Senior {sid}", description="x", dedupe_hash=f"h-{sid}",
+            )
+            s.add(j)
+            s.flush()
+            ids[sid] = j.id
+        s.add(JobProfileLink(job_id=ids["manual"], profile_id=a,
+                             filter_status=FilterStatus.manual, filter_reason="tech only implied"))
+        s.add(JobProfileLink(job_id=ids["dropped"], profile_id=a,
+                             filter_status=FilterStatus.dropped, filter_reason="no seniority term"))
+        s.commit()
+
+    def queue(**params):
+        return {j["id"]: j for j in c.get("/api/jobs", params=params).json()}
+
+    assert set(queue()) == {passed_job}
+    manual = queue(filter_status="manual")
+    assert set(manual) == {ids["manual"]}
+    assert (manual[ids["manual"]]["filter_status"], manual[ids["manual"]]["filter_reason"]) == (
+        "manual", "tech only implied",
+    )
+    counts = c.get("/api/jobs/status-counts", params={"filter_status": "manual"}).json()
+    assert counts["counts"]["none"] == 1 and sum(counts["counts"].values()) == 1
+    # A posting this profile never matched reports no verdict, not "passed".
+    with Session(engine) as s:
+        unseen = JobPosting(source="test", source_id="u", url="https://example.com/u",
+                            title="Senior Unseen", description="x", dedupe_hash="h-u")
+        s.add(unseen)
+        s.commit()
+        unseen_id = unseen.id
+    assert c.get(f"/api/jobs/{unseen_id}").json()["filter_status"] is None

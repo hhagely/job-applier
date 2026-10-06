@@ -45,7 +45,6 @@ from job_applier.maintenance import (
 from job_applier.models import (
     Application,
     ApplicationStatus,
-    BlacklistedCompany,
     Company,
     JobPosting,
     JobProfileLink,
@@ -72,7 +71,6 @@ __all__ = [
     "ingest_one",
     "jd_hamming_distance",
     "jd_simhash",
-    "load_blacklisted_names",
     "normalize_company",
     "normalize_title",
     "prune_old_postings",
@@ -124,16 +122,6 @@ def _upsert_company(session: Session, name: str, caches: "_IngestCaches") -> tup
         entry = (company.id, company.is_blocked)
         caches.companies[name] = entry
     return entry
-
-
-def load_blacklisted_names(session: Session) -> frozenset[str]:
-    """Normalized names of every user-blacklisted company.
-
-    Loaded once per ingest run and handed to ``ingest_one`` so the per-job check
-    is an O(1) set lookup rather than a DB query per posting.
-    """
-    rows = session.exec(select(BlacklistedCompany.normalized_name)).all()
-    return frozenset(rows)
 
 
 # How many raw jobs to accumulate from a source before opening a write
