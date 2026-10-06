@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import { US_STATES } from '$lib/usStates';
-	import { DAY_MS, fmtDate, fmtDateTime } from '$lib/date';
+	import { DAY_MS, fmtDate } from '$lib/date';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import type { ActionData, PageData } from './$types';
 
@@ -48,10 +48,6 @@
 			profileBusy = false;
 		};
 	};
-	// Re-uploads often keep the same filename and land on the same day, so the
-	// time plus the id is what tells two options apart.
-	const resumeLabel = (r: { id: number; original_filename: string; uploaded_at: string }) =>
-		`${r.original_filename} · ${fmtDateTime(r.uploaded_at)} · #${r.id}`;
 
 	function joinList(items: string[]): string {
 		return items.join('\n');
@@ -123,14 +119,15 @@
 <div class="view-body">
 	<div class="stack">
 		<div class="card">
-			<div class="card-h"><h2>Profiles</h2></div>
+			<div class="card-h" id="profiles"><h2>Profiles</h2></div>
 			<div class="card-b">
 				<p class="muted" style="margin-bottom:14px">
-					One profile per person (or per kind of search), each with its own resume, criteria,
+					One profile per person (or per kind of search), each with its own resumes, criteria,
 					statuses, scores, and drafts. A scrape runs once for everyone and then fills each
 					profile's queue by its own criteria. Adding a profile or changing its criteria
 					re-checks the jobs already found, so there's no need to scrape again. Switch who's
-					using the app from the sidebar.
+					using the app from your name at the bottom of the sidebar; each person uploads and
+					picks their own resumes on the <a href="/resume">Resume</a> page.
 				</p>
 
 				{#if form && 'profileError' in form && form.profileError}
@@ -154,16 +151,16 @@
 									maxlength="80"
 									required
 								/>
-								<select class="input pf-resume" name="resume_id" aria-label="Resume for {p.name}">
-									{#if p.resume_id === null}
-										<option value="" selected>Current resume</option>
-									{/if}
-									{#each data.resumes as r (r.id)}
-										<option value={r.id} selected={r.id === p.resume_id}>{resumeLabel(r)}</option>
-									{/each}
-								</select>
-								<button type="submit" class="btn sm" disabled={profileBusy}>Save</button>
+								<button type="submit" class="btn sm" disabled={profileBusy}>Rename</button>
 							</form>
+							<span class="pf-resume" class:muted={!p.resume_filename}>
+								{#if p.resume_filename}
+									<span class="mono">{p.resume_filename}</span>
+								{:else}
+									No resume yet
+								{/if}
+								{#if p.is_active}<a href="/resume">Manage</a>{/if}
+							</span>
 							{#if p.is_active}
 								<span class="pill pf-pill">Active</span>
 							{:else}
@@ -181,7 +178,7 @@
 										onclick={(e) => {
 											if (
 												!confirm(
-													`Delete "${p.name}"? This permanently removes its statuses, notes, scores, blacklist, and tailored drafts. Jobs and resumes are kept.`
+													`Delete "${p.name}"? This permanently removes its resumes, statuses, notes, scores, blacklist, and tailored drafts. Jobs are kept.`
 												)
 											)
 												e.preventDefault();
@@ -204,7 +201,7 @@
 						required
 					/>
 					<select class="input pf-clone" name="clone_from" aria-label="Start new profile from">
-						<option value="">Start blank</option>
+						<option value="">Start blank (new person)</option>
 						{#each data.profiles as p (p.id)}
 							<option value={p.id}>Copy of {p.name}</option>
 						{/each}
@@ -577,8 +574,14 @@
 	}
 	.pf-resume {
 		flex: 1;
-		min-width: 180px;
-		max-width: 340px;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 12.5px;
+	}
+	.pf-resume a {
+		margin-left: 8px;
 	}
 	.pf-pill {
 		color: var(--accent);

@@ -334,6 +334,68 @@ def test_legacy_verdicts_move_onto_the_links(tmp_path, monkeypatch, link_table):
     assert state() == expected
 
 
+def test_existing_resumes_get_an_owner_profile(tmp_path, monkeypatch):
+    # A DB from before resumes were per profile: two profiles used the same
+    # upload, one older upload was scored by profile 4, one nobody touched.
+    db_path, models = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO resume (id, original_filename, pdf_path, extracted_text, is_active)
+            VALUES (1, 'shared.pdf', '/r/shared.pdf', 't', 1),
+                   (2, 'old-b.pdf', '/r/old-b.pdf', 't', 0),
+                   (3, 'stray.pdf', '/r/stray.pdf', 't', 0);
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]'), (4, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        DROP INDEX ix_resume_profile_id;
+        ALTER TABLE resume DROP COLUMN profile_id;
+        UPDATE searchprofile SET resume_id = 1;
+        INSERT INTO matchscore (job_id, profile_id, score, scored_by, scored_at, resume_id, score_kind)
+            VALUES (1, 3, 80, 'c', '2026-08-01', 1, 'baseline'),
+                   (1, 4, 70, 'c', '2026-08-01', 1, 'baseline');
+        INSERT INTO matchscorehistory (job_id, profile_id, score, scored_by, scored_at, resume_id, score_kind)
+            VALUES (1, 4, 60, 'c', '2026-07-01', 2, 'baseline');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, profile_id, pdf_path, is_active FROM resume ORDER BY id"
+        ).fetchall()
+        copy_id = rows[-1][0]
+        assert rows == [
+            (1, 3, "/r/shared.pdf", 1),  # the active profile keeps the original
+            (2, 4, "/r/old-b.pdf", 0),  # owner inferred from its scores
+            (3, 3, "/r/stray.pdf", 0),  # nobody's: the active profile
+            (copy_id, 4, "/r/shared.pdf", 0),  # profile 4's own copy
+        ]
+        assert conn.execute(
+            "SELECT id, resume_id FROM searchprofile ORDER BY id"
+        ).fetchall() == [(3, 1), (4, copy_id)]
+        # Profile 4's score follows its copy, so it doesn't read as stale.
+        assert conn.execute(
+            "SELECT profile_id, resume_id FROM matchscore ORDER BY profile_id"
+        ).fetchall() == [(3, 1), (4, copy_id)]
+    finally:
+        conn.close()
+
+    models.db.create_db_and_tables()  # one-time: nothing changes on a re-run
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM resume").fetchone() == (4,)
+    finally:
+        conn.close()
+
+
 def test_migration_creates_default_profile_for_orphaned_postings(tmp_path, monkeypatch):
     # Postings but no profile row (filter ran on built-in defaults): a Default
     # profile is created so those postings aren't left out of every scoped view.

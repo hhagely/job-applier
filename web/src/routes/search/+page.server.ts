@@ -84,13 +84,10 @@ export const actions: Actions = {
 		const id = readId(form);
 		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
 		const name = String(form.get('name') ?? '').trim();
-		const resumeId = Number(form.get('resume_id'));
+		if (!name) return fail(400, { profileError: 'Give the profile a name.' });
 		try {
-			await api.updateSearchProfileMeta(fetch, serverApiBase(), id, {
-				...(name ? { name } : {}),
-				...(Number.isInteger(resumeId) && resumeId > 0 ? { resume_id: resumeId } : {})
-			});
-			return { profileOk: true, profileMessage: 'Profile updated.' };
+			await api.updateSearchProfileMeta(fetch, serverApiBase(), id, { name });
+			return { profileOk: true, profileMessage: 'Profile renamed.' };
 		} catch (e) {
 			return fail(422, { profileError: errorReason(e) });
 		}

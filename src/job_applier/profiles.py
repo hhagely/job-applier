@@ -6,6 +6,10 @@ Several saved profiles, exactly one active. Every profile's own rules run in
 stale-score adoption to its non-dropped verdicts (``queue_job_ids``) and owns
 the active resume.
 
+Each profile owns its resumes (``Resume`` is profile-scoped) and uses one of
+them, ``SearchProfile.resume_id``; a new blank profile has none until its person
+uploads one.
+
 **Invariant:** the active profile's ``resume_id`` is the active resume
 (``Resume.is_active``). Every reader goes through ``active_resume``, which
 resolves via the profile; ``set_active_resume`` is the only writer of the flag,
@@ -21,9 +25,10 @@ from __future__ import annotations
 import logging
 import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
@@ -104,6 +109,11 @@ def load_or_create_profile(session: Session) -> SearchProfile:
         )
         session.add(p)
         session.flush()
+    elif p.resume_id is None:
+        # Made by the flush that saved its first resume, before that row existed.
+        p.resume_id = _flagged_resume_id(session) or _newest_resume_id(session, p.id)
+        session.add(p)
+        session.flush()
     return p
 
 
@@ -125,15 +135,45 @@ def _clean_name(name: str) -> str:
     return name
 
 
+def owned_resume(session: Session, profile_id: int, resume_id: int) -> Optional[Resume]:
+    """``resume_id`` if ``profile_id`` owns it, whichever profile is active."""
+    return session.exec(
+        select(Resume)
+        .where(Resume.id == resume_id, Resume.profile_id == profile_id)
+        .execution_options(all_profiles=True)
+    ).first()
+
+
+def resume_filenames(session: Session) -> dict[int, str]:
+    """Each profile's in-use resume filename, keyed by profile id."""
+    rows = session.exec(
+        select(SearchProfile.id, Resume.original_filename)
+        .join(Resume, Resume.id == SearchProfile.resume_id)  # type: ignore[arg-type]
+        .where(Resume.profile_id == SearchProfile.id)
+        .execution_options(all_profiles=True)
+    ).all()
+    return {pid: name for pid, name in rows}
+
+
+def _newest_resume_id(session: Session, profile_id: int) -> Optional[int]:
+    return session.exec(
+        select(Resume.id)
+        .where(Resume.profile_id == profile_id)
+        .order_by(Resume.uploaded_at.desc(), Resume.id.desc())  # type: ignore[union-attr]
+        .execution_options(all_profiles=True)
+    ).first()
+
+
 def create_profile(
     session: Session, *, name: str, clone_from: Optional[int] = None
 ) -> SearchProfile:
     """Add an inactive profile, optionally copying another's criteria + resume.
 
-    A blank profile starts on the current active resume, so activating it never
-    leaves the app without one.
+    A blank profile is a new person: it starts with no resume. A copy gets its
+    own row for the source's resume (same PDF), since profiles never share one.
     """
-    p = SearchProfile(name=_clean_name(name), resume_id=_flagged_resume_id(session))
+    p = SearchProfile(name=_clean_name(name))
+    src_resume: Optional[Resume] = None
     if clone_from is not None:
         src = get_profile(session, clone_from)
         p.role_titles = list(src.role_titles or [])
@@ -142,33 +182,59 @@ def create_profile(
         p.excluded_tech = list(src.excluded_tech or [])
         p.extracted_skills = list(src.extracted_skills or [])
         p.home_state = src.home_state
-        p.resume_id = src.resume_id
+        if src.resume_id is not None:
+            src_resume = owned_resume(session, src.id, src.resume_id)
     session.add(p)
+    session.flush()
+    if src_resume is not None:
+        copy = Resume(
+            profile_id=p.id,
+            original_filename=src_resume.original_filename,
+            pdf_path=src_resume.pdf_path,
+            extracted_text=src_resume.extracted_text,
+            page_count=src_resume.page_count,
+            uploaded_at=src_resume.uploaded_at,
+        )
+        session.add(copy)
+        session.flush()
+        p.resume_id = copy.id
+        session.add(p)
     session.commit()
     session.refresh(p)
     return p
 
 
-def set_active_resume(session: Session, resume_id: int) -> None:
-    """Flag ``resume_id`` as the active resume and demote every other row (caller
-    commits). The only writer of ``Resume.is_active``."""
-    if session.get(Resume, resume_id) is None:
+def set_active_resume(session: Session, resume_id: Optional[int]) -> None:
+    """Flag ``resume_id`` as the active resume and demote every other row, in
+    every profile (caller commits). ``None`` leaves no resume flagged — a profile
+    that hasn't uploaded one. The only writer of ``Resume.is_active``."""
+    if resume_id is not None and session.exec(
+        select(Resume.id).where(Resume.id == resume_id).execution_options(all_profiles=True)
+    ).first() is None:
         raise LookupError(f"resume {resume_id} not found")
-    for r in session.exec(select(Resume).where(Resume.is_active == True)).all():  # noqa: E712
-        if r.id != resume_id:
-            r.is_active = False
-            session.add(r)
-    target = session.get(Resume, resume_id)
-    target.is_active = True
-    session.add(target)
+    session.execute(
+        update(Resume)
+        .where(Resume.is_active == True)  # noqa: E712
+        .values(is_active=False)
+        .execution_options(all_profiles=True, synchronize_session=False)
+    )
+    if resume_id is not None:
+        session.execute(
+            update(Resume)
+            .where(Resume.id == resume_id)
+            .values(is_active=True)
+            .execution_options(all_profiles=True, synchronize_session=False)
+        )
+    session.expire_all()
 
 
 def activate_profile(session: Session, profile_id: int) -> SearchProfile:
     """Make ``profile_id`` the active profile and its resume the active resume.
 
-    A profile with no resume yet (or a deleted one) adopts the current one rather
-    than leaving the app resume-less. Scores then read stale or fresh by the usual id comparison —
-    switching back to a profile brings its scores back without re-running them.
+    A profile whose resume is gone falls back to its newest upload; one with
+    none leaves no resume active, so the app asks that person to upload theirs.
+    Scores then read stale or fresh by the usual id comparison — switching back
+    to a profile brings its scores back without re-running them.
     """
     target = get_profile(session, profile_id)
     for p in session.exec(
@@ -178,12 +244,9 @@ def activate_profile(session: Session, profile_id: int) -> SearchProfile:
             p.is_active = False
             session.add(p)
     target.is_active = True
-    if target.resume_id is None or session.get(Resume, target.resume_id) is None:
-        # No resume (or its row is gone): adopt the current one, so the profile
-        # and ``Resume.is_active`` never disagree.
-        target.resume_id = _flagged_resume_id(session)
-    if target.resume_id is not None:
-        set_active_resume(session, target.resume_id)
+    if target.resume_id is None or owned_resume(session, target.id, target.resume_id) is None:
+        target.resume_id = _newest_resume_id(session, target.id)
+    set_active_resume(session, target.resume_id)
     target.updated_at = _now()
     session.add(target)
     session.commit()
@@ -199,7 +262,7 @@ def update_profile_meta(
     name: Optional[str] = None,
     resume_id: Optional[int] = None,
 ) -> SearchProfile:
-    """Rename a profile and/or point it at a different (already uploaded) resume.
+    """Rename a profile and/or switch it to another of its own resumes.
 
     Re-pointing the *active* profile switches the active resume with it, keeping
     the invariant.
@@ -208,8 +271,8 @@ def update_profile_meta(
     if name is not None:
         p.name = _clean_name(name)
     if resume_id is not None:
-        if session.get(Resume, resume_id) is None:
-            raise LookupError(f"resume {resume_id} not found")
+        if owned_resume(session, p.id, resume_id) is None:
+            raise LookupError(f"resume {resume_id} not found for this profile")
         p.resume_id = resume_id
         active = active_profile(session)
         if active is not None and active.id == p.id:
@@ -223,8 +286,8 @@ def update_profile_meta(
 
 def delete_profile(session: Session, profile_id: int) -> None:
     """Delete an inactive profile and everything that is only its: verdicts,
-    statuses + notes, scores + history, blacklist, preferences, and tailored
-    drafts on disk. Shared postings and uploaded resumes stay.
+    statuses + notes, scores + history, blacklist, preferences, resumes, and
+    tailored drafts on disk. Shared postings stay.
 
     Profiles can be different people, so a profile's rows are that person's
     data; leaving them behind would orphan rows pointing at a deleted profile.
@@ -242,6 +305,13 @@ def delete_profile(session: Session, profile_id: int) -> None:
     if folder.exists():
         shutil.rmtree(doomed, ignore_errors=True)
         folder.rename(doomed)
+    pdfs = set(
+        session.exec(
+            select(Resume.pdf_path)
+            .where(Resume.profile_id == p.id)
+            .execution_options(all_profiles=True)
+        ).all()
+    )
     for model in PROFILE_SCOPED:
         session.execute(
             delete(model)
@@ -251,6 +321,23 @@ def delete_profile(session: Session, profile_id: int) -> None:
     session.execute(delete(AppSetting).where(AppSetting.key.startswith(f"pref:{p.id}:")))  # type: ignore[union-attr]
     session.delete(p)
     session.commit()
+    # A copied profile's resume rows share the PDF; only remove files nobody
+    # else's row still points at, and only inside the resumes folder.
+    still_used = set(
+        session.exec(
+            select(Resume.pdf_path)
+            .where(Resume.pdf_path.in_(pdfs))  # type: ignore[attr-defined]
+            .execution_options(all_profiles=True)
+        ).all()
+    )
+    resumes_dir = drafts.settings.resumes_dir.resolve()
+    for pdf in pdfs - still_used:
+        path = Path(pdf).resolve()
+        if path.is_relative_to(resumes_dir):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                log.warning("couldn't remove deleted profile's resume %s: %s", path, e)
     if doomed.exists():
         shutil.rmtree(
             doomed,

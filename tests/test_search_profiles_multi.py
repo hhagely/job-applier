@@ -62,8 +62,18 @@ def client(engine):
     app.dependency_overrides.clear()
 
 
-def _resume(session: Session, name: str, *, active: bool = False) -> Resume:
-    r = Resume(original_filename=name, pdf_path=f"/tmp/{name}", extracted_text="x", is_active=active)
+def _resume(
+    session: Session, name: str, *, active: bool = False, profile_id: int | None = None
+) -> Resume:
+    """A resume owned by ``profile_id`` (default: the session's profile, which
+    the flush stamps, creating Default on a fresh DB)."""
+    r = Resume(
+        original_filename=name,
+        pdf_path=f"/tmp/{name}",
+        extracted_text="x",
+        is_active=active,
+        profile_id=profile_id,
+    )
     session.add(r)
     session.commit()
     session.refresh(r)
@@ -88,7 +98,7 @@ def test_activating_a_profile_switches_the_active_resume_and_back(session):
     assert a.resume_id == ic.id
 
     b = profiles.create_profile(session, name="Manager")
-    mgr = _resume(session, "mgr.pdf")
+    mgr = _resume(session, "mgr.pdf", profile_id=b.id)
     profiles.update_profile_meta(session, b.id, resume_id=mgr.id)
     # Re-pointing an inactive profile leaves the active resume alone.
     assert _active_resume_id(session) == ic.id
@@ -105,12 +115,10 @@ def test_activating_a_profile_switches_the_active_resume_and_back(session):
 
 
 @pytest.mark.parametrize("dangling", [False, True])
-def test_activating_a_profile_without_a_usable_resume_adopts_the_current_one(
-    session, dangling
-):
-    # No resume (or one whose row is gone) must not leave the profile and
-    # Resume.is_active disagreeing: the profile adopts the current resume.
-    ic = _resume(session, "ic.pdf", active=True)
+def test_activating_a_profile_without_a_resume_leaves_none_active(session, dangling):
+    # A new person has no resume yet: switching to them must not keep the
+    # previous person's resume active, and the flag must agree with the profile.
+    _resume(session, "ic.pdf", active=True)
     profiles.load_or_create_profile(session)
     session.commit()
     b = SearchProfile(name="B", resume_id=999 if dangling else None)
@@ -118,10 +126,44 @@ def test_activating_a_profile_without_a_usable_resume_adopts_the_current_one(
     session.commit()
 
     profiles.activate_profile(session, b.id)
-    assert b.resume_id == ic.id
-    assert _active_resume_id(session) == ic.id
-    flagged = session.exec(select(Resume).where(Resume.is_active == True)).all()  # noqa: E712
-    assert [r.id for r in flagged] == [ic.id]
+    assert b.resume_id is None
+    assert _active_resume_id(session) is None
+    flagged = session.exec(
+        select(Resume).where(Resume.is_active == True).execution_options(all_profiles=True)  # noqa: E712
+    ).all()
+    assert flagged == []
+
+
+def test_a_dangling_resume_falls_back_to_the_profiles_newest_own(session):
+    profiles.load_or_create_profile(session)
+    session.commit()
+    b = profiles.create_profile(session, name="B")
+    own = _resume(session, "b.pdf", profile_id=b.id)
+    b.resume_id = 999
+    session.add(b)
+    session.commit()
+
+    profiles.activate_profile(session, b.id)
+    assert b.resume_id == own.id
+    assert _active_resume_id(session) == own.id
+
+
+def test_profiles_only_see_and_use_their_own_resumes(session):
+    a_resume = _resume(session, "a.pdf", active=True)
+    a = profiles.load_or_create_profile(session)
+    session.commit()
+    b = profiles.create_profile(session, name="B")
+    assert b.resume_id is None  # a blank profile is a new person
+    with pytest.raises(LookupError):
+        profiles.update_profile_meta(session, b.id, resume_id=a_resume.id)
+
+    _resume(session, "b.pdf", profile_id=b.id)
+    session.expire_all()
+    assert [r.original_filename for r in session.exec(select(Resume)).all()] == ["a.pdf"]
+    profiles.activate_profile(session, b.id)
+    session.expire_all()
+    assert [r.original_filename for r in session.exec(select(Resume)).all()] == ["b.pdf"]
+    assert a.id != b.id
 
 
 def test_uploaded_resume_becomes_the_active_profiles_resume(session):
@@ -135,7 +177,7 @@ def test_uploaded_resume_becomes_the_active_profiles_resume(session):
     assert p.resume_id == new.id
 
 
-def test_clone_copies_criteria_and_resume(session):
+def test_clone_copies_criteria_and_its_own_copy_of_the_resume(session):
     r = _resume(session, "r.pdf", active=True)
     src = profiles.load_or_create_profile(session)
     src.required_tech = ["rust"]
@@ -144,8 +186,11 @@ def test_clone_copies_criteria_and_resume(session):
     clone = profiles.create_profile(session, name="Copy", clone_from=src.id)
     assert clone.required_tech == ["rust"]
     assert clone.home_state == "Missouri"
-    assert clone.resume_id == r.id
     assert clone.is_active is False
+    # Its own row (profiles never share one), pointing at the same PDF.
+    copy = profiles.owned_resume(session, clone.id, clone.resume_id)
+    assert copy is not None and copy.id != r.id
+    assert (copy.pdf_path, copy.is_active) == (r.pdf_path, False)
 
 
 def test_api_refuses_to_delete_the_active_profile(client):
@@ -213,3 +258,46 @@ def test_pending_match_and_queue_are_scoped_to_the_active_profile(session, clien
     ]
     assert [j["title"] for j in client.get("/api/jobs").json()] == ["Senior Platform Engineer"]
     assert client.get("/api/jobs/status-counts").json()["total"] == 1
+
+
+def test_deleting_a_profile_removes_its_resumes_but_not_a_shared_pdf(session, tmp_path, monkeypatch):
+    from job_applier.config import settings
+
+    monkeypatch.setattr(settings, "resumes_dir", tmp_path)
+    shared, own = tmp_path / "shared.pdf", tmp_path / "own.pdf"
+    shared.write_bytes(b"%PDF")
+    own.write_bytes(b"%PDF")
+    a_resume = Resume(original_filename="a.pdf", pdf_path=str(shared), extracted_text="x", is_active=True)
+    session.add(a_resume)
+    session.commit()
+    a = profiles.load_or_create_profile(session)
+    session.commit()
+    copy = profiles.create_profile(session, name="Copy", clone_from=a.id)  # shares shared.pdf
+    _resume(session, "own.pdf", profile_id=copy.id).pdf_path = str(own)
+    session.commit()
+
+    profiles.delete_profile(session, copy.id)
+    rows = session.exec(select(Resume).execution_options(all_profiles=True)).all()
+    assert [r.id for r in rows] == [a_resume.id]
+    assert shared.exists()  # still A's
+    assert not own.exists()
+
+
+def test_use_resume_endpoint_switches_only_to_the_profiles_own(client, engine):
+    with Session(engine) as s:
+        first = _resume(s, "first.pdf", active=True)
+        p = profiles.load_or_create_profile(s)
+        s.commit()
+        second = _resume(s, "second.pdf")
+        other = profiles.create_profile(s, name="Other")
+        theirs = _resume(s, "theirs.pdf", profile_id=other.id)
+        ids = (first.id, second.id, theirs.id, p.id)
+    first_id, second_id, theirs_id, _ = ids
+
+    r = client.post(f"/api/resumes/{second_id}/use")
+    assert r.status_code == 200 and r.json()["id"] == second_id
+    assert [x["original_filename"] for x in client.get("/api/resumes").json() if x["is_active"]] == [
+        "second.pdf"
+    ]
+    assert client.post(f"/api/resumes/{theirs_id}/use").status_code == 404
+    assert {x["id"] for x in client.get("/api/resumes").json()} == {first_id, second_id}

@@ -208,8 +208,10 @@ export interface SearchProfile {
 	name: string;
 	/** Exactly one profile is active: it drives ingest and owns the active resume. */
 	is_active: boolean;
-	/** The resume scored against while this profile is active; null until first activated. */
+	/** The one of its own resumes this profile scores and tailors with; null until it has one. */
 	resume_id: number | null;
+	/** That resume's filename (profile list only). */
+	resume_filename?: string | null;
 	role_titles: string[];
 	seniority_terms: string[];
 	required_tech: string[];
@@ -260,7 +262,7 @@ export interface Resume {
 	extracted_text: string;
 }
 
-/** A resume without its extracted text — the per-profile resume picker's options. */
+/** A resume without its extracted text: one row of the active profile's resume list. */
 export type ResumeSummary = Pick<Resume, 'id' | 'original_filename' | 'is_active' | 'uploaded_at'>;
 
 export type ProviderTier = 'recommended' | 'best-effort';
@@ -542,8 +544,13 @@ export const api = {
 	getCurrentResume: (fetchFn: FetchFn, base: string) =>
 		callOptional<Resume>(fetchFn, base, '/api/resume/current'),
 
+	/** The active profile's resumes, newest first. */
 	listResumes: (fetchFn: FetchFn, base: string) =>
 		call<ResumeSummary[]>(fetchFn, base, '/api/resumes'),
+
+	/** Make another of the active profile's resumes the one it uses. */
+	useResume: (fetchFn: FetchFn, base: string, id: number) =>
+		call<Resume>(fetchFn, base, `/api/resumes/${id}/use`, { method: 'POST' }),
 
 	getStaleScoreCount: (fetchFn: FetchFn, base: string) =>
 		call<{ count: number }>(fetchFn, base, '/api/scores/stale-count'),
@@ -594,20 +601,15 @@ export const api = {
 	listSearchProfiles: (fetchFn: FetchFn, base: string) =>
 		call<SearchProfile[]>(fetchFn, base, '/api/search-profiles'),
 
-	/** New inactive profile; `clone_from` copies another's criteria + resume. */
+	/** New inactive profile with no resume; `clone_from` copies another's criteria + resume. */
 	createSearchProfile: (fetchFn: FetchFn, base: string, name: string, clone_from?: number) =>
 		call<SearchProfile>(fetchFn, base, '/api/search-profiles', {
 			method: 'POST',
 			body: JSON.stringify({ name, clone_from })
 		}),
 
-	/** Rename and/or re-point at an uploaded resume (the active one switches the active resume). */
-	updateSearchProfileMeta: (
-		fetchFn: FetchFn,
-		base: string,
-		id: number,
-		body: { name?: string; resume_id?: number }
-	) =>
+	/** Rename a profile. (The API also takes `resume_id`; the Resume page uses `useResume`.) */
+	updateSearchProfileMeta: (fetchFn: FetchFn, base: string, id: number, body: { name: string }) =>
 		call<SearchProfile>(fetchFn, base, `/api/search-profiles/${id}`, {
 			method: 'PATCH',
 			body: JSON.stringify(body)

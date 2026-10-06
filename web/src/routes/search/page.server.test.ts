@@ -110,15 +110,15 @@ describe('activateProfile redirect_to', () => {
 });
 
 describe('updateProfileMeta', () => {
-	it('sends only the fields that were filled in', async () => {
-		api.updateSearchProfileMeta.mockResolvedValue({});
-		await run('updateProfileMeta', { id: '2', name: '', resume_id: 'none' });
-		expect(api.updateSearchProfileMeta).toHaveBeenCalledWith(expect.anything(), 'http://test', 2, {});
+	it('renames, refusing a blank name', async () => {
+		const r = (await run('updateProfileMeta', { id: '2', name: '  ' })) as Failure;
+		expect(r.status).toBe(400);
+		expect(api.updateSearchProfileMeta).not.toHaveBeenCalled();
 
-		await run('updateProfileMeta', { id: '2', name: 'Sam', resume_id: '5' });
-		expect(api.updateSearchProfileMeta).toHaveBeenLastCalledWith(expect.anything(), 'http://test', 2, {
-			name: 'Sam',
-			resume_id: 5
+		api.updateSearchProfileMeta.mockResolvedValue({});
+		await run('updateProfileMeta', { id: '2', name: ' Sam ' });
+		expect(api.updateSearchProfileMeta).toHaveBeenCalledWith(expect.anything(), 'http://test', 2, {
+			name: 'Sam'
 		});
 	});
 });
