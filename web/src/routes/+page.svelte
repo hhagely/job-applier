@@ -4,7 +4,7 @@
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, type ApplicationStatus, type Job, type StatusFacet } from '$lib/api';
+	import { type ApplicationStatus, type Job, type StatusFacet } from '$lib/api';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import { defaultFollowupDate } from '$lib/date';
 	import { isElectron } from '$lib/desktop';
@@ -191,54 +191,20 @@
 	// Base URL passed to the detail pane for its per-selection description/draft fetch.
 	const base = $derived(data.apiBase ?? '');
 
-	// --- "Open N postings": every draft-list job's original-posting URL, resolved
-	// ahead of the click. window.open() has to run synchronously inside the user
-	// gesture — an await first and a browser blocks every tab — so the URLs can't
-	// be fetched in the handler. Rows in the current view cover the common case;
-	// ids the cart kept from elsewhere (archived / another tab / filtered out) are
-	// fetched once each. `looked_up` is deliberately plain (not $state) so filling
-	// the map can't re-trigger the effect that fills it. ---
-	let cartUrls = $state<Record<number, string>>({});
-	const lookedUp = new Set<number>();
-	// Opening a browser tab per job is slow and hard to undo, so a big cart asks first.
+	// --- "Open N postings": every selected job's original posting, one tab each.
+	// window.open() has to run synchronously inside the user gesture (an await
+	// first and a browser blocks every tab), which is fine here: the selection
+	// is always rows already loaded on this page, so their URLs are in hand. ---
+	// Opening a browser tab per job is slow and hard to undo, so a big batch asks first.
 	const OPEN_ALL_CONFIRM_AT = 10;
 
-	$effect(() => {
-		const jobs = data.jobs;
-		for (const id of draftCart.ids) {
-			if (lookedUp.has(id)) continue;
-			lookedUp.add(id);
-			const hit = jobs.find((j) => j.id === id);
-			if (hit) {
-				cartUrls = { ...cartUrls, [id]: hit.url };
-				continue;
-			}
-			api
-				.getJob(fetch, base, id)
-				.then((j) => {
-					if (j.url) cartUrls = { ...cartUrls, [id]: j.url };
-				})
-				.catch(() => {
-					// A pruned or unreachable row just stays out of the open-all set.
-					lookedUp.delete(id);
-				});
-		}
-	});
+	const selectedUrls = $derived([
+		...new Set(data.jobs.filter((j) => selected.has(j.id) && j.url).map((j) => j.url))
+	]);
 
-	const cartUrlCount = $derived(
-		new Set(draftCart.ids.map((id) => cartUrls[id]).filter(Boolean)).size
-	);
-
-	function openCartPostings() {
-		const urls: string[] = [];
-		for (const id of draftCart.ids) {
-			const url = cartUrls[id];
-			if (url && !urls.includes(url)) urls.push(url);
-		}
-		if (urls.length === 0) {
-			toast('No posting links for the draft list yet — try again in a moment.');
-			return;
-		}
+	function openSelectedPostings() {
+		const urls = selectedUrls;
+		if (urls.length === 0) return;
 		if (urls.length > OPEN_ALL_CONFIRM_AT && !confirm(`Open ${urls.length} postings in your browser?`)) {
 			return;
 		}
@@ -437,17 +403,15 @@
 				</button>
 			</form>
 		{/if}
-		{#if draftCart.ids.length > 0}
+		{#if selected.size > 0}
 			<button
 				class="btn"
-				onclick={openCartPostings}
-				disabled={cartUrlCount === 0}
-				title={cartUrlCount === 0
-					? 'Still resolving the posting links'
-					: `Open ${cartUrlCount} original posting${cartUrlCount === 1 ? '' : 's'} in your browser`}
+				onclick={openSelectedPostings}
+				disabled={selectedUrls.length === 0}
+				title={`Open ${selectedUrls.length} original posting${selectedUrls.length === 1 ? '' : 's'} in your browser`}
 			>
 				<Icon name="external" size={13} stroke={2} />
-				Open {cartUrlCount} posting{cartUrlCount === 1 ? '' : 's'}
+				Open {selectedUrls.length} posting{selectedUrls.length === 1 ? '' : 's'}
 			</button>
 		{/if}
 		<!-- Escape hatch for a draft list holding jobs not shown in the current view
