@@ -5,18 +5,17 @@ from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import Integer, cast, func
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from job_applier import __version__, ingest, services
+from job_applier import __version__, profiles, services
 from job_applier.ai import tasks as ai_tasks
 from job_applier.api import blacklist as blacklist_router
 from job_applier.api import drafts as drafts_router
 from job_applier.api import preferences as preferences_router
 from job_applier.api import profile as profile_router
 from job_applier.api import resume as resume_router
+from job_applier.api import scrape as scrape_router
 from job_applier.api import watchlist as watchlist_router
 from job_applier.api.ai import router as ai_router
 from job_applier.api.deps import require_job
@@ -30,45 +29,40 @@ from job_applier.api.schemas import (
     ApplicationOut,
     BulkStatusUpdate,
     BulkUnemploymentUpdate,
-    CompanyCoverageOut,
     CompanyOut,
     FollowupUpdate,
     JobDetail,
+    OtherProfileStatus,
     JobOut,
     NotesUpdate,
     PendingMatchJob,
     ScoreIn,
     ScoreOut,
-    StartTaskOut,
     StatusCountsOut,
     StatusFacet,
     StatusUpdate,
     UnemploymentUpdate,
 )
 from job_applier.config import settings
-from job_applier.contracts import parse_iso_date
 from job_applier.models.db import (
     Application,
     ApplicationStatus,
     Company,
     FilterStatus,
     JobPosting,
-    MatchScore,
     MatchScoreHistory,
-    SourceSlug,
     create_db_and_tables,
-    engine,
     get_session,
-    get_setting,
-    set_setting,
 )
-from job_applier.sources import refresh as refresh_mod
-from job_applier.sources.refresh import refresh_slugs, seed_if_empty
+from job_applier.sources.refresh import seed_if_empty
 from job_applier.updates import check_for_update
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     create_db_and_tables()
+    # Drafts became per-profile; existing ones belong to the profile that owned
+    # them (the migrated Default). Filesystem, so not in create_db_and_tables.
+    profiles.adopt_legacy_drafts()
     # Seed the per-company source slugs on first boot. The desktop app and
     # `make api` only ever run the server (never `job-applier init`), so without
     # this a fresh DB — e.g. the packaged app's userData dir — starts with an
@@ -132,18 +126,7 @@ app.include_router(drafts_router.router)
 app.include_router(blacklist_router.router)
 app.include_router(watchlist_router.router)
 app.include_router(preferences_router.router)
-
-
-def _status_facet(job: JobPosting) -> StatusFacet:
-    """The status facet a posting falls under — ``none`` when never triaged.
-
-    The Python mirror of ``jobStatusKey`` in web/src/lib/queueFilters.ts. Takes
-    ``ApplicationStatus(...)`` rather than reading ``.value`` directly so it works
-    whether the ORM handed back the enum or the raw string.
-    """
-    if job.application is None:
-        return StatusFacet.none
-    return StatusFacet(ApplicationStatus(job.application.status).value)
+app.include_router(scrape_router.router)
 
 
 @app.get("/api/jobs", response_model=list[JobOut])
@@ -157,40 +140,21 @@ def list_jobs(
     limit: int = 100,
     offset: int = 0,
     session: Session = Depends(get_session),
-):
-    # Eager-load the 1:1/n:1 relationships _job_summary reads, so rendering N rows
-    # is a constant handful of queries instead of ~3 lazy loads per row (N+1).
-    stmt = select(JobPosting).options(
-        selectinload(JobPosting.company),
-        selectinload(JobPosting.score),
-        selectinload(JobPosting.application),
+) -> list[JobOut]:
+    """The active profile's queue: postings its rules passed (``filter_status``
+    is *its* verdict; ``None`` means passed or manual). ``status`` is a
+    multi-select of facets, as the queue's chips are."""
+    jobs = services.list_queue(
+        session,
+        filter_status=filter_status,
+        statuses={s.value for s in status} if status else None,
+        exclude_archived=exclude_archived,
+        min_score=min_score,
+        unscored_only=unscored_only,
+        include_duplicates=include_duplicates,
+        limit=limit,
+        offset=offset,
     )
-    if filter_status is not None:
-        stmt = stmt.where(JobPosting.filter_status == filter_status)
-    if not include_duplicates:
-        stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
-    stmt = stmt.order_by(JobPosting.ingested_at.desc())
-    jobs = list(session.exec(stmt).all())
-
-    # In-Python post-filters that need joined data — applied BEFORE pagination so
-    # limit/offset count matching rows, not the raw ingest order (e.g.
-    # ?status=applied&limit=100 returns 100 applied jobs, not applied-among-newest-100).
-    #
-    # `status` is a multi-select of facets (the queue's chips are), and an explicit
-    # selection always wins over `exclude_archived` — asking for status=archived and
-    # getting nothing back would be a trap. `exclude_archived` is what keeps the
-    # default queue from spending its whole limit on auto-archived low scorers.
-    if status:
-        wanted = set(status)
-        jobs = [j for j in jobs if _status_facet(j) in wanted]
-    elif exclude_archived:
-        jobs = [j for j in jobs if _status_facet(j) is not StatusFacet.archived]
-    if min_score is not None:
-        jobs = [j for j in jobs if j.score and j.score.score >= min_score]
-    if unscored_only:
-        jobs = [j for j in jobs if j.score is None]
-    jobs = jobs[offset : offset + limit]
-
     resume_names = _resume_filename_map(session)
     active_id = _active_resume_id(session)
     return [_job_summary(j, resume_names, active_id) for j in jobs]
@@ -203,33 +167,16 @@ def job_status_counts(
     filter_status: Optional[FilterStatus] = FilterStatus.passed,
     include_duplicates: bool = False,
     session: Session = Depends(get_session),
-):
+) -> StatusCountsOut:
     """Per-status totals across the whole queue, for the filter chips.
 
     Deliberately a separate call rather than a field on /api/jobs: the chips must
-    count every matching posting, while /api/jobs returns one limited page. A
-    GROUP BY keeps it one cheap query instead of loading 1.5k rows to count them.
+    count every matching posting, while /api/jobs returns one limited page.
     """
-    stmt = (
-        select(Application.status, func.count(JobPosting.id))
-        .select_from(JobPosting)
-        .outerjoin(Application, Application.job_id == JobPosting.id)  # type: ignore[arg-type]
-        .group_by(Application.status)  # type: ignore[arg-type]
+    raw = services.queue_status_counts(
+        session, filter_status=filter_status, include_duplicates=include_duplicates
     )
-    if filter_status is not None:
-        stmt = stmt.where(JobPosting.filter_status == filter_status)
-    if not include_duplicates:
-        stmt = stmt.where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
-
-    counts = {facet: 0 for facet in StatusFacet}
-    for raw_status, n in session.exec(stmt).all():  # type: ignore[call-overload]
-        # LEFT JOIN misses (never-triaged postings) come back with a NULL status.
-        facet = (
-            StatusFacet.none
-            if raw_status is None
-            else StatusFacet(ApplicationStatus(raw_status).value)
-        )
-        counts[facet] += n
+    counts = {StatusFacet(k): n for k, n in raw.items()}
     return StatusCountsOut(counts=counts, total=sum(counts.values()))
 
 
@@ -238,7 +185,7 @@ def search(
     q: str = "",
     limit: int = 20,
     session: Session = Depends(get_session),
-):
+) -> list[JobOut]:
     """Free-text lookup over ingested postings by job title or company name.
 
     Backs the Ctrl/Cmd-K palette, which is why it is a separate endpoint rather
@@ -254,11 +201,15 @@ def search(
 @app.get("/api/jobs/{job_id}", response_model=JobDetail)
 def get_job(
     job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
-):
+) -> JobDetail:
     summary = _job_summary(
         job, _resume_filename_map(session), _active_resume_id(session)
     )
-    return JobDetail(**summary.model_dump(), description=job.description)
+    others = [
+        OtherProfileStatus(profile_id=pid, name=name, status=status)
+        for pid, name, status in profiles.other_profile_statuses(session, job.id)
+    ]
+    return JobDetail(**summary.model_dump(), description=job.description, other_profiles=others)
 
 
 # Status-transition logic lives in services (shared with the background scorer's
@@ -271,7 +222,7 @@ def set_status(
     body: StatusUpdate,
     job: JobPosting = Depends(require_job),
     session: Session = Depends(get_session),
-):
+) -> ApplicationOut:
     app_row = job.application or Application(job_id=job.id)
     if body.notes is not None:
         app_row.notes = body.notes
@@ -290,7 +241,7 @@ def set_status(
 
 
 @app.post("/api/jobs/bulk-status", response_model=list[ApplicationOut])
-def set_status_bulk(body: BulkStatusUpdate, session: Session = Depends(get_session)):
+def set_status_bulk(body: BulkStatusUpdate, session: Session = Depends(get_session)) -> list[ApplicationOut]:
     if not body.job_ids:
         raise HTTPException(422, "job_ids must not be empty")
     try:
@@ -315,7 +266,7 @@ FOLLOWUP_ACTIVE_STATUSES = (
 
 
 @app.get("/api/followups", response_model=list[JobOut])
-def list_followups(session: Session = Depends(get_session)):
+def list_followups(session: Session = Depends(get_session)) -> list[JobOut]:
     """Applications past their follow-up date without an outcome recorded yet.
 
     Covers any status where the user is still expecting to hear back —
@@ -342,7 +293,7 @@ def set_followup(
     body: FollowupUpdate,
     job: JobPosting = Depends(require_job),
     session: Session = Depends(get_session),
-):
+) -> ApplicationOut:
     app_row = job.application
     if app_row is None:
         raise HTTPException(
@@ -366,7 +317,7 @@ def set_notes(
     body: NotesUpdate,
     job: JobPosting = Depends(require_job),
     session: Session = Depends(get_session),
-):
+) -> ApplicationOut:
     app_row = job.application or Application(job_id=job.id, status=ApplicationStatus.new)
     app_row.notes = body.notes
     app_row.updated_at = datetime.now(timezone.utc)
@@ -397,7 +348,7 @@ def set_unemployment(
     body: UnemploymentUpdate,
     job: JobPosting = Depends(require_job),
     session: Session = Depends(get_session),
-):
+) -> ApplicationOut:
     """Mark (or unmark) an application as reported for an unemployment claim."""
     app_row = _mark_unemployment(
         job, used=body.used, now=datetime.now(timezone.utc)
@@ -411,7 +362,7 @@ def set_unemployment(
 @app.post("/api/jobs/bulk-unemployment", response_model=list[ApplicationOut])
 def set_unemployment_bulk(
     body: BulkUnemploymentUpdate, session: Session = Depends(get_session)
-):
+) -> list[ApplicationOut]:
     if not body.job_ids:
         raise HTTPException(422, "job_ids must not be empty")
     now = datetime.now(timezone.utc)
@@ -436,7 +387,7 @@ def pending_match(
     limit: int = 25,
     include_stale: bool = False,
     session: Session = Depends(get_session),
-):
+) -> list[PendingMatchJob]:
     """Jobs that passed the hard filter and need scoring.
 
     Always includes unscored jobs. With ``include_stale=true``, also includes
@@ -461,7 +412,8 @@ def pending_match(
 
 @app.get("/api/scores/stale-count")
 def stale_score_count(session: Session = Depends(get_session)) -> dict:
-    """Count of baseline scores not against the active resume.
+    """Count of baseline scores not against the active resume, on the active
+    profile's postings (the set "Re-score" and "Keep existing scores" act on).
 
     Returns 0 when there's no active resume — there's nothing to be stale
     against in that case.
@@ -469,14 +421,7 @@ def stale_score_count(session: Session = Depends(get_session)) -> dict:
     active_id = _active_resume_id(session)
     if active_id is None:
         return {"count": 0}
-    count = len(
-        session.exec(
-            select(MatchScore).where(
-                MatchScore.resume_id.is_not(None),  # type: ignore[union-attr]
-                MatchScore.resume_id != active_id,
-            )
-        ).all()
-    )
+    count = len(session.exec(services.stale_scores_stmt(session, active_id)).all())
     return {"count": count}
 
 
@@ -495,7 +440,7 @@ def adopt_stale_scores(session: Session = Depends(get_session)) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/score", response_model=ScoreOut)
-def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_session)):
+def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_session)) -> ScoreOut:
     try:
         score = services.upsert_score(
             session,
@@ -527,7 +472,7 @@ def upsert_score(job_id: int, body: ScoreIn, session: Session = Depends(get_sess
 @app.get("/api/jobs/{job_id}/score-history", response_model=list[ScoreOut])
 def list_score_history(
     job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
-):
+) -> list[ScoreOut]:
     rows = session.exec(
         select(MatchScoreHistory)
         .where(MatchScoreHistory.job_id == job.id)
@@ -546,13 +491,13 @@ def list_score_history(
 
 
 @app.get("/api/companies", response_model=list[CompanyOut])
-def list_companies(session: Session = Depends(get_session)):
+def list_companies(session: Session = Depends(get_session)) -> list[CompanyOut]:
     companies = session.exec(select(Company).order_by(Company.name)).all()
     return [_company_out(c) for c in companies]
 
 
 @app.post("/api/companies/{company_id}/block", response_model=CompanyOut)
-def block_company(company_id: int, blocked: bool = True, session: Session = Depends(get_session)):
+def block_company(company_id: int, blocked: bool = True, session: Session = Depends(get_session)) -> CompanyOut:
     c = session.get(Company, company_id)
     if c is None:
         raise HTTPException(404, "company not found")
@@ -561,127 +506,6 @@ def block_company(company_id: int, blocked: bool = True, session: Session = Depe
     session.commit()
     session.refresh(c)
     return _company_out(c)
-
-
-def _run_ingest_task(state: "ai_tasks.TaskState") -> None:
-    """Worker body: pull jobs from every source, reporting per-source progress."""
-
-    def _cb(done: int, total: int, name: str, stats: ingest.IngestStats) -> None:
-        state.total = total
-        state.done = done
-        state.results.append(
-            f"{name}: {stats.inserted} new / {stats.passed_filter} passed (running total)"
-        )
-        state.publish()
-
-    stats = ingest.run_ingest(progress_cb=_cb)
-    state.results.append(
-        f"done: {stats.inserted} new, {stats.passed_filter} passed, {stats.fetched} fetched"
-    )
-
-
-@app.post("/api/ingest", response_model=StartTaskOut)
-def start_ingest(session: Session = Depends(get_session)):
-    """Kick off a background scrape of every source. Poll GET /api/ai/tasks/{id}
-    for per-source progress. Needs no AI provider — just network access."""
-    from job_applier.sources import get_all_sources
-
-    total = len(get_all_sources())
-    task_id = ai_tasks.start_task("ingest", total, _run_ingest_task)
-    return StartTaskOut(task_id=task_id)
-
-
-# When the company-board discovery pass last ran. Stored as a setting rather than
-# derived from SourceSlug.updated_at because a run that finds nothing new still
-# counts as "we checked" — and that distinction is the whole point of showing it.
-COMPANY_CHECKED_KEY = "companies_last_checked_at"
-
-
-@app.get("/api/company-coverage", response_model=CompanyCoverageOut)
-def company_coverage(session: Session = Depends(get_session)):
-    """How many company job boards ingest watches, split by source, plus when the
-    list was last checked for new ones."""
-    # `enabled` is a Boolean column, so SUM() over it inherits the Boolean result
-    # processor and every non-zero total collapses to True (=1). Cast to Integer so
-    # the sum stays a count.
-    rows = session.exec(
-        select(
-            SourceSlug.source,
-            func.count(SourceSlug.id),
-            func.sum(cast(SourceSlug.enabled, Integer)),
-        ).group_by(SourceSlug.source)
-    ).all()
-    by_source = {source: int(n) for source, n, _ in rows}
-    # The checked-at setting is a free-form string column, so parse it leniently:
-    # a hand-edited or half-written value must degrade to "never checked", not 500
-    # this endpoint. /search loads it as a page dependency, so a hard failure here
-    # would lock the user out of the very page that resets the list.
-    last = parse_iso_date(get_setting(session, COMPANY_CHECKED_KEY))
-    return CompanyCoverageOut(
-        total=sum(by_source.values()),
-        enabled=sum(int(en or 0) for _, _, en in rows),
-        by_source=dict(sorted(by_source.items(), key=lambda kv: -kv[1])),
-        last_checked_at=last,
-    )
-
-
-def _run_refresh_companies_task(state: "ai_tasks.TaskState", reverify: bool) -> None:
-    """Worker body: discover + verify new company job boards, reporting one step
-    per source pass. Stamps the checked-at setting only on success, so a failed
-    run doesn't make a stale list look fresh."""
-
-    def _cb(done: int, total: int, label: str) -> None:
-        state.total = total
-        state.done = done
-        state.results.append(label)
-        state.publish()
-
-    stats = refresh_slugs(reverify_existing=reverify, progress_cb=_cb)
-    added = (
-        stats.gh_added
-        + stats.lv_added
-        + stats.wk_added
-        + stats.sr_added
-        + stats.ashby_added
-    )
-    disabled = (
-        stats.gh_disabled
-        + stats.lv_disabled
-        + stats.ashby_disabled
-        + stats.workday_disabled
-        + stats.wk_disabled
-        + stats.sr_disabled
-    )
-    summary = f"done: {added} new compan{'y' if added == 1 else 'ies'} added"
-    if reverify:
-        summary += f", {disabled} dead board{'' if disabled == 1 else 's'} disabled"
-    state.results.append(summary)
-
-    with Session(engine()) as own:
-        set_setting(own, COMPANY_CHECKED_KEY, datetime.now(timezone.utc).isoformat())
-
-
-@app.post("/api/company-coverage/refresh", response_model=StartTaskOut)
-def start_company_refresh(
-    reverify: bool = False, session: Session = Depends(get_session)
-):
-    """Kick off a background pass that finds company job boards not yet watched
-    (and, with ``reverify``, disables ones that no longer respond). Poll
-    GET /api/ai/tasks/{id} for progress. Needs no AI provider — just network."""
-    running = ai_tasks.active_task("refresh_companies")
-    if running is not None:
-        # Already in flight — hand back the live task instead of queueing a second
-        # pass over the same feed.
-        return StartTaskOut(task_id=running.id)
-    total = (
-        refresh_mod.REFRESH_STEPS_REVERIFY if reverify else refresh_mod.REFRESH_STEPS
-    )
-    task_id = ai_tasks.start_task(
-        "refresh_companies",
-        total,
-        lambda state: _run_refresh_companies_task(state, reverify),
-    )
-    return StartTaskOut(task_id=task_id)
 
 
 @app.get("/api/health")

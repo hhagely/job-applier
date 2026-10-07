@@ -1,6 +1,7 @@
 """Tailored-resume + cover-letter drafts: storage and print-HTML rendering.
 
-Drafts live on disk under ``settings.applications_dir/<job_id>/``:
+Drafts live on disk under ``settings.applications_dir/profile-<id>/<job_id>/``
+(per profile, so two people's tailored drafts for the same job never collide):
 
     resume.md
     resume.pdf
@@ -18,6 +19,9 @@ caller that owns a browser engine drives the actual print. See
 
 from __future__ import annotations
 
+import logging
+import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -121,8 +125,80 @@ class DraftStatus:
     updated_at: datetime | None
 
 
-def draft_dir(job_id: int) -> Path:
-    return settings.applications_dir / str(job_id)
+log = logging.getLogger(__name__)
+
+
+def profile_dir(profile_id: int) -> Path:
+    """Where one profile's drafts live: ``<applications>/profile-<id>/``."""
+    return settings.applications_dir / f"profile-{profile_id}"
+
+
+def draft_dir(job_id: int, *, profile_id: int) -> Path:
+    return profile_dir(profile_id) / str(job_id)
+
+
+def legacy_draft_dirs() -> list[Path]:
+    """Pre-profile draft folders (``<applications>/<job_id>/``) still to move.
+    The new layout's ``profile-`` prefix can never match. Runs at startup, so an
+    unreadable folder is logged and reads as "none" rather than stopping boot."""
+    root = settings.applications_dir
+    try:
+        if not root.is_dir():
+            return []
+        return [e for e in root.iterdir() if e.is_dir() and e.name.isdigit()]
+    except OSError as exc:
+        log.warning("couldn't list legacy draft folders in %s: %s", root, exc)
+        return []
+
+
+def set_aside_profile_drafts(profile_id: int) -> Path | None:
+    """Rename a profile's drafts folder out of the way before the profile is
+    deleted, so a later profile that reuses the id never finds them. Raises
+    ``OSError`` when it can't (on Windows, a PDF open in a viewer), before
+    anything has been deleted. Returns the new path, or None when there were no
+    drafts."""
+    folder = profile_dir(profile_id)
+    if not folder.exists():
+        return None
+    doomed = folder.with_name(f"{folder.name}.deleted-{uuid.uuid4().hex[:8]}")
+    folder.rename(doomed)
+    return doomed
+
+
+def remove_set_aside(path: Path) -> None:
+    """Best-effort removal of a folder from ``set_aside_profile_drafts``; what
+    can't be removed is logged and left (its name is unique, so it's inert)."""
+    shutil.rmtree(
+        path,
+        onexc=lambda _fn, p, exc: log.warning("couldn't remove deleted draft %s: %s", p, exc),
+    )
+
+
+def move_legacy_draft_dirs(profile_id: int) -> int:
+    """One-time move of pre-profile drafts (``<applications>/<job_id>/``) under
+    ``profile-<profile_id>/``. Returns how many directories moved.
+
+    Idempotent: only top-level all-digit directories are legacy (the new layout's
+    ``profile-`` prefix can never match), and a target that already exists is left
+    alone rather than overwritten. A rename within one directory tree is atomic per
+    directory, so an interrupted run just finishes on the next start.
+    """
+    dest_root = profile_dir(profile_id)
+    moved = 0
+    for entry in legacy_draft_dirs():
+        dest = dest_root / entry.name
+        if dest.exists():
+            continue
+        try:
+            dest_root.mkdir(parents=True, exist_ok=True)
+            entry.rename(dest)
+        except OSError as exc:
+            # Best effort at startup: a file open in a viewer blocks the rename
+            # on Windows. Leave it for the next start rather than refuse to boot.
+            log.warning("couldn't move legacy draft folder %s: %s", entry, exc)
+            continue
+        moved += 1
+    return moved
 
 
 def render_print_html(md_text: str, kind: DraftKind) -> str:
@@ -153,7 +229,11 @@ def _clean_draft(md: str) -> str:
 
 
 def save_markdown(
-    job_id: int, resume_md: str | None, cover_letter_md: str | None
+    job_id: int,
+    resume_md: str | None,
+    cover_letter_md: str | None,
+    *,
+    profile_id: int,
 ) -> DraftStatus:
     """Write any provided markdown to disk (no PDF). Returns the latest status.
 
@@ -161,7 +241,7 @@ def save_markdown(
     for every writer. Kept independent of PDF rendering so drafts persist even when no
     browser engine is available, and so Electron can drive the print separately later.
     """
-    d = draft_dir(job_id)
+    d = draft_dir(job_id, profile_id=profile_id)
     d.mkdir(parents=True, exist_ok=True)
 
     if resume_md is not None:
@@ -171,19 +251,19 @@ def save_markdown(
             _clean_draft(cover_letter_md), encoding="utf-8"
         )
 
-    return get_status(job_id)
+    return get_status(job_id, profile_id=profile_id)
 
 
-def render_pdf(job_id: int, kind: DraftKind, pdf_bytes: bytes) -> None:
+def render_pdf(job_id: int, kind: DraftKind, pdf_bytes: bytes, *, profile_id: int) -> None:
     """Persist caller-produced PDF bytes for a draft kind."""
-    d = draft_dir(job_id)
+    d = draft_dir(job_id, profile_id=profile_id)
     d.mkdir(parents=True, exist_ok=True)
     (d / _FILES[kind][1]).write_bytes(pdf_bytes)
 
 
-def existing_markdown_kinds(job_id: int) -> list[DraftKind]:
+def existing_markdown_kinds(job_id: int, *, profile_id: int) -> list[DraftKind]:
     """Draft kinds that currently have a saved ``.md`` on disk."""
-    d = draft_dir(job_id)
+    d = draft_dir(job_id, profile_id=profile_id)
     kinds: list[DraftKind] = []
     for kind, (md_name, _pdf_name) in _FILES.items():
         if (d / md_name).exists():
@@ -191,8 +271,8 @@ def existing_markdown_kinds(job_id: int) -> list[DraftKind]:
     return kinds
 
 
-def get_status(job_id: int) -> DraftStatus:
-    d = draft_dir(job_id)
+def get_status(job_id: int, *, profile_id: int) -> DraftStatus:
+    d = draft_dir(job_id, profile_id=profile_id)
     paths = {
         "resume_md": d / "resume.md",
         "resume_pdf": d / "resume.pdf",
@@ -213,10 +293,10 @@ def get_status(job_id: int) -> DraftStatus:
     )
 
 
-def read_markdown(job_id: int, kind: DraftKind) -> str | None:
-    md_path = draft_dir(job_id) / _FILES[kind][0]
+def read_markdown(job_id: int, kind: DraftKind, *, profile_id: int) -> str | None:
+    md_path = draft_dir(job_id, profile_id=profile_id) / _FILES[kind][0]
     return md_path.read_text(encoding="utf-8") if md_path.exists() else None
 
 
-def pdf_path(job_id: int, kind: DraftKind) -> Path:
-    return draft_dir(job_id) / _FILES[kind][1]
+def pdf_path(job_id: int, kind: DraftKind, *, profile_id: int) -> Path:
+    return draft_dir(job_id, profile_id=profile_id) / _FILES[kind][1]

@@ -3,10 +3,14 @@ from job_applier.filters.rules import (
     FilterConfig,
     FilterResult,
     build_config,
+    config_for,
     evaluate,
-    load_active_config,
+    evaluate_profile,
+    evaluate_shared,
+    has_criteria,
     normalize_home_state,
     title_quick_fail,
+    union_title_config,
 )
 
 __all__ = [
@@ -14,8 +18,12 @@ __all__ = [
     "FilterConfig",
     "FilterResult",
     "build_config",
+    "config_for",
     "evaluate",
-    "load_active_config",
+    "evaluate_profile",
+    "evaluate_shared",
+    "has_criteria",
     "normalize_home_state",
     "title_quick_fail",
+    "union_title_config",
 ]

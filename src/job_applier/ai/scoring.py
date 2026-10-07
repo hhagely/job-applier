@@ -11,12 +11,11 @@ from typing import Callable, NoReturn, Optional
 
 from pydantic import BaseModel, Field
 
-from job_applier import services
+from job_applier import profiles, services
 from job_applier.ai import prompt_safety, providers
 from job_applier.ai.templates import load_template, render_job_prompt
 from job_applier.config import settings
 from job_applier.contracts import html_to_text
-from job_applier.filters import load_active_config
 from job_applier.models.db import ApplicationStatus, JobPosting, Session, engine
 
 # Below this score a job is auto-archived after scoring (60 itself survives).
@@ -245,7 +244,7 @@ def score_one(
     ``score_kind="tailored"`` scores a per-job tailored resume markdown (the drafting
     flow); the same rubric template powers both so baseline/tailored can't drift.
     """
-    home_state = load_active_config(session).home_state
+    home_state = profiles.active_config(session).home_state
     prompt = build_score_prompt(resume_text, job, home_state=home_state)
     payload = _run_and_parse(provider, prompt, model)
     final_score = _persist_score(session, provider, job.id, payload, score_kind=score_kind)
@@ -388,7 +387,7 @@ def score_pending(
     if resume is None:
         raise NoActiveResume("no active resume — upload one first")
 
-    home_state = load_active_config(session).home_state
+    home_state = profiles.active_config(session).home_state
 
     if job_ids is not None:
         jobs = [j for j in (session.get(JobPosting, jid) for jid in job_ids) if j]

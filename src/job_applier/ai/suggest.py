@@ -11,9 +11,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from sqlmodel import select
-
-from job_applier import services
+from job_applier import profiles, services
 from job_applier.ai import prompt_safety, providers
 from job_applier.ai.templates import load_template
 from job_applier.models.db import SearchProfile, Session
@@ -32,6 +30,7 @@ class SuggestedProfile(BaseModel):
     """
 
     role_titles: list[str] = []
+    title_terms: list[str] = []
     seniority_terms: list[str] = []
     required_tech: list[str] = []
     excluded_tech: list[str] = []
@@ -45,6 +44,7 @@ def _current_profile_summary(profile: Optional[SearchProfile]) -> str:
     return json.dumps(
         {
             "role_titles": list(profile.role_titles or []),
+            "title_terms": list(profile.title_terms or []),
             "seniority_terms": list(profile.seniority_terms or []),
             "required_tech": list(profile.required_tech or []),
             "excluded_tech": list(profile.excluded_tech or []),
@@ -90,7 +90,7 @@ def suggest_roles(
         raise SuggestError("no active resume — upload one first")
 
     # Read the existing profile (if any) without creating a row just to describe it.
-    profile = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+    profile = profiles.active_profile(session)
     rec = _run_and_parse(
         provider, build_suggest_prompt(resume.extracted_text, profile), model
     )

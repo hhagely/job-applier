@@ -25,7 +25,7 @@ import pytest
 # jobposting predates cross_source_hash + jd_fingerprint/duplicate_of;
 # matchscore predates resume_id; both score tables predate score_kind
 # (matchscorehistory shipped with resume_id); searchprofile predates
-# home_state; sourceslug predates added_by_user/label; application predates
+# home_state and the multi-profile name/is_active/resume_id; sourceslug predates added_by_user/label; application predates
 # the followup and unemployment columns. company / resume / appsetting /
 # blacklistedcompany have never needed a helper and so appear at their
 # shipped shape — they're here so that the first column added to any of them
@@ -59,7 +59,8 @@ CREATE TABLE matchscore (
     rubric JSON,
     reasoning VARCHAR,
     scored_by VARCHAR,
-    scored_at DATETIME
+    scored_at DATETIME,
+    UNIQUE (job_id)
 );
 CREATE TABLE matchscorehistory (
     id INTEGER PRIMARY KEY,
@@ -98,7 +99,8 @@ CREATE TABLE application (
     status VARCHAR NOT NULL,
     notes VARCHAR,
     applied_at DATETIME,
-    updated_at DATETIME
+    updated_at DATETIME,
+    UNIQUE (job_id)
 );
 CREATE TABLE company (
     id INTEGER PRIMARY KEY,
@@ -126,6 +128,13 @@ CREATE TABLE blacklistedcompany (
     normalized_name VARCHAR NOT NULL,
     reason VARCHAR,
     created_at DATETIME
+);
+CREATE UNIQUE INDEX ix_blacklistedcompany_normalized_name ON blacklistedcompany (normalized_name);
+CREATE TABLE jobprofilelink (
+    job_id INTEGER NOT NULL,
+    search_profile_id INTEGER NOT NULL,
+    linked_at DATETIME,
+    PRIMARY KEY (job_id, search_profile_id)
 );
 """
 
@@ -217,6 +226,361 @@ def test_migration_adds_searchprofile_home_state(tmp_path, monkeypatch):
     assert "home_state" in _cols(db_path, "searchprofile")
 
 
+def _run_startup_with(tmp_path, monkeypatch, seed_sql: str):
+    """Like ``_run_startup`` but with rows in the legacy DB before migrating."""
+    db_path = tmp_path / "legacy.db"
+    _make_legacy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(seed_sql)
+    conn.commit()
+    conn.close()
+
+    from job_applier import models
+    from job_applier.config import settings
+
+    monkeypatch.setattr(settings, "db_path", db_path)
+    monkeypatch.setattr(models.db, "_engine", None)
+    models.db.create_db_and_tables()
+    return db_path, models
+
+
+def test_migration_makes_existing_profile_the_active_default(tmp_path, monkeypatch):
+    # The single pre-multi-profile row becomes the active "Default" profile, on
+    # the active resume, and owns every existing posting — the queue the user had
+    # before upgrading is exactly that profile's queue.
+    db_path, models = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO resume (id, original_filename, pdf_path, extracted_text, is_active)
+            VALUES (1, 'old.pdf', '/x', 't', 0), (2, 'cur.pdf', '/y', 't', 1);
+        INSERT INTO searchprofile (id, role_titles) VALUES (7, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title)
+            VALUES (1, 'gh', 'a', 'u', 'A'), (2, 'gh', 'b', 'u', 'B');
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(
+            "SELECT name, is_active, resume_id FROM searchprofile"
+        ).fetchall() == [("Default", 1, 2)]
+        assert conn.execute(
+            "SELECT job_id, profile_id FROM jobprofilelink ORDER BY job_id"
+        ).fetchall() == [(1, 7), (2, 7)]
+    finally:
+        conn.close()
+
+    # One-time: a second startup must not re-home postings that lost their link
+    # (a deleted profile's postings stay unlinked).
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM jobprofilelink WHERE job_id = 2")
+    conn.commit()
+    conn.close()
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT job_id FROM jobprofilelink").fetchall() == [(1,)]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "link_table",
+    [
+        # Straight from a pre-profile release: no link table, so create_all builds
+        # it at today's shape and the verdicts are copied as the links are made.
+        "DROP TABLE jobprofilelink;",
+        # Migrated by the first multi-profile build: the old link table is
+        # renamed and its verdicts backfilled from the postings.
+        "",
+    ],
+    ids=["create", "rename"],
+)
+def test_legacy_verdicts_move_onto_the_links(tmp_path, monkeypatch, link_table):
+    # The posting columns held what was each profile's verdict before scrape-once;
+    # they move onto the Default profile's links, and the posting columns are
+    # left meaning only the shared verdict (passed).
+    seed = """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title, filter_status, filter_reason)
+            VALUES (1, 'gh', 'a', 'u', 'A', 'passed', NULL),
+                   (2, 'gh', 'b', 'u', 'B', 'manual', 'tech only implied'),
+                   (3, 'gh', 'c', 'u', 'C', NULL, NULL);
+    """
+    if not link_table:
+        seed += """
+        INSERT INTO jobprofilelink (job_id, search_profile_id, linked_at)
+            VALUES (1, 3, '2026-08-01'), (2, 3, '2026-08-01'), (3, 3, '2026-08-01');
+        """
+    db_path, models = _run_startup_with(tmp_path, monkeypatch, link_table + seed)
+
+    def state():
+        conn = sqlite3.connect(db_path)
+        try:
+            links = conn.execute(
+                "SELECT job_id, profile_id, filter_status, filter_reason "
+                "FROM jobprofilelink ORDER BY job_id"
+            ).fetchall()
+            postings = conn.execute(
+                "SELECT DISTINCT filter_status, filter_reason FROM jobposting"
+            ).fetchall()
+            return links, postings
+        finally:
+            conn.close()
+
+    expected = (
+        [(1, 3, "passed", None), (2, 3, "manual", "tech only implied"), (3, 3, "passed", None)],
+        [("passed", None)],
+    )
+    assert state() == expected
+    models.db.create_db_and_tables()
+    assert state() == expected
+
+
+def test_existing_resumes_get_an_owner_profile(tmp_path, monkeypatch):
+    # A DB from before resumes were per profile: two profiles used the same
+    # upload, one older upload was scored by profile 4, one nobody touched.
+    db_path, models = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO resume (id, original_filename, pdf_path, extracted_text, is_active)
+            VALUES (1, 'shared.pdf', '/r/shared.pdf', 't', 1),
+                   (2, 'old-b.pdf', '/r/old-b.pdf', 't', 0),
+                   (3, 'stray.pdf', '/r/stray.pdf', 't', 0);
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]'), (4, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        DROP INDEX ix_resume_profile_id;
+        ALTER TABLE resume DROP COLUMN profile_id;
+        UPDATE searchprofile SET resume_id = 1;
+        INSERT INTO matchscore (job_id, profile_id, score, scored_by, scored_at, resume_id, score_kind)
+            VALUES (1, 3, 80, 'c', '2026-08-01', 1, 'baseline'),
+                   (1, 4, 70, 'c', '2026-08-01', 1, 'baseline');
+        INSERT INTO matchscorehistory (job_id, profile_id, score, scored_by, scored_at, resume_id, score_kind)
+            VALUES (1, 4, 60, 'c', '2026-07-01', 2, 'baseline');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, profile_id, pdf_path, is_active FROM resume ORDER BY id"
+        ).fetchall()
+        copy_id = rows[-1][0]
+        assert rows == [
+            (1, 3, "/r/shared.pdf", 1),  # the active profile keeps the original
+            (2, 4, "/r/old-b.pdf", 0),  # owner inferred from its scores
+            (3, 3, "/r/stray.pdf", 0),  # nobody's: the active profile
+            (copy_id, 4, "/r/shared.pdf", 0),  # profile 4's own copy
+        ]
+        assert conn.execute(
+            "SELECT id, resume_id FROM searchprofile ORDER BY id"
+        ).fetchall() == [(3, 1), (4, copy_id)]
+        # Profile 4's score follows its copy, so it doesn't read as stale.
+        assert conn.execute(
+            "SELECT profile_id, resume_id FROM matchscore ORDER BY profile_id"
+        ).fetchall() == [(3, 1), (4, copy_id)]
+    finally:
+        conn.close()
+
+    models.db.create_db_and_tables()  # one-time: nothing changes on a re-run
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM resume").fetchone() == (4,)
+    finally:
+        conn.close()
+
+
+def test_migration_creates_default_profile_for_orphaned_postings(tmp_path, monkeypatch):
+    # Postings but no profile row (filter ran on built-in defaults): a Default
+    # profile is created so those postings aren't left out of every scoped view.
+    db_path, _ = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        "INSERT INTO jobposting (id, source, source_id, url, title) "
+        "VALUES (1, 'gh', 'a', 'u', 'A');",
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute("SELECT id, name, is_active FROM searchprofile").fetchall()
+        assert [(r[1], r[2]) for r in rows] == [("Default", 1)]
+        assert conn.execute(
+            "SELECT job_id, profile_id FROM jobprofilelink"
+        ).fetchall() == [(1, rows[0][0])]
+    finally:
+        conn.close()
+
+
+def test_migration_moves_per_job_state_onto_the_default_profile(tmp_path, monkeypatch):
+    # The table rebuild: application/matchscore lose UNIQUE(job_id) for
+    # UNIQUE(job_id, profile_id), every row lands on the Default profile with
+    # its data intact, and a second profile can then own a row for the same job.
+    db_path, models = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        INSERT INTO application (id, job_id, status, notes, applied_at, updated_at)
+            VALUES (10, 1, 'applied', 'called them', '2026-08-01', '2026-08-02');
+        INSERT INTO matchscore (id, job_id, score, rubric, reasoning, scored_by, scored_at)
+            VALUES (20, 1, 88, '{}', 'good fit', 'claude', '2026-08-01');
+        INSERT INTO matchscorehistory (id, job_id, score, scored_by, scored_at)
+            VALUES (30, 1, 70, 'claude', '2026-07-01');
+        INSERT INTO blacklistedcompany (id, name, normalized_name, created_at)
+            VALUES (40, 'Meta', 'meta', '2026-07-01');
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(
+            "SELECT id, job_id, profile_id, status, notes FROM application"
+        ).fetchall() == [(10, 1, 3, "applied", "called them")]
+        assert conn.execute(
+            "SELECT id, job_id, profile_id, score, reasoning, score_kind FROM matchscore"
+        ).fetchall() == [(20, 1, 3, 88, "good fit", "baseline")]
+        assert conn.execute("SELECT profile_id FROM matchscorehistory").fetchall() == [(3,)]
+        assert conn.execute("SELECT profile_id FROM blacklistedcompany").fetchall() == [(3,)]
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name LIKE '%__pre_profile'"
+        ).fetchall()
+
+        # The old one-row-per-job constraint is gone; one-per-(job, profile) holds.
+        conn.execute("INSERT INTO searchprofile (id, role_titles) VALUES (4, '[]')")
+        conn.execute(
+            "INSERT INTO application (job_id, profile_id, status, updated_at, "
+            "used_for_unemployment) VALUES (1, 4, 'new', '2026-08-03', 0)"
+        )
+        conn.execute(
+            "INSERT INTO matchscore (job_id, profile_id, score, rubric, reasoning, "
+            "scored_by, scored_at, score_kind) "
+            "VALUES (1, 4, 50, '{}', '', 'claude', '2026-08-03', 'baseline')"
+        )
+        conn.execute(
+            "INSERT INTO blacklistedcompany (profile_id, name, normalized_name, created_at) "
+            "VALUES (4, 'Meta', 'meta', '2026-08-03')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO application (job_id, profile_id, status, updated_at, "
+                "used_for_unemployment) VALUES (1, 3, 'new', '2026-08-03', 0)"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO blacklistedcompany (profile_id, name, normalized_name, created_at) "
+                "VALUES (3, 'Meta Inc', 'meta', '2026-08-03')"
+            )
+    finally:
+        conn.close()
+
+
+def test_rebuild_fills_nulls_in_columns_that_are_now_required(tmp_path, monkeypatch):
+    # Legacy scored_by / scored_at / updated_at were nullable; the rebuilt tables
+    # make them NOT NULL, so a NULL must take the model default, not fail the copy.
+    db_path, _ = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        INSERT INTO application (id, job_id, status, updated_at) VALUES (10, 1, 'applied', NULL);
+        INSERT INTO matchscore (id, job_id, score, scored_by, scored_at) VALUES (20, 1, 88, NULL, NULL);
+        """,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(
+            "SELECT id, status, updated_at IS NOT NULL FROM application"
+        ).fetchall() == [(10, "applied", 1)]
+        assert conn.execute(
+            "SELECT id, score, scored_by, scored_at IS NOT NULL FROM matchscore"
+        ).fetchall() == [(20, 88, "claude-code", 1)]
+    finally:
+        conn.close()
+
+
+def test_failed_rebuild_leaves_the_legacy_tables_intact(tmp_path, monkeypatch):
+    # The rebuild's DDL must share the copy's transaction: a failure part-way
+    # (here, after application is rebuilt) rolls everything back, so no rows are
+    # stranded in *__pre_profile and the next startup simply retries.
+    db_path = tmp_path / "legacy.db"
+    _make_legacy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        INSERT INTO searchprofile (id, role_titles) VALUES (3, '[]');
+        INSERT INTO jobposting (id, source, source_id, url, title) VALUES (1, 'gh', 'a', 'u', 'A');
+        INSERT INTO application (id, job_id, status, updated_at) VALUES (10, 1, 'applied', '2026-08-02');
+        INSERT INTO matchscore (id, job_id, score, scored_by, scored_at) VALUES (20, 1, 88, 'c', '2026-08-01');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from job_applier import models
+    from job_applier.config import settings
+
+    monkeypatch.setattr(settings, "db_path", db_path)
+    monkeypatch.setattr(models.db, "_engine", None)
+    real_rebuild = models.migrations._rebuild_with_profile
+
+    def failing_rebuild(conn, table, pid, old_cols):  # noqa: ANN001
+        real_rebuild(conn, table, pid, old_cols)
+        if table == "matchscore":
+            raise RuntimeError("disk full")
+
+    monkeypatch.setattr(models.migrations, "_rebuild_with_profile", failing_rebuild)
+    with pytest.raises(RuntimeError):
+        models.db.create_db_and_tables()
+    models.db.engine().dispose()
+
+    assert "profile_id" not in _cols(db_path, "application")
+    assert "profile_id" not in _cols(db_path, "matchscore")
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT id, status FROM application").fetchall() == [(10, "applied")]
+        assert conn.execute("SELECT id, score FROM matchscore").fetchall() == [(20, 88)]
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name LIKE '%__pre_profile'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(models.migrations, "_rebuild_with_profile", real_rebuild)
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT id, profile_id FROM application").fetchall() == [(10, 3)]
+        assert conn.execute("SELECT id, profile_id FROM matchscore").fetchall() == [(20, 3)]
+    finally:
+        conn.close()
+
+
+def test_legacy_draft_dirs_move_under_the_profile_once(tmp_path, monkeypatch):
+    from job_applier import drafts
+    from job_applier.config import settings
+
+    root = tmp_path / "applications"
+    monkeypatch.setattr(settings, "applications_dir", root)
+    (root / "12").mkdir(parents=True)
+    (root / "12" / "resume.md").write_text("# mine", encoding="utf-8")
+    (root / "notes").mkdir()  # not a job dir: left alone
+
+    assert drafts.move_legacy_draft_dirs(1) == 1
+    assert (root / "profile-1" / "12" / "resume.md").read_text(encoding="utf-8") == "# mine"
+    assert not (root / "12").exists()
+    assert (root / "notes").exists()
+    assert drafts.move_legacy_draft_dirs(1) == 0  # idempotent
+
+
 def test_migration_adds_sourceslug_whitelist_columns(tmp_path, monkeypatch):
     # Every pre-migration row got into the table via the seed or feed discovery,
     # so the backfill must read as "not added by hand" — otherwise the /search
@@ -302,25 +666,88 @@ def test_migrated_legacy_tables_have_every_model_column(tmp_path, monkeypatch, t
     missing = model_cols - _cols(db_path, table)
     assert not missing, (
         f"{table} is missing {sorted(missing)} after migration — add an "
-        f"_ensure_* helper for it in models/db.py (a fresh install would hide "
+        f"_ensure_* helper for it in models/migrations.py (a fresh install would hide "
         f"this, an upgraded DB would not)."
     )
 
 
 def test_no_ensure_helper_is_orphaned():
-    """Every ``_ensure_*`` migration helper defined in models/db.py must be called
-    from ``create_db_and_tables``; an orphaned helper silently skips its migration
+    """Every ``_ensure_*`` migration helper defined in models/migrations.py must be
+    called from ``migrations.run``; an orphaned helper silently skips its migration
     on every existing DB."""
     import inspect
 
-    from job_applier.models import db
+    from job_applier.models import migrations
 
     helpers = [
         name
-        for name in dir(db)
-        if name.startswith("_ensure_") and callable(getattr(db, name))
+        for name in dir(migrations)
+        if name.startswith("_ensure_") and callable(getattr(migrations, name))
     ]
-    assert helpers, "expected _ensure_* migration helpers in models/db.py"
-    startup_src = inspect.getsource(db.create_db_and_tables)
+    assert helpers, "expected _ensure_* migration helpers in models/migrations.py"
+    startup_src = inspect.getsource(migrations.run)
     orphaned = [h for h in helpers if h not in startup_src]
     assert not orphaned, f"migration helpers never called from startup: {orphaned}"
+
+
+def test_every_profile_owner_column_is_required_after_migration(tmp_path, monkeypatch):
+    # A fresh install declares profile_id NOT NULL; an upgraded DB must match,
+    # and rebuilding resume must leave the resume_id keys pointing at "resume".
+    from job_applier.models.migrations import _PROFILE_OWNED_TABLES
+
+    db_path, _ = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        "INSERT INTO resume (id, original_filename, pdf_path, extracted_text, is_active)"
+        " VALUES (1, 'r.pdf', '/r.pdf', 'text', 1);",
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        for table in _PROFILE_OWNED_TABLES:
+            notnull = {r[1]: r[3] for r in conn.execute(f"PRAGMA table_info({table})")}
+            assert notnull["profile_id"] == 1, table
+        targets = {
+            row[2]
+            for table in ("matchscore", "matchscorehistory", "searchprofile")
+            for row in conn.execute(f"PRAGMA foreign_key_list({table})")
+        }
+        assert "resume" in targets
+        assert not any(t.endswith("__pre_profile") for t in targets)
+        assert conn.execute("SELECT profile_id FROM resume").fetchall() != [(None,)]
+    finally:
+        conn.close()
+
+
+def test_a_nullable_owner_column_from_an_earlier_migration_is_tightened(tmp_path, monkeypatch):
+    # DBs migrated before the rebuild got profile_id by ADD COLUMN (nullable).
+    db_path, models = _run_startup(tmp_path, monkeypatch)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            INSERT INTO searchprofile (id, name, is_active, role_titles, title_terms,
+                seniority_terms, required_tech, excluded_tech, extracted_skills, updated_at)
+                VALUES (7, 'Default', 1, '[]', '[]', '[]', '[]', '[]', '[]', '2026-08-01');
+            ALTER TABLE blacklistedcompany RENAME TO bl_old;
+            CREATE TABLE blacklistedcompany (
+                id INTEGER PRIMARY KEY, profile_id INTEGER, name VARCHAR NOT NULL,
+                normalized_name VARCHAR NOT NULL, reason VARCHAR, created_at DATETIME);
+            DROP TABLE bl_old;
+            INSERT INTO blacklistedcompany (name, normalized_name, created_at)
+                VALUES ('Meta', 'meta', '2026-08-01');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(models.db, "_engine", None)
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        notnull = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(blacklistedcompany)")}
+        assert notnull["profile_id"] == 1
+        assert conn.execute("SELECT profile_id, name FROM blacklistedcompany").fetchall() == [
+            (7, "Meta")
+        ]
+    finally:
+        conn.close()

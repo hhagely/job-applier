@@ -66,12 +66,21 @@ export const load: LayoutServerLoad = async ({ fetch, url, cookies }) => {
 		aiProvider = null;
 	}
 
+	// Every saved profile, for the sidebar switcher. Defensive like the rest: a
+	// failure just hides the switcher.
+	const profiles = await api.listSearchProfiles(fetch, base).catch(() => []);
+
 	const counts: ShellCounts = { jobs: null, queue: null, followups: null, strong: null };
 	try {
+		// The API scopes both to the active profile (its queue, its follow-ups).
 		const [active, followups] = await Promise.all([
 			// Archived excluded server-side so the badge counts every live job, not
 			// the live jobs that fit inside a window of mostly-archived rows.
-			api.listJobs(fetch, base, { filter_status: 'passed', exclude_archived: true, limit: 500 }),
+			api.listJobs(fetch, base, {
+				filter_status: 'passed',
+				exclude_archived: true,
+				limit: 500
+			}),
 			api.getFollowups(fetch, base)
 		]);
 		counts.jobs = active.length;
@@ -82,5 +91,5 @@ export const load: LayoutServerLoad = async ({ fetch, url, cookies }) => {
 		// leave counts as nulls — badges simply won't render
 	}
 
-	return { apiBase: base, aiProvider, counts, profile: deriveProfile(resume) };
+	return { apiBase: base, aiProvider, counts, profile: deriveProfile(resume), profiles };
 };

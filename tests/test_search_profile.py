@@ -3,7 +3,7 @@
 Covers two surfaces:
 
 1. The filter — ``evaluate(raw, config)`` respects a custom ``FilterConfig``,
-   and ``load_active_config(session)`` reads from the DB with the right fallback
+   and ``active_config(session)`` reads from the DB with the right fallback
    behavior when the row is missing or has empty required lists.
 2. The HTTP API — round-tripping the profile via PUT, posting recommendations
    as a draft without clobbering the active fields, and clearing the draft.
@@ -17,11 +17,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from job_applier.api.app import app
+from job_applier.profiles import active_config
 from job_applier.filters import (
     FilterConfig,
     build_config,
     evaluate,
-    load_active_config,
 )
 from job_applier.filters.rules import _BUILTIN_DEFAULT
 from job_applier.models.db import FilterStatus, SearchProfile, get_session
@@ -142,7 +142,7 @@ def test_empty_required_tech_list_skips_the_check(make_raw):
 
 
 # ---------------------------------------------------------------------------
-# load_active_config (DB-backed)
+# active_config (DB-backed)
 # ---------------------------------------------------------------------------
 
 
@@ -158,42 +158,39 @@ def db_session():
         yield s
 
 
-def test_load_active_config_falls_back_to_defaults_when_no_row(db_session):
-    cfg = load_active_config(db_session)
+def test_active_config_falls_back_to_defaults_when_no_row(db_session):
+    cfg = active_config(db_session)
     assert cfg is _BUILTIN_DEFAULT
 
 
-def test_load_active_config_falls_back_when_required_tech_empty(db_session):
-    # An empty required-tech list would drop every posting; the loader treats
-    # it as "unconfigured" and falls back to defaults instead.
+def test_active_config_falls_back_only_when_no_criteria(db_session):
+    db_session.add(
+        SearchProfile(role_titles=["Whatever"], seniority_terms=[], required_tech=[], excluded_tech=[])
+    )
+    db_session.commit()
+    assert active_config(db_session) is _BUILTIN_DEFAULT
+
+
+def test_active_config_uses_partial_criteria_without_tech_defaults(db_session):
+    # A non-engineering profile (title keywords + seniority, no tech) is filtered
+    # by its own lists; an empty required-tech list skips that rule rather than
+    # pulling in the built-in JavaScript stack.
     db_session.add(
         SearchProfile(
-            role_titles=["Whatever"],
+            title_terms=["project manager"],
             seniority_terms=["senior"],
             required_tech=[],
             excluded_tech=[],
         )
     )
     db_session.commit()
-    cfg = load_active_config(db_session)
-    assert cfg is _BUILTIN_DEFAULT
+    cfg = active_config(db_session)
+    assert cfg is not _BUILTIN_DEFAULT
+    assert cfg.required_long_re is None and cfg.required_short_re is None
+    assert cfg.title_re is not None
 
 
-def test_load_active_config_falls_back_when_seniority_empty(db_session):
-    db_session.add(
-        SearchProfile(
-            role_titles=[],
-            seniority_terms=[],
-            required_tech=["rust"],
-            excluded_tech=[],
-        )
-    )
-    db_session.commit()
-    cfg = load_active_config(db_session)
-    assert cfg is _BUILTIN_DEFAULT
-
-
-def test_load_active_config_uses_stored_lists(db_session):
+def test_active_config_uses_stored_lists(db_session):
     db_session.add(
         SearchProfile(
             role_titles=["Principal Platform Engineer"],
@@ -203,7 +200,7 @@ def test_load_active_config_uses_stored_lists(db_session):
         )
     )
     db_session.commit()
-    cfg = load_active_config(db_session)
+    cfg = active_config(db_session)
     assert cfg is not _BUILTIN_DEFAULT
     assert cfg.seniority_terms == ["principal"]
     assert cfg.required_tech == ["rust", "kubernetes"]
@@ -220,7 +217,7 @@ def test_default_config_has_no_home_state():
     assert _BUILTIN_DEFAULT.home_state_abbr is None
 
 
-def test_load_active_config_carries_home_state(db_session):
+def test_active_config_carries_home_state(db_session):
     db_session.add(
         SearchProfile(
             role_titles=[],
@@ -231,12 +228,12 @@ def test_load_active_config_carries_home_state(db_session):
         )
     )
     db_session.commit()
-    cfg = load_active_config(db_session)
+    cfg = active_config(db_session)
     assert cfg.home_state == "Missouri"
     assert cfg.home_state_abbr == "MO"
 
 
-def test_load_active_config_keeps_home_state_when_tech_lists_empty(db_session):
+def test_active_config_keeps_home_state_when_tech_lists_empty(db_session):
     # Fresh-install shape: onboarding saves a home state before any roles/tech are
     # configured. The empty-list fallback (which uses the built-in role/tech
     # defaults) must still honor the chosen state — otherwise the very first
@@ -251,7 +248,7 @@ def test_load_active_config_keeps_home_state_when_tech_lists_empty(db_session):
         )
     )
     db_session.commit()
-    cfg = load_active_config(db_session)
+    cfg = active_config(db_session)
     assert cfg.home_state == "Missouri"
     assert cfg.home_state_abbr == "MO"
 
@@ -316,6 +313,25 @@ def test_put_profile_round_trips(client):
     assert second["role_titles"] == ["Staff Backend Engineer"]
 
 
+def test_put_profile_round_trips_title_keywords(client):
+    # Title keywords alone are criteria: no fallback to the JS-engineer defaults.
+    c, _ = client
+    body = c.put(
+        "/api/search-profile",
+        json={
+            "role_titles": [],
+            "title_terms": ["project manager"],
+            "seniority_terms": [],
+            "required_tech": [],
+            "excluded_tech": [],
+            "extracted_skills": [],
+        },
+    ).json()
+    assert body["title_terms"] == ["project manager"]
+    assert body["using_defaults"] is False
+    assert c.get("/api/search-profile").json()["title_terms"] == ["project manager"]
+
+
 def test_put_profile_normalizes_and_clears_home_state(client):
     c, _ = client
     base = {
@@ -366,6 +382,7 @@ def test_post_recommendations_does_not_mutate_active_fields(client):
 
     draft = {
         "role_titles": ["Principal Platform Engineer"],
+        "title_terms": ["engineer"],
         "seniority_terms": ["principal"],
         "required_tech": ["rust"],
         "excluded_tech": [],

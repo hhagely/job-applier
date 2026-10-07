@@ -15,9 +15,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from job_applier import resume_io, services
-from job_applier.api.app import COMPANY_CHECKED_KEY, app
+from job_applier.api.app import app
+from job_applier.api.scrape import COMPANY_CHECKED_KEY
 from job_applier.config import settings
 from job_applier.models.db import (
+    JobProfileLink,
     Application,
     ApplicationStatus,
     Company,
@@ -27,6 +29,7 @@ from job_applier.models.db import (
     get_session,
     set_setting,
 )
+from job_applier.models.scoping import session_profile_id
 
 
 def _engine():
@@ -63,11 +66,12 @@ def _seed_job(session, *, title="Senior Engineer", company="Acme", source_id="t-
         title=title,
         description="<p>x</p>",
         dedupe_hash=f"h-{source_id}",
-        filter_status=FilterStatus.passed,
         company_id=company_row.id,
     )
     session.add(j)
     session.flush()
+    # In the current profile's queue: matching gave it a passed verdict.
+    session.add(JobProfileLink(job_id=j.id, profile_id=session_profile_id(session, create=True)))
     if ingested_at is not None:
         j.ingested_at = ingested_at
         session.add(j)
@@ -368,8 +372,9 @@ def test_search_spans_archived_and_manual_postings(client):
     with Session(e) as s:
         archived = _seed_job(s, title="Archived Engineer", source_id="s1")
         manual = _seed_job(s, title="Manual Engineer", source_id="s2", company="Manual Co")
-        manual.filter_status = FilterStatus.manual
-        s.add(manual)
+        link = s.exec(select(JobProfileLink).where(JobProfileLink.job_id == manual.id)).one()
+        link.filter_status = FilterStatus.manual
+        s.add(link)
         s.add(Application(job_id=archived.id, status=ApplicationStatus.archived))
         s.commit()
 

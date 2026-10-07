@@ -14,7 +14,7 @@ from typing import Callable, Optional
 
 from pydantic import BaseModel, model_validator
 
-from job_applier import services
+from job_applier import profiles, services
 from job_applier.ai import bans, providers, scoring
 from job_applier.ai.templates import render_job_prompt
 from job_applier.config import settings
@@ -133,12 +133,15 @@ def generate_draft(
         # does, refuse to persist banned output rather than ship it.
         raise DraftingError(f"banned characters could not be sanitized: {leftover}")
 
-    drafts.save_markdown(job.id, resume_md, cover_md)
+    profile_id = profiles.ensure_profile_id(session)
+    drafts.save_markdown(job.id, resume_md, cover_md, profile_id=profile_id)
 
     _stage("rendering")
     for kind, md in (("resume", resume_md), ("cover_letter", cover_md)):
         html = drafts.render_print_html(md, kind)  # type: ignore[arg-type]
-        drafts.render_pdf(job.id, kind, _render_html_to_pdf(html))  # type: ignore[arg-type]
+        drafts.render_pdf(  # type: ignore[arg-type]
+            job.id, kind, _render_html_to_pdf(html), profile_id=profile_id
+        )
 
     # Drafting a job marks it "drafted" so the queue's status filters stay honest,
     # but never regress a job the user has already advanced past drafting.

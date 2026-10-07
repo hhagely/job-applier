@@ -51,6 +51,15 @@ def test_flags_applications_drafts(tmp_path):
     assert any("applications/<id>/ drafts" in f for f in findings)
 
 
+def test_flags_per_profile_applications_drafts(tmp_path):
+    # Drafts live under applications/profile-<id>/<job_id>/ since multi-profile.
+    drafts = tmp_path / "resources" / "applications" / "profile-1" / "2971"
+    drafts.mkdir(parents=True)
+    (drafts / "resume.pdf").write_bytes(b"%PDF")
+    findings = guard.scan(tmp_path)
+    assert any("applications/<id>/ drafts" in f for f in findings)
+
+
 def test_clean_packaged_tree_passes(tmp_path):
     # Mirror the real electron-builder output: shell code + frozen backend + web build.
     (tmp_path / "resources" / "backend").mkdir(parents=True)

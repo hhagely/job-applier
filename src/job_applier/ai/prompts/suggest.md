@@ -30,7 +30,17 @@ From the resume, identify:
   another field uses that field's ladder instead (e.g. `charge nurse`/`nurse
   manager`, or `associate`/`manager`/`director`) — take the terms from the resume.
 - **3-6 realistic role titles** the candidate could target given their strongest
-  disciplines/role-shapes.
+  disciplines/role-shapes. Each one must be a real job title as it would appear
+  on a posting (e.g. `Senior Project Manager`), never a domain, industry, or
+  team name (not `SaaS`, not `Platform/Infrastructure`).
+- **Title keywords** (`title_terms`): 2-6 short, lowercase phrases naming the
+  candidate's job *function*, one of which a posting's title must contain to be
+  kept (e.g. `project manager`, `program manager`, `delivery manager` for a
+  project manager; `engineer`, `developer` for a software engineer; `nurse` for
+  a nurse). This is the gate that keeps postings in the candidate's own field,
+  so it must not match titles from neighboring fields: no seniority words
+  (`senior`, `lead` belong in `seniority_terms`), and no bare `manager` for a
+  project manager, since it would also match "Engineering Manager".
 - **Tech the candidate has clearly avoided** — only when the resume consistently
   uses one tool and never a common alternative to it, that alternative is a fair
   exclude. Infer this strictly from the resume; do not assume any default. When in
@@ -42,7 +52,12 @@ Rules:
   not `Node.js`; `cpa` not `Certified Public Accountant`). Short tokens like
   `js`/`ts` are fine. Despite the name it holds whatever a posting is matched on
   for the candidate's field — frameworks for an engineer, or the tools, methods,
-  and licenses of any other profession.
+  and licenses of any other profession. A posting is kept when it mentions
+  **any one** of these terms anywhere in its text, so for a resume outside
+  software engineering, leave out generic engineering terms that nearly every
+  tech posting mentions (`aws`, `sql`, `ci/cd`, `git`, `agile`, `jira`); prefer
+  terms specific to the candidate's own field (`pmp`, `smartsheet`, `ms project`).
+  An empty list is fine when the title keywords already capture the field.
 - `extracted_skills` is the longer reference list (any casing) shown in the UI;
   it informs but doesn't gate the filter.
 - **Never include location, work authorization, or salary** — those are handled
@@ -56,4 +71,4 @@ values may resemble the software example shown; if it is in another field, produ
 that field's equivalents instead (its own role titles, keywords, and tools) —
 always derive every value from **this** candidate's resume.
 
-{"role_titles": ["Senior Full-Stack Engineer", "Staff Backend Engineer"], "seniority_terms": ["senior", "staff", "principal", "lead"], "required_tech": ["typescript", "react", "node", "postgres"], "excluded_tech": [], "extracted_skills": ["TypeScript", "React", "Node.js", "PostgreSQL"], "rationale": "1-3 sentence summary of what drove these picks."}
+{"role_titles": ["Senior Full-Stack Engineer", "Staff Backend Engineer"], "title_terms": ["engineer", "developer"], "seniority_terms": ["senior", "staff", "principal", "lead"], "required_tech": ["typescript", "react", "node", "postgres"], "excluded_tech": [], "extracted_skills": ["TypeScript", "React", "Node.js", "PostgreSQL"], "rationale": "1-3 sentence summary of what drove these picks."}

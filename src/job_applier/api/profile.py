@@ -1,42 +1,64 @@
-"""Search-profile endpoints: read the active hard-filter profile, replace it, and
-stage/clear an LLM-generated recommendation draft (accepted via PUT, never
-auto-applied).
+"""Search-profile endpoints.
+
+``/api/search-profiles`` manages the saved profiles (list, create, rename /
+re-point at a resume, delete, activate). The singular ``/api/search-profile``
+routes read and replace the *active* profile's criteria and stage/clear its
+LLM-generated recommendation draft (accepted via PUT, never auto-applied) —
+they predate multiple profiles, and the legacy ``/suggest-roles`` command still
+calls them.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from job_applier import services
+from job_applier import matching, profiles, services
 from job_applier.api.schemas import (
     SearchProfileBody,
+    SearchProfileCreate,
+    SearchProfileMetaUpdate,
     SearchProfileOut,
     SearchProfileRecommendationIn,
 )
-from job_applier.filters import normalize_home_state
+from job_applier.filters import has_criteria, normalize_home_state
 from job_applier.models.db import SearchProfile, get_session
+from job_applier.models.scoping import session_profile_id
 
 router = APIRouter(tags=["search-profile"])
 
 _load_or_create_profile = services.load_or_create_profile
 
 
-def profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
+def profile_out(
+    p: Optional[SearchProfile],
+    *,
+    is_active: Optional[bool] = None,
+    resume_filename: Optional[str] = None,
+) -> SearchProfileOut:
     """Present a ``SearchProfile`` ORM row (or ``None``) as the API response DTO.
 
     Lives in the API layer because it produces an HTTP schema; the AI suggest
     endpoint reuses it so the profile response shape can't drift between routers.
+    ``is_active`` defaults to true: every caller but the list hands over the
+    active profile, and ``active_profile`` may have picked an unflagged row.
     """
     if p is None:
         return SearchProfileOut(using_defaults=True)
-    using_defaults = not p.required_tech or not p.seniority_terms
+    using_defaults = not has_criteria(p)
     return SearchProfileOut(
         id=p.id,
+        name=p.name,
+        is_active=True if is_active is None else is_active,
+        resume_id=p.resume_id,
+        resume_filename=resume_filename,
         role_titles=list(p.role_titles or []),
+        title_terms=list(p.title_terms or []),
         seniority_terms=list(p.seniority_terms or []),
         required_tech=list(p.required_tech or []),
         excluded_tech=list(p.excluded_tech or []),
@@ -51,22 +73,87 @@ def profile_out(p: Optional[SearchProfile]) -> SearchProfileOut:
 _profile_out = profile_out
 
 
-@router.get("/api/search-profile", response_model=SearchProfileOut)
-def get_search_profile(session: Session = Depends(get_session)):
-    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+@contextmanager
+def profile_errors(*, conflict: int = 422) -> Iterator[None]:
+    """Map the profile lifecycle's errors to HTTP: a missing profile or resume
+    is 404, a request it refuses is ``conflict`` (422, or 409 for delete)."""
+    try:
+        yield
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except profiles.ProfileError as exc:
+        raise HTTPException(conflict, str(exc)) from exc
+
+
+@router.get("/api/search-profiles", response_model=list[SearchProfileOut])
+def list_search_profiles(session: Session = Depends(get_session)) -> list[SearchProfileOut]:
+    active_id = session_profile_id(session)
+    filenames = profiles.resume_filenames(session)
+    return [
+        _profile_out(p, is_active=p.id == active_id, resume_filename=filenames.get(p.id))
+        for p in profiles.list_profiles(session)
+    ]
+
+
+@router.post("/api/search-profiles", response_model=SearchProfileOut, status_code=201)
+def create_search_profile(
+    body: SearchProfileCreate, session: Session = Depends(get_session)
+) -> SearchProfileOut:
+    # Make sure the pre-existing setup has a row before adding a second, so the
+    # current criteria stay the active profile rather than the new blank one.
+    _load_or_create_profile(session)
+    session.commit()
+    with profile_errors():
+        p = profiles.create_profile(session, name=body.name, clone_from=body.clone_from)
+    # A new person gets a full queue from what's already stored: no scrape.
+    matching.start_rematch(p.id)
+    return _profile_out(p, is_active=False)
+
+
+@router.patch("/api/search-profiles/{profile_id}", response_model=SearchProfileOut)
+def update_search_profile_meta(
+    profile_id: int,
+    body: SearchProfileMetaUpdate,
+    session: Session = Depends(get_session),
+) -> SearchProfileOut:
+    with profile_errors():
+        p = profiles.update_profile_meta(
+            session, profile_id, name=body.name, resume_id=body.resume_id
+        )
+    return _profile_out(p, is_active=profiles.is_active_profile(session, p.id))
+
+
+@router.delete("/api/search-profiles/{profile_id}", status_code=204)
+def delete_search_profile(profile_id: int, session: Session = Depends(get_session)) -> None:
+    with profile_errors(conflict=409):
+        profiles.delete_profile(session, profile_id)
+
+
+@router.post(
+    "/api/search-profiles/{profile_id}/activate", response_model=SearchProfileOut
+)
+def activate_search_profile(profile_id: int, session: Session = Depends(get_session)) -> SearchProfileOut:
+    with profile_errors():
+        p = profiles.activate_profile(session, profile_id)
     return _profile_out(p)
+
+
+@router.get("/api/search-profile", response_model=SearchProfileOut)
+def get_search_profile(session: Session = Depends(get_session)) -> SearchProfileOut:
+    return _profile_out(profiles.active_profile(session))
 
 
 @router.put("/api/search-profile", response_model=SearchProfileOut)
 def put_search_profile(
     body: SearchProfileBody, session: Session = Depends(get_session)
-):
+) -> SearchProfileOut:
     try:
         home_state = normalize_home_state(body.home_state)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     p = _load_or_create_profile(session)
     p.role_titles = body.role_titles
+    p.title_terms = body.title_terms
     p.seniority_terms = body.seniority_terms
     p.required_tech = body.required_tech
     p.excluded_tech = body.excluded_tech
@@ -76,13 +163,14 @@ def put_search_profile(
     session.add(p)
     session.commit()
     session.refresh(p)
+    matching.start_rematch(p.id)
     return _profile_out(p)
 
 
 @router.post("/api/search-profile/recommendations", response_model=SearchProfileOut)
 def post_recommendations(
     body: SearchProfileRecommendationIn, session: Session = Depends(get_session)
-):
+) -> SearchProfileOut:
     """Save an LLM-generated proposal as a draft on the profile.
 
     Does NOT mutate the active fields — the user reviews + accepts via PUT to
@@ -93,8 +181,8 @@ def post_recommendations(
 
 
 @router.delete("/api/search-profile/recommendations", response_model=SearchProfileOut)
-def clear_recommendations(session: Session = Depends(get_session)):
-    p = session.exec(select(SearchProfile).order_by(SearchProfile.id)).first()
+def clear_recommendations(session: Session = Depends(get_session)) -> SearchProfileOut:
+    p = profiles.active_profile(session)
     if p is None:
         return _profile_out(None)
     p.recommendations_draft = None

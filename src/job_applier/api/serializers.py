@@ -7,10 +7,11 @@ HTTP routing) lives in one place and can be shared by any router. These build th
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, overload
 
 from sqlmodel import Session, select
 
+from job_applier import profiles
 from job_applier.api.schemas import ApplicationOut, CompanyOut, JobOut, ScoreOut
 from job_applier.models.db import (
     Application,
@@ -22,12 +23,30 @@ from job_applier.models.db import (
 )
 
 
+@overload
+def company_out(c: Company) -> CompanyOut: ...
+@overload
+def company_out(c: None) -> None: ...
 def company_out(c: Optional[Company]) -> Optional[CompanyOut]:
     if c is None:
         return None
     return CompanyOut(id=c.id, name=c.name, domain=c.domain, is_blocked=c.is_blocked, notes=c.notes)
 
 
+@overload
+def score_out(
+    s: MatchScore | MatchScoreHistory,
+    *,
+    resume_filename: Optional[str] = None,
+    active_resume_id: Optional[int] = None,
+) -> ScoreOut: ...
+@overload
+def score_out(
+    s: None,
+    *,
+    resume_filename: Optional[str] = None,
+    active_resume_id: Optional[int] = None,
+) -> None: ...
 def score_out(
     s: Optional[MatchScore | MatchScoreHistory],
     *,
@@ -50,6 +69,10 @@ def score_out(
     )
 
 
+@overload
+def application_out(a: Application) -> ApplicationOut: ...
+@overload
+def application_out(a: None) -> None: ...
 def application_out(a: Optional[Application]) -> Optional[ApplicationOut]:
     if a is None:
         return None
@@ -72,9 +95,7 @@ def resume_filename_map(session: Session) -> dict[int, str]:
 
 
 def active_resume_id(session: Session) -> Optional[int]:
-    return session.exec(
-        select(Resume.id).where(Resume.is_active == True)  # noqa: E712
-    ).first()
+    return profiles.active_resume_id(session)
 
 
 def job_summary(
@@ -97,8 +118,10 @@ def job_summary(
         employment_type=j.employment_type,
         posted_at=j.posted_at,
         ingested_at=j.ingested_at,
-        filter_status=j.filter_status,
-        filter_reason=j.filter_reason,
+        # The active profile's own verdict (matching writes it); None when this
+        # profile was never matched against the posting (e.g. a Cmd-K hit).
+        filter_status=j.link.filter_status if j.link else None,
+        filter_reason=j.link.filter_reason if j.link else None,
         company=company_out(j.company),
         score=score_out(
             j.score,

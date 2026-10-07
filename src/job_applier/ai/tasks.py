@@ -43,7 +43,8 @@ TaskSnapshot = dict
 # Task kinds that only touch the network + DB, never an AI CLI. These get their
 # own worker so a long scrape doesn't hold up scoring/drafting; everything else
 # shares the AI lane, where serializing is the point (see the module docstring).
-NET_KINDS = frozenset({"ingest", "refresh_companies"})
+# ``match`` is DB-only; it rides this lane so it queues behind a scrape's writes.
+NET_KINDS = frozenset({"ingest", "refresh_companies", "match"})
 AI_LANE = "ai"
 NET_LANE = "net"
 
@@ -86,6 +87,10 @@ class TaskState:
     # Optional discriminator within a kind — e.g. the job id for a per-job draft —
     # so a client can track "this job's draft" rather than "any draft".
     ref: Optional[str] = None
+    # The profile the task works for. The worker pins it (see ``_run``), so a run
+    # keeps reading and writing that profile's rows even if the user switches
+    # profiles mid-run.
+    profile_id: Optional[int] = None
 
     def publish(self) -> None:
         """Fan this task's current state out to every subscriber. Workers call
@@ -142,12 +147,14 @@ def start_task(
     fn: Callable[[TaskState], None],
     *,
     ref: Optional[str] = None,
+    profile_id: Optional[int] = None,
 ) -> str:
     """Register a task and submit it. ``fn`` receives the ``TaskState`` to update
     as it makes progress and runs on the (single) worker thread. ``ref`` is an
-    optional per-kind discriminator (e.g. a job id) echoed to subscribers."""
+    optional per-kind discriminator (e.g. a job id) echoed to subscribers.
+    ``profile_id`` pins the worker to a profile (callers pass the request's)."""
     tid = uuid4().hex
-    state = TaskState(id=tid, kind=kind, total=total, ref=ref)
+    state = TaskState(id=tid, kind=kind, total=total, ref=ref, profile_id=profile_id)
     with _lock:
         _tasks[tid] = state
     # Announce the task immediately so an already-connected client sees it appear
@@ -158,6 +165,13 @@ def start_task(
 
 
 def _run(state: TaskState, fn: Callable[[TaskState], None]) -> None:
+    token = None
+    if state.profile_id is not None:
+        # Imported here so this module stays free of DB imports; setting the
+        # ContextVar touches no database.
+        from job_applier.models.scoping import current_profile_id
+
+        token = current_profile_id.set(state.profile_id)
     try:
         fn(state)
         state.status = "done"
@@ -167,18 +181,43 @@ def _run(state: TaskState, fn: Callable[[TaskState], None]) -> None:
     finally:
         # Always emit the terminal snapshot so subscribers stop waiting.
         publish(state)
+        if token is not None:
+            from job_applier.models.scoping import current_profile_id
+
+            current_profile_id.reset(token)
 
 
 def get_task(tid: str) -> "TaskState | None":
     return _tasks.get(tid)
 
 
-def active_task(kind: str) -> "TaskState | None":
+def active_task(kind: str, profile_id: Optional[int] = None) -> "TaskState | None":
     """The running task of ``kind``, if one is in flight. Used to dedupe starts —
-    e.g. score-pending returns the live run instead of queueing a duplicate."""
+    e.g. score-pending returns the live run instead of queueing a duplicate.
+    With ``profile_id``, only that profile's run counts: one person's scoring run
+    is not a duplicate of another's."""
     with _lock:
         for state in _tasks.values():
-            if state.kind == kind and state.status == "running":
+            if (
+                state.kind == kind
+                and state.status == "running"
+                and (profile_id is None or state.profile_id == profile_id)
+            ):
+                return state
+    return None
+
+
+def busy_for_profile(profile_id: int, *, ignore: tuple[str, ...] = ()) -> "TaskState | None":
+    """A running task pinned to ``profile_id`` (any kind not in ``ignore``), if
+    any. Deleting a profile refuses while one is in flight: the worker would
+    write rows and draft folders for an id that no longer exists."""
+    with _lock:
+        for state in _tasks.values():
+            if (
+                state.profile_id == profile_id
+                and state.status == "running"
+                and state.kind not in ignore
+            ):
                 return state
     return None
 

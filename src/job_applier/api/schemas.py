@@ -122,7 +122,8 @@ class JobOut(BaseModel):
     employment_type: Optional[str]
     posted_at: Optional[datetime]
     ingested_at: datetime
-    filter_status: FilterStatus
+    # The active profile's verdict; None when it never matched this posting.
+    filter_status: Optional[FilterStatus]
     filter_reason: Optional[str]
     company: Optional[CompanyOut]
     score: Optional[ScoreOut]
@@ -130,8 +131,20 @@ class JobOut(BaseModel):
     duplicate_of: Optional[int] = None
 
 
+class OtherProfileStatus(BaseModel):
+    """Another profile's status on the same posting (read-only)."""
+
+    profile_id: int
+    name: str
+    status: ApplicationStatus
+
+
 class JobDetail(JobOut):
     description: str
+    # Other profiles that have done something with this posting. Profiles are
+    # separate, so applying under one doesn't mark it under another; this is
+    # what warns someone who uses two profiles as two searches.
+    other_profiles: list[OtherProfileStatus] = []
 
 
 class StatusUpdate(BaseModel):
@@ -195,15 +208,25 @@ class ResumeOut(BaseModel):
     extracted_text: str
 
 
+class ResumeSummaryOut(BaseModel):
+    id: int
+    original_filename: str
+    is_active: bool
+    uploaded_at: datetime
+
+
 class SearchProfileBody(BaseModel):
-    """Shape used for both reading and writing the active search profile.
+    """Shape used for both reading and writing a search profile's criteria.
 
     All fields are lists of strings so they round-trip cleanly through the JSON
-    columns. Empty lists are legal — the filter falls back to its built-in
-    defaults when ``required_tech`` or ``seniority_terms`` is empty.
+    columns. Empty lists are legal — an empty list skips its rule, and the filter
+    falls back to its built-in defaults only when ``title_terms``,
+    ``seniority_terms`` and ``required_tech`` are all empty.
     """
 
     role_titles: list[str] = []
+    # Job-function keywords the posting title must contain one of (any-of).
+    title_terms: list[str] = []
     seniority_terms: list[str] = []
     required_tech: list[str] = []
     excluded_tech: list[str] = []
@@ -216,9 +239,29 @@ class SearchProfileBody(BaseModel):
 
 class SearchProfileOut(SearchProfileBody):
     id: Optional[int] = None
+    name: str = "Default"
+    is_active: bool = True
+    resume_id: Optional[int] = None
+    # Filled on the profile list only, so every row can say which resume it uses.
+    resume_filename: Optional[str] = None
     recommendations_draft: Optional[dict] = None
     updated_at: Optional[datetime] = None
     using_defaults: bool = False  # True when the filter is falling back
+
+
+class SearchProfileCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    # Copy criteria + (a copy of) the resume from this profile; omitted starts a
+    # blank profile with filter defaults and no resume.
+    clone_from: Optional[int] = None
+
+
+class SearchProfileMetaUpdate(BaseModel):
+    """Rename a profile and/or switch it to another of its own uploads. Criteria
+    go through PUT /api/search-profile, which edits the active profile only."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    resume_id: Optional[int] = None
 
 
 class SearchProfileRecommendationIn(BaseModel):
@@ -228,6 +271,7 @@ class SearchProfileRecommendationIn(BaseModel):
     """
 
     role_titles: list[str] = []
+    title_terms: list[str] = []
     seniority_terms: list[str] = []
     required_tech: list[str] = []
     excluded_tech: list[str] = []

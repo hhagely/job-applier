@@ -10,11 +10,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from job_applier.api.app import app
 from job_applier.models import JobPosting
 from job_applier.models.db import (
+    JobProfileLink,
     Application,
     ApplicationStatus,
-    FilterStatus,
     get_session,
 )
+from job_applier.models.scoping import session_profile_id
 
 
 @pytest.fixture
@@ -45,9 +46,11 @@ def _seed_job(engine, *, source_id: str = "u-1") -> int:
             title="Senior Engineer",
             description="role",
             dedupe_hash=source_id,
-            filter_status=FilterStatus.passed,
         )
         s.add(job)
+        s.flush()
+        # In the current profile's queue: matching gave it a passed verdict.
+        s.add(JobProfileLink(job_id=job.id, profile_id=session_profile_id(s, create=True)))
         s.commit()
         s.refresh(job)
         return job.id

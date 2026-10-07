@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Column, UniqueConstraint, event
+from sqlalchemy import JSON, Column, Index, String, UniqueConstraint, event
+from sqlalchemy import Enum as SAEnum
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
 from job_applier.config import settings
@@ -76,9 +77,25 @@ class JobPosting(SQLModel, table=True):
         default=None, foreign_key="jobposting.id", index=True
     )
     raw: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # The source's tags (RawJob.tags). Persisted so a profile added or edited
+    # after the scrape can be matched against the stored posting exactly as it
+    # would have been at ingest. Null on postings saved before the column.
+    tags: Optional[list[str]] = Field(default=None, sa_column=Column(JSON))
 
-    filter_status: FilterStatus = FilterStatus.passed
-    filter_reason: Optional[str] = None
+    # Legacy columns ``filter_status`` / ``filter_reason``: always ``passed``
+    # (only postings that pass the shared rules are stored, and the migration
+    # moved old per-profile verdicts onto the links). A profile's verdict is
+    # ``JobProfileLink.filter_status``. Still mapped because upgraded DBs have
+    # the column NOT NULL with no default, so every INSERT must fill it; the
+    # ``legacy_`` names keep a query on "the posting's filter status" from
+    # compiling and silently matching every stored row.
+    legacy_filter_status: FilterStatus = Field(
+        default=FilterStatus.passed,
+        sa_column=Column("filter_status", SAEnum(FilterStatus), nullable=False),
+    )
+    legacy_filter_reason: Optional[str] = Field(
+        default=None, sa_column=Column("filter_reason", String, nullable=True)
+    )
 
     company_id: Optional[int] = Field(default=None, foreign_key="company.id")
     company: Optional[Company] = Relationship(back_populates="jobs")
@@ -91,11 +108,27 @@ class JobPosting(SQLModel, table=True):
         back_populates="job",
         sa_relationship_kwargs={"uselist": False, "cascade": "all, delete-orphan"},
     )
+    # The current profile's verdict on this posting (profile-scoped, like
+    # ``application``), or None when the profile hasn't evaluated it.
+    link: Optional["JobProfileLink"] = Relationship(
+        sa_relationship_kwargs={"uselist": False, "viewonly": True}
+    )
 
 
 class MatchScore(SQLModel, table=True):
+    """A profile's active score for a posting: one per (job, profile).
+
+    Sessions only ever see the current profile's rows (see ``_scope_to_profile``),
+    which is what keeps ``JobPosting.score`` a single object.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "profile_id", name="uq_matchscore_job_profile"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
-    job_id: int = Field(foreign_key="jobposting.id", unique=True)
+    job_id: int = Field(foreign_key="jobposting.id", index=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
 
     score: int  # 0-100
     rubric: dict = Field(default_factory=dict, sa_column=Column(JSON))
@@ -111,6 +144,7 @@ class MatchScore(SQLModel, table=True):
 class MatchScoreHistory(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     job_id: int = Field(foreign_key="jobposting.id", index=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
 
     score: int
     rubric: dict = Field(default_factory=dict, sa_column=Column(JSON))
@@ -122,8 +156,17 @@ class MatchScoreHistory(SQLModel, table=True):
 
 
 class Application(SQLModel, table=True):
+    """A profile's tracking state for a posting: one per (job, profile), so two
+    people applying to the same job each have their own status, notes, and
+    follow-ups. Profile-scoped like ``MatchScore``."""
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "profile_id", name="uq_application_job_profile"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
-    job_id: int = Field(foreign_key="jobposting.id", unique=True)
+    job_id: int = Field(foreign_key="jobposting.id", index=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
 
     status: ApplicationStatus = ApplicationStatus.new
     notes: Optional[str] = None
@@ -176,29 +219,55 @@ class SourceSlug(SQLModel, table=True):
 
 
 class Resume(SQLModel, table=True):
+    """An uploaded resume, owned by one profile (profile-scoped like
+    ``Application``). A profile can hold several; the one it uses is
+    ``SearchProfile.resume_id``. Copying a profile copies the row, not the PDF,
+    so two rows may share a ``pdf_path``."""
+
     id: Optional[int] = Field(default=None, primary_key=True)
+    # No foreign key: searchprofile.resume_id already points the other way, and
+    # a cycle would cost create_all its table ordering. Stamped like every other
+    # profile-scoped row (see ``_stamp_profile``).
+    profile_id: int = Field(index=True)
     original_filename: str
     pdf_path: str  # absolute path under settings.resumes_dir
     extracted_text: str
     page_count: Optional[int] = None
+    # Mirror of the active profile's in-use resume, written only by
+    # ``profiles.set_active_resume``. The app reads ``SearchProfile.resume_id``
+    # (via ``profiles.active_resume``); the raw-SQL bootstrap paths read this
+    # flag (``scoping._insert_default_profile`` and the migrations), because on
+    # a pre-profile DB it's the only record of which resume was in use.
     is_active: bool = Field(default=False, index=True)
     uploaded_at: datetime = Field(default_factory=_utcnow)
 
 
 class SearchProfile(SQLModel, table=True):
-    """User's configured job-search criteria. Singleton (one active row).
+    """A saved set of job-search criteria. Many rows, exactly one active.
 
-    Drives the hard filter at ingest time. When empty, the filter falls back to
-    its built-in defaults so a fresh install still works.
+    Every profile's own rules run at match time (``matching``) over the shared
+    postings; the active one is the profile the UI shows. When its lists are
+    empty, the filter falls back to built-in defaults so a fresh install still
+    works. Lifecycle (activate, switch resume) is in ``profiles``.
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = "Default"
+    # Exactly one row is active. Readers go through ``profiles.active_profile``,
+    # which falls back to the oldest row if none is flagged.
+    is_active: bool = Field(default=False, index=True)
+    # The profile's in-use resume (one of its own); null until it has one.
+    resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")
     # Human-readable role titles the user wants surfaced
     # (e.g. ["Senior Software Engineer", "Staff Backend Engineer"]).
     role_titles: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Seniority terms that gate the title regex
     # (e.g. ["senior", "staff", "principal", "lead", "architect"]).
     seniority_terms: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Job-function keywords the title must contain one of (any-of), e.g.
+    # ["project manager", "program manager"]. Empty skips the gate. This is what
+    # keeps a non-engineering profile from matching every senior engineering role.
+    title_terms: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Tech/skills the posting MUST reference (any-of). Filter drops if none match.
     required_tech: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Tech that disqualifies a posting when it's the primary stack (e.g. "angular").
@@ -214,12 +283,34 @@ class SearchProfile(SQLModel, table=True):
     # the recommendations.
     extracted_skills: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Pending LLM-generated proposal awaiting user accept/reject. Shape mirrors
-    # the active fields (role_titles/seniority_terms/required_tech/excluded_tech
+    # the active fields (role_titles/title_terms/seniority_terms/required_tech/excluded_tech
     # /extracted_skills) plus a free-form "rationale" string. Null when no draft.
     recommendations_draft: Optional[dict] = Field(
         default=None, sa_column=Column(JSON)
     )
     updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class JobProfileLink(SQLModel, table=True):
+    """One profile's verdict on one stored posting.
+
+    The scrape stores every posting that passes the shared rules, once; then
+    ``matching`` runs each profile's personal rules (title keywords, seniority,
+    tech, home-state allow-list, blacklist) and records the outcome here — including ``dropped``,
+    so a row's existence means "this profile has evaluated this posting" and a
+    re-scrape only evaluates what's new. A profile's queue is its ``passed``
+    (or ``manual``) rows. Profile-scoped like ``Application``.
+    """
+
+    __table_args__ = (
+        Index("ix_jobprofilelink_profile_status", "profile_id", "filter_status"),
+    )
+
+    job_id: int = Field(foreign_key="jobposting.id", primary_key=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", primary_key=True, index=True)
+    filter_status: FilterStatus = FilterStatus.passed
+    filter_reason: Optional[str] = None
+    linked_at: datetime = Field(default_factory=_utcnow)
 
 
 class AppSetting(SQLModel, table=True):
@@ -234,22 +325,32 @@ class AppSetting(SQLModel, table=True):
 
 
 class BlacklistedCompany(SQLModel, table=True):
-    """A company the user never wants surfaced. Matched at ingest against the
-    normalized company name, so a job from a blacklisted employer is dropped
-    before it's persisted — even the first time we see that company (no
-    ``Company`` row needs to exist yet).
+    """A company one profile never wants surfaced. Applied at match time
+    (``matching``) against the normalized company name: the posting is stored
+    like any other and gets a ``dropped`` verdict for this profile only, even the
+    first time we see that company (no ``Company`` row needs to exist yet).
 
     ``normalized_name`` is produced by ``ingest.normalize_company`` — the SAME
     normalizer used for cross-source dedupe — so user-typed variants like
     "Meta", "Meta Inc", and "Meta, Inc." all collapse to one key and match
     however a source spells the employer. ``name`` keeps the original spelling
-    the user entered for display. Brand-new table, so ``create_all`` handles it
-    with no ALTER.
+    the user entered for display. Per profile: each person ignores their own
+    employers, so uniqueness is on (profile, normalized name).
     """
 
+    __table_args__ = (
+        Index(
+            "ux_blacklistedcompany_profile_name",
+            "profile_id",
+            "normalized_name",
+            unique=True,
+        ),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
+    profile_id: int = Field(foreign_key="searchprofile.id", index=True)
     name: str
-    normalized_name: str = Field(index=True, unique=True)
+    normalized_name: str = Field(index=True)
     reason: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -298,167 +399,9 @@ def engine():
 
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine())
-    _ensure_cross_source_hash_column()
-    _ensure_matchscore_resume_id_column()
-    _ensure_score_kind_columns()
-    _ensure_application_followup_columns()
-    _ensure_application_unemployment_columns()
-    _ensure_jd_dedupe_columns()
-    _ensure_searchprofile_columns()
-    _ensure_sourceslug_columns()
+    from job_applier.models import migrations  # imports this module
 
-
-def _ensure_cross_source_hash_column() -> None:
-    """Add JobPosting.cross_source_hash on existing DBs that pre-date the column.
-
-    SQLModel.metadata.create_all is a no-op for tables that already exist, so
-    ALTER TABLE here covers the migration path. Cheap to call every startup.
-    """
-    with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobposting)")}
-        if "cross_source_hash" not in cols:
-            conn.exec_driver_sql(
-                "ALTER TABLE jobposting ADD COLUMN cross_source_hash VARCHAR"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_jobposting_cross_source_hash "
-                "ON jobposting (cross_source_hash)"
-            )
-            conn.commit()
-
-
-def _ensure_matchscore_resume_id_column() -> None:
-    with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(matchscore)")}
-        if "resume_id" not in cols:
-            # Carry the FK so migrated DBs match the fresh-install shape
-            # (model declares foreign_key="resume.id") and duplicate_of's pattern.
-            conn.exec_driver_sql(
-                "ALTER TABLE matchscore ADD COLUMN resume_id INTEGER REFERENCES resume(id)"
-            )
-            conn.commit()
-
-
-def _ensure_jd_dedupe_columns() -> None:
-    with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobposting)")}
-        if "jd_fingerprint" not in cols:
-            conn.exec_driver_sql(
-                "ALTER TABLE jobposting ADD COLUMN jd_fingerprint VARCHAR"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_jobposting_jd_fingerprint "
-                "ON jobposting (jd_fingerprint)"
-            )
-        if "duplicate_of" not in cols:
-            conn.exec_driver_sql(
-                "ALTER TABLE jobposting ADD COLUMN duplicate_of INTEGER "
-                "REFERENCES jobposting(id)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_jobposting_duplicate_of "
-                "ON jobposting (duplicate_of)"
-            )
-        conn.commit()
-
-
-def _ensure_searchprofile_columns() -> None:
-    """Add SearchProfile.home_state on existing DBs that pre-date the column.
-
-    Nullable with no default: existing profiles migrate to "no home state set",
-    which skips the state-allow-list rule until the user picks a state at /search.
-    """
-    with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(searchprofile)")}
-        if "home_state" not in cols:
-            conn.exec_driver_sql("ALTER TABLE searchprofile ADD COLUMN home_state VARCHAR")
-            conn.commit()
-
-
-def _ensure_sourceslug_columns() -> None:
-    """Add SourceSlug.added_by_user / .label on existing DBs that pre-date them.
-
-    Everything already in the table got there via the seed or feed discovery, so
-    the DEFAULT 0 backfill is the truthful value: no existing row was added by
-    hand. ``label`` stays nullable — the UI falls back to the slug.
-    """
-    with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(sourceslug)")}
-        added = False
-        if "added_by_user" not in cols:
-            conn.exec_driver_sql(
-                "ALTER TABLE sourceslug ADD COLUMN added_by_user "
-                "BOOLEAN NOT NULL DEFAULT 0"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_sourceslug_added_by_user "
-                "ON sourceslug (added_by_user)"
-            )
-            added = True
-        if "label" not in cols:
-            conn.exec_driver_sql("ALTER TABLE sourceslug ADD COLUMN label VARCHAR")
-            added = True
-        if added:
-            conn.commit()
-
-
-def _ensure_score_kind_columns() -> None:
-    with engine().connect() as conn:
-        for table in ("matchscore", "matchscorehistory"):
-            cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
-            if "score_kind" not in cols:
-                # NOT NULL to match the model's non-Optional `score_kind: str`
-                # (fresh installs build it NOT NULL); the DEFAULT backfills the
-                # existing rows so the NOT NULL is satisfied on migrated DBs.
-                conn.exec_driver_sql(
-                    f"ALTER TABLE {table} ADD COLUMN score_kind VARCHAR "
-                    "NOT NULL DEFAULT 'baseline'"
-                )
-                conn.exec_driver_sql(
-                    f"CREATE INDEX IF NOT EXISTS ix_{table}_score_kind "
-                    f"ON {table} (score_kind)"
-                )
-        conn.commit()
-
-
-def _ensure_application_followup_columns() -> None:
-    with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(application)")}
-        added = False
-        if "next_followup_at" not in cols:
-            conn.exec_driver_sql("ALTER TABLE application ADD COLUMN next_followup_at DATETIME")
-            added = True
-        if "last_contact_at" not in cols:
-            conn.exec_driver_sql("ALTER TABLE application ADD COLUMN last_contact_at DATETIME")
-            added = True
-        if "outcome" not in cols:
-            conn.exec_driver_sql("ALTER TABLE application ADD COLUMN outcome VARCHAR")
-            added = True
-        if added:
-            conn.commit()
-
-
-def _ensure_application_unemployment_columns() -> None:
-    with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(application)")}
-        added = False
-        if "used_for_unemployment" not in cols:
-            conn.exec_driver_sql(
-                "ALTER TABLE application ADD COLUMN used_for_unemployment "
-                "BOOLEAN NOT NULL DEFAULT 0"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_application_used_for_unemployment "
-                "ON application (used_for_unemployment)"
-            )
-            added = True
-        if "used_for_unemployment_at" not in cols:
-            conn.exec_driver_sql(
-                "ALTER TABLE application ADD COLUMN used_for_unemployment_at DATETIME"
-            )
-            added = True
-        if added:
-            conn.commit()
+    migrations.run()
 
 
 def get_session() -> Iterator[Session]:

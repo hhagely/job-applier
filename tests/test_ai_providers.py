@@ -16,7 +16,6 @@ from job_applier.api.app import app
 from job_applier.contracts import AI_MODEL_KEY_LEGACY, ai_model_key
 from job_applier.models.db import (
     AppSetting,
-    FilterStatus,
     JobPosting,
     MatchScore,
     Resume,
@@ -767,7 +766,6 @@ def _seed_scored_job(engine) -> int:
             company_name="Acme",
             description="We use TypeScript.",
             dedupe_hash="h-1",
-            filter_status=FilterStatus.passed,
         )
         s.add(resume)
         s.add(job)
@@ -801,7 +799,7 @@ def test_score_pending_scores_exactly_the_ids_it_is_given(
     monkeypatch.setattr(
         ai_mod.tasks,
         "start_task",
-        lambda kind, total, fn, ref=None: started.update(total=total, fn=fn) or "t-1",
+        lambda kind, total, fn, ref=None, profile_id=None: started.update(total=total, fn=fn) or "t-1",
     )
     r = c.post("/api/ai/score-pending", json={"job_ids": [job_id, job_id]})
     assert r.status_code == 200
@@ -838,7 +836,7 @@ def test_score_pending_without_ids_still_uses_the_queue(client_and_engine, monke
     monkeypatch.setattr(
         ai_mod.tasks,
         "start_task",
-        lambda kind, total, fn, ref=None: started.update(total=total) or "t-2",
+        lambda kind, total, fn, ref=None, profile_id=None: started.update(total=total) or "t-2",
     )
     r = c.post("/api/ai/score-pending", json={})
     assert r.status_code == 200

@@ -24,10 +24,13 @@ export function getApiBase(): string {
 	return '';
 }
 
-// `dropped` is intentionally omitted from the client type: dropped jobs are
-// never persisted, so the API never emits them. Keep in sync with FilterStatus
-// in models/db.py, which does include `dropped`.
+/** The queue's two tabs: a profile's passed and manual verdicts. List endpoints
+ * only return these. */
 export type FilterStatus = 'passed' | 'manual';
+/** Any verdict a profile can hold on a posting (models/db.py FilterStatus). Job
+ * detail and Cmd-K search can return `dropped`, the active profile's verdict on a
+ * posting outside its queue. */
+export type Verdict = FilterStatus | 'dropped';
 export type ApplicationStatus =
 	| 'new'
 	| 'interested'
@@ -179,7 +182,8 @@ export interface Job {
 	employment_type?: string | null;
 	posted_at?: string | null;
 	ingested_at: string;
-	filter_status: FilterStatus;
+	/** The active profile's verdict; null when it never matched this posting. */
+	filter_status: Verdict | null;
 	filter_reason?: string | null;
 	company?: Company | null;
 	score?: Score | null;
@@ -187,8 +191,17 @@ export interface Job {
 	duplicate_of?: number | null;
 }
 
+/** Another profile's status on the same posting (read-only). */
+export interface OtherProfileStatus {
+	profile_id: number;
+	name: string;
+	status: ApplicationStatus;
+}
+
 export interface JobDetail extends Job {
 	description: string;
+	/** Other profiles that have acted on this posting (never `new` / `archived`). */
+	other_profiles: OtherProfileStatus[];
 }
 
 export interface Draft {
@@ -204,7 +217,17 @@ export interface Draft {
 
 export interface SearchProfile {
 	id: number | null;
+	name: string;
+	/** Exactly one profile is active: the one the UI shows (its queue, statuses,
+	 * scores), and whose resume is in use. */
+	is_active: boolean;
+	/** The one of its own resumes this profile scores and tailors with; null until it has one. */
+	resume_id: number | null;
+	/** That resume's filename (profile list only). */
+	resume_filename?: string | null;
 	role_titles: string[];
+	/** Job-function keywords the posting title must contain one of; empty skips the gate. */
+	title_terms: string[];
 	seniority_terms: string[];
 	required_tech: string[];
 	excluded_tech: string[];
@@ -228,6 +251,8 @@ export interface CompanyCoverage {
 
 export interface SearchProfileRecommendation {
 	role_titles: string[];
+	/** Job-function keywords the posting title must contain one of; empty skips the gate. */
+	title_terms?: string[];
 	seniority_terms: string[];
 	required_tech: string[];
 	excluded_tech: string[];
@@ -237,6 +262,8 @@ export interface SearchProfileRecommendation {
 
 export interface SearchProfileBody {
 	role_titles: string[];
+	/** Job-function keywords the posting title must contain one of; empty skips the gate. */
+	title_terms: string[];
 	seniority_terms: string[];
 	required_tech: string[];
 	excluded_tech: string[];
@@ -253,6 +280,9 @@ export interface Resume {
 	uploaded_at: string;
 	extracted_text: string;
 }
+
+/** A resume without its extracted text: one row of the active profile's resume list. */
+export type ResumeSummary = Pick<Resume, 'id' | 'original_filename' | 'is_active' | 'uploaded_at'>;
 
 export type ProviderTier = 'recommended' | 'best-effort';
 
@@ -403,6 +433,16 @@ async function call<T>(
 	return res.json() as Promise<T>;
 }
 
+/** An idempotent DELETE: already gone (404) counts as success; any other
+ * failure throws an `ApiError` carrying the server's reason. */
+async function callDelete(fetchFn: FetchFn, base: string, path: string): Promise<void> {
+	const res = await fetchWithRetry(fetchFn, `${base}${path}`, { method: 'DELETE' });
+	if (!res.ok && res.status !== 404) {
+		const body = await res.text();
+		throw new ApiError(`API ${path} -> ${res.status}: ${body}`, res.status, parseDetail(body));
+	}
+}
+
 async function callOptional<T>(
 	fetchFn: FetchFn,
 	base: string,
@@ -533,6 +573,14 @@ export const api = {
 	getCurrentResume: (fetchFn: FetchFn, base: string) =>
 		callOptional<Resume>(fetchFn, base, '/api/resume/current'),
 
+	/** The active profile's resumes, newest first. */
+	listResumes: (fetchFn: FetchFn, base: string) =>
+		call<ResumeSummary[]>(fetchFn, base, '/api/resumes'),
+
+	/** Make another of the active profile's resumes the one it uses. */
+	useResume: (fetchFn: FetchFn, base: string, id: number) =>
+		call<Resume>(fetchFn, base, `/api/resumes/${id}/use`, { method: 'POST' }),
+
 	getStaleScoreCount: (fetchFn: FetchFn, base: string) =>
 		call<{ count: number }>(fetchFn, base, '/api/scores/stale-count'),
 
@@ -578,6 +626,30 @@ export const api = {
 		call<SearchProfile>(fetchFn, base, '/api/search-profile/recommendations', {
 			method: 'DELETE'
 		}),
+
+	listSearchProfiles: (fetchFn: FetchFn, base: string) =>
+		call<SearchProfile[]>(fetchFn, base, '/api/search-profiles'),
+
+	/** New inactive profile with no resume; `clone_from` copies another's criteria + resume. */
+	createSearchProfile: (fetchFn: FetchFn, base: string, name: string, clone_from?: number) =>
+		call<SearchProfile>(fetchFn, base, '/api/search-profiles', {
+			method: 'POST',
+			body: JSON.stringify({ name, clone_from })
+		}),
+
+	/** Rename a profile. (The API also takes `resume_id`; the Resume page uses `useResume`.) */
+	updateSearchProfileMeta: (fetchFn: FetchFn, base: string, id: number, body: { name: string }) =>
+		call<SearchProfile>(fetchFn, base, `/api/search-profiles/${id}`, {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		}),
+
+	activateSearchProfile: (fetchFn: FetchFn, base: string, id: number) =>
+		call<SearchProfile>(fetchFn, base, `/api/search-profiles/${id}/activate`, { method: 'POST' }),
+
+	/** 409 for the active profile — the detail says to switch first. */
+	deleteSearchProfile: (fetchFn: FetchFn, base: string, id: number) =>
+		callDelete(fetchFn, base, `/api/search-profiles/${id}`),
 
 	getProviders: (fetchFn: FetchFn, base: string) =>
 		call<ProvidersResponse>(fetchFn, base, '/api/ai/providers'),
@@ -660,12 +732,8 @@ export const api = {
 			body: JSON.stringify({ name, reason })
 		}),
 
-	removeBlacklist: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
-		const res = await fetchWithRetry(fetchFn, `${base}/api/blacklist/${id}`, { method: 'DELETE' });
-		if (!res.ok && res.status !== 404) {
-			throw new Error(`API /api/blacklist/${id} -> ${res.status}: ${await res.text()}`);
-		}
-	},
+	removeBlacklist: (fetchFn: FetchFn, base: string, id: number) =>
+		callDelete(fetchFn, base, `/api/blacklist/${id}`),
 
 	listWatchedCompanies: (fetchFn: FetchFn, base: string) =>
 		call<WatchedCompany[]>(fetchFn, base, '/api/watched-companies'),
@@ -677,12 +745,6 @@ export const api = {
 			body: JSON.stringify({ query })
 		}),
 
-	removeWatchedCompany: async (fetchFn: FetchFn, base: string, id: number): Promise<void> => {
-		const res = await fetchWithRetry(fetchFn, `${base}/api/watched-companies/${id}`, {
-			method: 'DELETE'
-		});
-		if (!res.ok && res.status !== 404) {
-			throw new Error(`API /api/watched-companies/${id} -> ${res.status}: ${await res.text()}`);
-		}
-	}
+	removeWatchedCompany: (fetchFn: FetchFn, base: string, id: number) =>
+		callDelete(fetchFn, base, `/api/watched-companies/${id}`)
 };

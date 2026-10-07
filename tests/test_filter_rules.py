@@ -291,6 +291,28 @@ def test_state_rule_is_dynamic_per_home_state(make_raw):
     assert evaluate(includes_ca, CA_CONFIG).status is FilterStatus.passed
 
 
+PM_CONFIG = build_config(
+    role_titles=[],
+    title_terms=["project manager", "program manager"],
+    seniority_terms=["senior"],
+    required_tech=["jira", "aws"],
+    excluded_tech=[],
+)
+
+
+def test_title_keywords_gate_keeps_the_profiles_job_function(make_raw):
+    # A senior engineering posting that mentions the PM's tools is still not a PM job.
+    eng = make_raw(title="Senior Software Engineer", description="We use AWS and Jira.")
+    result = evaluate(eng, PM_CONFIG)
+    assert result.status is FilterStatus.dropped
+    assert "title keywords" in (result.reason or "")
+
+    pm = make_raw(title="Senior Technical Program Manager", description="Own the Jira roadmap.")
+    assert evaluate(pm, PM_CONFIG).status is FilterStatus.passed
+    assert title_quick_fail("Senior Software Engineer", PM_CONFIG) is True
+    assert title_quick_fail("Senior Project Manager", PM_CONFIG) is False
+
+
 def test_home_state_normalization():
     # Full names and two-letter codes both normalize to the canonical proper name;
     # blank/None means "no home state"; garbage is rejected.

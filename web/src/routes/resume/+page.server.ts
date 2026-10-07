@@ -1,11 +1,19 @@
 import { api, errorReason } from '$lib/api';
+import { activeProfile } from '$lib/profiles';
 import { serverApiBase } from '$lib/apiBase.server';
+import { failStatus, formId } from '$lib/forms.server';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ fetch }) => {
-	const resume = await api.getCurrentResume(fetch, serverApiBase());
-	return { resume };
+export const load: PageServerLoad = async ({ fetch, parent }) => {
+	// Both are the active profile's: the API scopes resumes to it.
+	const [resume, resumes, { profiles }] = await Promise.all([
+		api.getCurrentResume(fetch, serverApiBase()),
+		api.listResumes(fetch, serverApiBase()).catch(() => []),
+		parent()
+	]);
+	const profileName = activeProfile(profiles)?.name ?? null;
+	return { resume, resumes, profileName };
 };
 
 /** Can we offer "let the AI read this resume and suggest search criteria"?
@@ -35,8 +43,26 @@ export const actions: Actions = {
 			const canSuggest = await aiCanSuggest(fetch);
 			return { ok: true, resume, staleCount, nextSteps: true, aiCanSuggest: canSuggest };
 		} catch (e) {
-			return fail(422, { error: errorReason(e) });
+			return fail(failStatus(e), { error: errorReason(e) });
 		}
+	},
+
+	// Switch this profile to another of its uploads. Scores made against the
+	// previous one go stale, so this raises the same keep / re-score prompt.
+	use: async ({ request, fetch }) => {
+		const id = formId(await request.formData());
+		if (id === null) return fail(400, { error: 'Bad resume id.' });
+		let resume;
+		try {
+			resume = await api.useResume(fetch, serverApiBase(), id);
+		} catch (e) {
+			return fail(failStatus(e), { error: errorReason(e) });
+		}
+		// The switch already happened: a failed count only costs the prompt.
+		const { count: staleCount } = await api
+			.getStaleScoreCount(fetch, serverApiBase())
+			.catch(() => ({ count: 0 }));
+		return { ok: true, resume, staleCount, switched: true };
 	},
 
 	// The two answers to the "N scores are now stale" prompt the upload raises.
@@ -51,7 +77,7 @@ export const actions: Actions = {
 			const canSuggest = await aiCanSuggest(fetch);
 			return { ok: true, kept: count, nextSteps: true, aiCanSuggest: canSuggest };
 		} catch (e) {
-			return fail(409, { error: errorReason(e) });
+			return fail(failStatus(e), { error: errorReason(e) });
 		}
 	},
 
@@ -66,7 +92,7 @@ export const actions: Actions = {
 			return { ok: true, task_id, nextSteps: true, aiCanSuggest: true };
 		} catch (e) {
 			// 409 when no provider is selected / no active resume.
-			return fail(409, { error: errorReason(e) });
+			return fail(failStatus(e), { error: errorReason(e) });
 		}
 	}
 };

@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 
 from sqlmodel import Session
 
-from job_applier.filters import FilterConfig, evaluate, load_active_config
+from job_applier import profiles
+from job_applier.filters import FilterConfig, evaluate
 from job_applier.models import engine
 from job_applier.sources import SourceAdapter, get_all_sources
 
@@ -51,7 +52,7 @@ def diagnose_filter(
     """Fetch from each source and bucket the filter outcome of every RawJob."""
     if filter_config is None:
         with Session(engine()) as session:
-            filter_config = load_active_config(session)
+            filter_config = profiles.active_config(session)
     if sources is None:
         sources = get_all_sources(filter_config=filter_config)
 

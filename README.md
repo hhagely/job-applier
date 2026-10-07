@@ -95,41 +95,60 @@ which is why the page asks you to judge it, right then:
 
 ### 3. Fill out your search profile
 
-**Search profile** in the sidebar. These fields drive the *hard filter*, which runs
-during ingest — a posting that fails is dropped before it ever reaches your queue.
-That makes this the highest-leverage screen in the app, and the easiest one to
-over-tighten.
+**Search profile** in the sidebar. These fields drive your profile's half of the
+*hard filter*. A scrape stores every posting that passes the shared rules (remote,
+US, not sales, not crypto) once, for every profile; then each profile's own rules
+run over the stored postings, and a posting that fails yours never reaches your
+queue. That makes this the highest-leverage screen in the app, and the easiest one
+to over-tighten. Saving it re-checks the jobs already found, in the background,
+with no new scrape.
 
 | Field | Effect |
 | --- | --- |
+| **Title keywords** | The job function: the title must contain one of these (`engineer`, `developer`; or `project manager`, `program manager`). This is what keeps a project-manager profile from matching every senior engineering role. Leave out seniority words; those go in the next field. |
 | **Seniority terms** | The job title must contain one of these. The strictest rule here — `senior` alone excludes every `Staff` and `Principal` posting. |
 | **Required tech** | The posting body or tags must reference one. Tokens of ≤2 characters (`js`, `go`, `ml`) are too ambiguous to pass on their own, so on their own they route a posting to **Manual review** instead. |
 | **Excluded tech** | In the title, disqualifies outright. In the tags, disqualifies unless a competing required-tech framework is also tagged. Mentioned only in the description with no positive signal, it goes to **Manual review** so you decide. |
 | **State of residence** | Optional. Drops postings whose "we can only hire in X, Y, Z" list leaves your state out. **Unset skips the rule entirely** — no state is assumed. Used only for this filter, stored locally, never sent anywhere. |
-| **Role titles** | The roles you're targeting. Recorded on the profile and filled in by *Suggest roles*; descriptive rather than functional — seniority and tech do the actual filtering. |
+| **Role titles** | The roles you're targeting. Recorded on the profile and filled in by *Suggest roles*; context for AI scoring and drafting only, never used by the filter (title keywords, seniority and tech do the filtering). |
+
+Every list is optional and an empty one skips its rule. A profile with no title
+keywords, seniority terms, or required tech at all falls back to the built-in
+JavaScript-engineer defaults, so a fresh install still finds something.
 
 Click **Suggest roles from resume** (needs a provider from step 1) to have the model
 read your resume and propose a whole profile. It's saved as a *draft* and changes
 nothing until you review and accept it.
 
 **Start broader than feels right.** The filter is unforgiving and silent: a profile
-that's too narrow doesn't warn you, it just hands you an empty queue, and the
-postings it dropped are gone rather than waiting somewhere. Widen first, then tighten
-once you can see what's coming through. The **Manual review** tab on the queue is
+that's too narrow doesn't warn you, it just hands you an empty queue. The postings
+it dropped are still stored, so widening the profile brings back the ones from the
+last 30 days without a new scrape. Widen first, then tighten once you can see what's
+coming through. The **Manual review** tab on the queue is
 where the ambiguous calls land — worth a look, since a thin queue often means good
 roles are piling up there.
 
 Two more tools on the same page, both aimed at *which employers* get searched:
 
-- **Company blacklist** — employers you never want to see. Checked before every other
-  rule, so their postings are dropped without a row being written. Matching normalizes
-  the name, so `Meta`, `Meta Inc`, and `Meta, Inc.` are one entry however a source
-  spells it. Edits only affect future ingests, not rows you already have.
+- **Company blacklist** — employers you never want to see. Each profile has its own,
+  checked before your profile's other rules, so their postings never reach your queue
+  (they stay stored for other profiles). Matching normalizes the name, so `Meta`,
+  `Meta Inc`, and `Meta, Inc.` are one entry however a source spells it. Adding or
+  removing an entry re-checks the jobs already found, with no new scrape.
 - **Check a company** — name an employer to find out whether your scrapes already
   cover them, and add their job board if not. About 1,300 company boards ship seeded,
   so the usual answer is "already covered". See
   [Managing the company slug list](#managing-the-company-slug-list) for what can and
   can't be added by hand.
+
+**Several profiles.** One install can hold several profiles, for different
+people or different searches, with exactly one active. Switch with the name chip
+at the bottom of the sidebar; add, copy, rename, or delete profiles on the
+**Search profile** page. Each profile has its own resumes (upload them on
+**Resume**), criteria, home state, blacklist, preferences, and per-job statuses,
+scores, and drafts. The scraped postings are shared, so one scrape fills every
+profile's queue. *Copy of …* starts a new profile from an existing one's criteria
+and resume; deleting a profile removes everything that's only its.
 
 ### 4. Run your first scrape
 
@@ -247,15 +266,25 @@ make setup                # uv sync + npm install
 uv run job-applier init   # create the SQLite DB
 ```
 
-Then run the two halves in two terminals:
+Then start the app, either as the desktop app or in your browser:
 
 ```sh
-make api    # FastAPI  → http://127.0.0.1:8000
-make web    # SvelteKit → http://localhost:5174
+make electron       # desktop app: builds the UI, starts the backend, opens the window
+make app-dev        # browser: boots the backend + UI on free ports and opens a tab
 ```
 
-Open http://localhost:5174 and follow the onboarding wizard. `make app-dev` is a
-one-command alternative that boots both on free ports and opens a browser.
+and follow the onboarding wizard. The desktop app is the primary way to use
+job-applier. The browser is supported too while there's no packaged macOS
+build, so Mac users can pick whichever they prefer; once a Mac build ships, the
+browser becomes a dev-only tool.
+
+For working on the app itself:
+
+```sh
+make electron-dev   # hot-reload dev shell: backend + Vite + Electron
+make api            # FastAPI  → http://127.0.0.1:8000   } UI in a browser,
+make web            # SvelteKit → http://localhost:5174  } with hot reload
+```
 
 The day-to-day flow all lives in the UI, but some maintenance has no button:
 
@@ -286,6 +315,10 @@ src/job_applier/
   models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
   sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters, Jibe, Oracle, RemoteOK, WWR, HN, YC)
   ingest.py    # Pipeline: fetch → dedupe (per-source, cross-source, JD-SimHash) → filter → persist
+  matching.py  # Per-profile matching: each profile's rules over the stored postings
+  profiles.py  # Profile lifecycle: active profile, resumes, queue scoping
+  services.py  # Shared queries/mutations (queue, scores, statuses, search) for routes + AI
+  blacklist.py / watchlist.py / preferences.py  # Company blacklist, hand-added boards, per-profile settings
   drafts.py    # Tailored resume / cover-letter markdown + PDF persistence (rendering in pdf.py)
   resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
@@ -310,38 +343,36 @@ data/resumes/        # uploaded PDFs (gitignored)
 
 ## Hard filter rules
 
-Applied at ingest time. Jobs that fail the role criteria are dropped before
-persistence (cheap to re-evaluate on every ingest). Jobs that fail the location
-or remote checks are still written to the DB so they're auditable.
+Two stages. The **shared rules** run at scrape time for everyone: a posting that
+fails one is never stored. Every posting that passes is stored once, and then each
+profile's **per-profile rules** run over the stored postings (`matching.py`),
+recording that profile's verdict (passed, manual, or dropped) as a
+`JobProfileLink` row. A profile's queue is its passed and manual verdicts. Editing
+a profile's criteria, home state, or blacklist re-matches the postings from the
+last 30 days in the background, with no new scrape.
 
-**Company blacklist (checked first).** Before any rule runs, a job whose employer
-is on your company blacklist is dropped outright — no row is written, even the
-first time that company is seen. The list is edited at
-http://localhost:5174/search alongside the profile. Matching normalizes the
-company name (casing, punctuation, and one trailing legal suffix), so `Meta`,
-`Meta Inc`, and `Meta, Inc.` all match however a source spells it. Editing the
-list only affects future ingests, not rows already saved.
-
-The role-specific criteria — seniority terms, required tech, excluded tech — live
-on the `SearchProfile` row and are edited at http://localhost:5174/search. The
-fixed rules, always applied, are:
+The shared rules, always applied:
 
 - **Remote only** — drops `hybrid`, `on-site`, anything mentioning relocation.
 - **US-locatable** — if the posting names a non-US country/region and has no US
   marker, drop. Specific "City, Region" locations without a US hint also drop.
-- **State allow-list must include your home state** — postings that say "we can
-  only hire in X, Y, Z" and don't list your state drop. Phrased as "any US state"
-  or "nationwide" overrides. Set your state of residence at
-  http://localhost:5174/search; **when it's left unset this rule is skipped
-  entirely** (no state is assumed). Your state is used only for this ingest filter,
-  stored locally, and never sent anywhere.
 - **Not a sales / pre-sales / biz-dev title** — `Senior Solutions Engineer`,
   `Head of Partnerships`, etc. are dropped even when they pass seniority.
 - **Not crypto / blockchain / web3** — matched against the whole posting, not just
   the title.
 
-Then the per-profile rules:
+Then the per-profile rules, edited on the **Search profile** page:
 
+- **Company blacklist (checked first)** — a job whose employer is on the profile's
+  blacklist is dropped for that profile. Matching normalizes the company name
+  (casing, punctuation, and one trailing legal suffix), so `Meta`, `Meta Inc`, and
+  `Meta, Inc.` all match however a source spells it.
+- **State allow-list must include your home state** — postings that say "we can
+  only hire in X, Y, Z" and don't list your state drop. Phrased as "any US state"
+  or "nationwide" overrides. **When the profile's state is left unset this rule is
+  skipped entirely** (no state is assumed). Your state is used only for this
+  filter, stored locally, and never sent anywhere.
+- **Title keywords** — title must contain one of `title_terms` (the job function).
 - **Seniority** — title must contain one of `seniority_terms`.
 - **Required tech** — posting body or tags must reference one of `required_tech`.
   Short tokens (≤2 chars, e.g. `js`, `ts`, `go`) only mark a posting as `manual`
@@ -355,8 +386,9 @@ Defaults shipped for fresh installs: senior+/staff/principal/lead seniority,
 JS/TS family stacks, Angular excluded. **Suggest roles from resume** on `/search`
 has your selected AI CLI propose a profile from your resume; the recommendation is
 saved as a draft on `SearchProfile.recommendations_draft` and applied only when you
-accept it in the UI. The filter falls back to the built-in defaults whenever no
-profile row exists or its required-tech list is empty.
+accept it in the UI. Each list is optional (an empty one skips its rule); the
+filter falls back to the built-in defaults only when no profile row exists or it
+has no title keywords, seniority terms, or required tech at all.
 
 ## Sources
 
@@ -414,7 +446,7 @@ as a wide net for *valid* slugs, not relevant ones. Failed fetches during
 ingest log a warning but don't break the run.
 
 **Checking or adding one company by hand.** Use **Check a company** on
-http://localhost:5174/search: type the employer's name and the app derives slug
+the **Search profile** page: type the employer's name and the app derives slug
 candidates and probes every source it can check from a bare slug (applying the
 same `board_exists` rule above), or paste the URL of their job board for an
 exact match. A URL is the only way to add a Workday tenant, whose slug packs
@@ -484,7 +516,9 @@ so the `baseline → tailored` delta and prior-resume scores remain visible.
 | ------------------------ | ----------------------------------------------------------------- |
 | `make setup`             | `uv sync` + `npm install` for the web app                         |
 | `make api`               | Run FastAPI on `:8000` with auto-reload                           |
-| `make web`               | Run SvelteKit dev server on `:5174`                               |
+| `make electron`          | Run the desktop app from source                                   |
+| `make electron-dev`      | Desktop app with hot reload (backend + Vite + Electron)           |
+| `make web`               | Run SvelteKit dev server on `:5174` (browser, hot reload)         |
 | `make app-dev`           | Boot API + built web server on free ports and open a browser      |
 | `make ingest`            | Pull jobs from configured sources                                 |
 | `make diagnose-filter`   | Dry-run every source and report what the hard filter drops        |
