@@ -8,7 +8,7 @@ argument-hint: "[base-branch | PR number]"
 
 Perform a comprehensive code review of all changes on the currently checked out branch compared to its **base**: the branch its PR targets (often an integration branch, not `main`), a base the user names, or `main` when neither applies. Scope is limited to the branch diff — for a whole-codebase audit, use `/codebase-audit` instead.
 
-This skill is a **thin launcher** for the shared review engine — a Claude Code Workflow at `.claude/skills/_shared/review-engine.workflow.js` (the SAME engine `/codebase-audit` uses, run with `mode: "diff"`). The engine fans out one agent per review dimension (deterministically — every dimension runs every time), each returns schema-enforced findings, then the engine semantically merges them and computes the verdict in JS. The verbose per-agent reports stay OUT of this conversation. **Auto-fix is NOT part of the workflow** — the engine returns findings only; you (the main loop) run the auto-fix in Step 4. Your job: (1) identify the diff inline, (2) call the Workflow with the review config, (3) present the result, (4) auto-fix on BLOCK/NEEDS WORK, (5) final report.
+This skill is a **thin launcher** for the shared review engine — a Claude Code Workflow at `.claude/skills/_shared/review-engine.workflow.js` (the SAME engine `/codebase-audit` uses, run with `mode: "diff"`). The engine fans out one agent per review dimension (deterministically — every dimension runs every time), each returns schema-enforced findings, then the engine semantically merges them and computes the verdict in JS. The verbose per-agent reports stay OUT of this conversation. **Auto-fix is NOT part of the workflow** — the engine returns findings only; you (the main loop) run the auto-fix in Step 4. Your job: (1) identify the diff inline, (2) call the Workflow with the review config, (3) present the result, (4) auto-fix on BLOCK/NEEDS WORK, then commit the fixes and push them to the branch, (5) final report.
 
 ## When to Use
 - User asks to review the current branch or an open PR
@@ -130,7 +130,7 @@ This step runs in the MAIN LOOP (here), not in the workflow — the engine retur
 
 If the verdict is **PASS**, stop here — present the report and you're done.
 
-If the verdict is **BLOCK** or **NEEDS WORK**, do NOT ask permission. Immediately address every high-level item that drove the verdict:
+If the verdict is **BLOCK** or **NEEDS WORK**, do NOT ask permission. First run `git status --porcelain` and note any files that already have uncommitted changes — those are the user's work in progress, not yours. Then immediately address every high-level item that drove the verdict:
 
 - **BLOCK** → fix every `critical` finding.
 - **NEEDS WORK** → fix every `warning` finding (criticals too, if somehow present).
@@ -146,7 +146,12 @@ If the verdict is **BLOCK** or **NEEDS WORK**, do NOT ask permission. Immediatel
 2. For each finding, make the smallest correct change that resolves the issue. Don't bundle unrelated cleanup.
 3. Add or update tests when the finding is test-related (missing test, untested branch, untested failure status).
 4. **Re-run the project's full verification, not just unit tests.** Run `make test` (pytest + vitest). If backend files changed, also run `make lint`; if frontend files changed, also run `cd web && npm run check`. Run Python through `uv run`. If anything fails, fix the failures before reporting done — do not stop at red.
-5. Do NOT commit or push. Leave changes staged-or-unstaged in the working tree so the user can review the diff.
+5. **Commit the fixes in groups, then push them to the current branch.** Do this only once verification is green; if it is still red after your fixes, commit nothing and report the failures.
+   - **Group related fixes into separate commits.** One commit per concern, e.g. "map the PDF renderer failure to 503", "add tests for the dropped-verdict branch", "extract the duplicated slug normalization". A fix and the tests written for it go in the same commit. Fixes that don't share a concern don't share a commit; don't split one fix across commits either.
+   - **Stage by path** (`git add <file>…`), never `git add -A` / `git add .`, so nothing outside the fixes is swept in — the repo's generated artifacts (`applications/`, `data/`) are gitignored, but working-tree noise isn't. If a fix touched a file that already had uncommitted changes before Step 4, leave that file out of every commit and say so in the report — committing it would also commit the user's unfinished work.
+   - **Message style:** match the project's convention (CLAUDE.md, else `git log --oneline -10`). Add any commit trailers (such as `Co-Authored-By`) that the session's attribution instructions call for.
+   - **Push:** `git push` when the branch has an upstream, otherwise `git push -u origin HEAD`. Never force-push, and never use `--no-verify`. If the push is rejected (the remote moved on, or the branch belongs to a fork you can't push to), leave the commits local and report it — don't rebase or force.
+   - **Never commit to `main`.** If the checked-out branch is `main`, leave the fixes uncommitted in the working tree and say so.
 
 **When to defer an item instead of fixing it:**
 - The fix requires a product/design decision the user hasn't made (e.g., "should this preference be per-profile or shared?").
@@ -166,6 +171,11 @@ After fixes land (and `make test` is green), report:
 ### Fixed
 - file:line — what changed and why (one line each)
 
+### Commits
+- <short sha> <subject> — the findings it fixes (one line per commit)
+- Pushed to origin/<branch>: yes / no (and why not)
+- Left uncommitted: file — why (pre-existing user changes, red verification, or on `main`); omit if none
+
 ### Deferred
 - file:line — finding, and the specific reason it was deferred (must be one of the four defer reasons — never "unsure")
   - Suggested next step: how the user should approach it
@@ -178,4 +188,4 @@ After fixes land (and `make test` is green), report:
 - Re-state the verdict after fixes: PASS / NEEDS WORK / BLOCK, and what (if anything) still drives a non-PASS.
 ```
 
-Keep the report tight. The user will read the diff for the details — the report is the index.
+Keep the report tight. The user will read the commits for the details — the report is the index.
