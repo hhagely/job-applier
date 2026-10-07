@@ -43,7 +43,7 @@ def _active_resume(session: Session) -> Resume:
 async def upload_resume(
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
-):
+) -> ResumeOut:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(415, "PDF required (.pdf extension)")
     pdf_bytes = await file.read()
@@ -82,7 +82,7 @@ async def upload_resume(
 
 
 @router.get("/api/resumes", response_model=list[ResumeSummaryOut])
-def list_resumes(session: Session = Depends(get_session)):
+def list_resumes(session: Session = Depends(get_session)) -> list[ResumeSummaryOut]:
     """The active profile's uploaded resumes, newest first; ``is_active`` marks
     the one in use. Leaves out the extracted text so the list stays light.
     """
@@ -100,7 +100,7 @@ def list_resumes(session: Session = Depends(get_session)):
 
 
 @router.post("/api/resumes/{resume_id}/use", response_model=ResumeOut)
-def use_resume(resume_id: int, session: Session = Depends(get_session)):
+def use_resume(resume_id: int, session: Session = Depends(get_session)) -> ResumeOut:
     """Make another of the active profile's uploads the one it scores and
     tailors with. Scores made against the previous one then read as stale."""
     profile = profiles.load_or_create_profile(session)
@@ -110,12 +110,12 @@ def use_resume(resume_id: int, session: Session = Depends(get_session)):
 
 
 @router.get("/api/resume/current", response_model=ResumeOut)
-def get_current_resume(session: Session = Depends(get_session)):
+def get_current_resume(session: Session = Depends(get_session)) -> ResumeOut:
     return _resume_out(_active_resume(session))
 
 
 @router.get("/api/resume/current/pdf")
-def download_current_resume(session: Session = Depends(get_session)):
+def download_current_resume(session: Session = Depends(get_session)) -> FileResponse:
     r = _active_resume(session)
     return FileResponse(
         r.pdf_path,
@@ -125,6 +125,6 @@ def download_current_resume(session: Session = Depends(get_session)):
 
 
 @router.get("/api/resume/current/markdown", response_class=PlainTextResponse)
-def get_current_resume_markdown(session: Session = Depends(get_session)):
+def get_current_resume_markdown(session: Session = Depends(get_session)) -> str:
     r = _active_resume(session)
     return resume_io.to_markdown(r.extracted_text)

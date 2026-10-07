@@ -14,12 +14,11 @@ from typing import Callable, Optional
 
 from pydantic import BaseModel, model_validator
 
-from job_applier import services
+from job_applier import profiles, services
 from job_applier.ai import bans, providers, scoring
 from job_applier.ai.templates import render_job_prompt
 from job_applier.config import settings
 from job_applier.models.db import ApplicationStatus, JobPosting, Session
-from job_applier.models.scoping import session_profile_id
 
 log = logging.getLogger(__name__)
 
@@ -134,7 +133,7 @@ def generate_draft(
         # does, refuse to persist banned output rather than ship it.
         raise DraftingError(f"banned characters could not be sanitized: {leftover}")
 
-    profile_id = session_profile_id(session, create=True)
+    profile_id = profiles.ensure_profile_id(session)
     drafts.save_markdown(job.id, resume_md, cover_md, profile_id=profile_id)
 
     _stage("rendering")

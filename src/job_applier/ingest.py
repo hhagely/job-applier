@@ -47,7 +47,6 @@ from job_applier.models import (
     ApplicationStatus,
     Company,
     JobPosting,
-    JobProfileLink,
     engine,
 )
 from job_applier.models.db import FilterStatus, SearchProfile
@@ -128,6 +127,10 @@ def _upsert_company(session: Session, name: str, caches: "_IngestCaches") -> tup
 # transaction to persist them. Bounding this is half of what keeps a scrape from
 # freezing the rest of the app; see ``run_ingest``.
 INGEST_BATCH_SIZE = 100
+
+# Postings per UPDATE when trimming unmatched raw payloads (an IN list, so kept
+# well under SQLite's bound-parameter limit).
+TRIM_BATCH_SIZE = 500
 
 
 @dataclass
@@ -410,8 +413,17 @@ def run_ingest(
         if progress_cb is not None:
             progress_cb(i + 1, total, source.name, stats)
 
-    matching.match_all_profiles(progress_cb=match_cb)
-    _trim_unmatched_raw(caches.new_ids)
+    # Every posting is committed by now; housekeeping that loses a lock race
+    # mustn't turn a stored scrape into a failed one. Unmatched postings stay
+    # unlinked, so the next run matches them; an untrimmed raw is only bytes.
+    try:
+        matching.match_all_profiles(progress_cb=match_cb)
+    except Exception:  # noqa: BLE001 - post-scrape housekeeping can't fail a committed scrape
+        log.exception("matching after ingest failed; the next run retries it")
+    try:
+        _trim_unmatched_raw(caches.new_ids)
+    except Exception:  # noqa: BLE001 - post-scrape housekeeping can't fail a committed scrape
+        log.exception("trimming unmatched postings' raw payload failed")
     return stats
 
 
@@ -419,19 +431,20 @@ def _trim_unmatched_raw(job_ids: list[int]) -> int:
     """Drop the source payload (``raw``, ~14 KB each) from this run's postings
     that no profile matched. Most stored postings fail every profile's personal
     rules, and ``raw`` is only kept for debugging a parse; the description stays,
-    so a profile added later can still be matched against them. Batched, short
-    transactions like the rest of ingest."""
+    so a profile added later can still be matched against them. A posting whose
+    source sent no description keeps its ``raw``: matching reads empty
+    description + empty raw as pruned and would never look at it again. Batched,
+    short transactions like the rest of ingest."""
     trimmed = 0
-    for start in range(0, len(job_ids), 500):
-        chunk = job_ids[start : start + 500]
-        matched = select(JobProfileLink.job_id).where(
-            JobProfileLink.filter_status != FilterStatus.dropped
-        )
+    for start in range(0, len(job_ids), TRIM_BATCH_SIZE):
+        chunk = job_ids[start : start + TRIM_BATCH_SIZE]
+        matched = profiles.matched_job_ids()
         with Session(engine()) as session:
             result = session.execute(
                 update(JobPosting)
                 .where(JobPosting.id.in_(chunk))  # type: ignore[union-attr]
                 .where(JobPosting.id.not_in(matched))  # type: ignore[union-attr]
+                .where(JobPosting.description != "")
                 .values(raw={})
                 .execution_options(all_profiles=True)
             )

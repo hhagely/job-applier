@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel import Session
 
-from job_applier import matching, services
+from job_applier import blacklist, matching
 from job_applier.api.schemas import BlacklistAddIn, BlacklistedCompanyOut
 from job_applier.models.db import BlacklistedCompany, get_session
 from job_applier.models.scoping import session_profile_id
@@ -28,20 +28,20 @@ def _blacklist_out(c: BlacklistedCompany) -> BlacklistedCompanyOut:
 
 
 @router.get("/api/blacklist", response_model=list[BlacklistedCompanyOut])
-def list_blacklist(session: Session = Depends(get_session)):
-    return [_blacklist_out(c) for c in services.list_blacklisted_companies(session)]
+def list_blacklist(session: Session = Depends(get_session)) -> list[BlacklistedCompanyOut]:
+    return [_blacklist_out(c) for c in blacklist.list_blacklisted_companies(session)]
 
 
 @router.post("/api/blacklist", response_model=BlacklistedCompanyOut)
-def add_blacklist(body: BlacklistAddIn, session: Session = Depends(get_session)):
+def add_blacklist(body: BlacklistAddIn, session: Session = Depends(get_session)) -> BlacklistedCompanyOut:
     """Add a company to this profile's blacklist.
 
     Idempotent on the normalized name: re-adding a company already present (under
     any spelling variant) returns the existing entry rather than erroring.
     """
     try:
-        row = services.add_blacklisted_company(session, body.name, body.reason)
-    except services.BlacklistNameTooShort as exc:
+        row = blacklist.add_blacklisted_company(session, body.name, body.reason)
+    except blacklist.BlacklistNameTooShort as exc:
         raise HTTPException(422, str(exc)) from exc
     # Blacklisting is per profile and applied at match time, so re-match to
     # take the company out of this profile's queue now, not at the next scrape.
@@ -50,8 +50,8 @@ def add_blacklist(body: BlacklistAddIn, session: Session = Depends(get_session))
 
 
 @router.delete("/api/blacklist/{blacklist_id}", status_code=204)
-def remove_blacklist(blacklist_id: int, session: Session = Depends(get_session)):
-    if not services.remove_blacklisted_company(session, blacklist_id):
+def remove_blacklist(blacklist_id: int, session: Session = Depends(get_session)) -> Response:
+    if not blacklist.remove_blacklisted_company(session, blacklist_id):
         raise HTTPException(404, "blacklist entry not found")
     matching.start_rematch(session_profile_id(session))
     return Response(status_code=204)

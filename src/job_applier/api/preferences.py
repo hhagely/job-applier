@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
-from job_applier import services
+from job_applier import preferences
 from job_applier.api.schemas import PreferencesOut, PreferencesUpdate
 from job_applier.contracts import GHOSTED_AFTER_DAYS_KEY
 from job_applier.models.db import get_session
@@ -22,23 +22,23 @@ router = APIRouter(tags=["preferences"])
 
 
 def _preferences_out(session: Session) -> PreferencesOut:
-    return PreferencesOut(ghosted_after_days=services.ghosted_after_days(session))
+    return PreferencesOut(ghosted_after_days=preferences.ghosted_after_days(session))
 
 
 @router.get("/api/preferences", response_model=PreferencesOut)
-def read_preferences(session: Session = Depends(get_session)):
+def read_preferences(session: Session = Depends(get_session)) -> PreferencesOut:
     return _preferences_out(session)
 
 
 @router.patch("/api/preferences", response_model=PreferencesOut)
 def update_preferences(
     body: PreferencesUpdate, session: Session = Depends(get_session)
-):
+) -> PreferencesOut:
     """Partial update — an omitted field keeps its stored value.
 
     Bounds are enforced by ``PreferencesUpdate`` (422 on anything outside them),
     so nothing unparseable or absurd reaches the key/value table.
     """
     if body.ghosted_after_days is not None:
-        services.set_profile_pref(session, GHOSTED_AFTER_DAYS_KEY, str(body.ghosted_after_days))
+        preferences.set_profile_pref(session, GHOSTED_AFTER_DAYS_KEY, str(body.ghosted_after_days))
     return _preferences_out(session)

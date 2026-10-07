@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from job_applier import services
+from job_applier import blacklist
 from job_applier.api.app import app
 from job_applier.models.db import get_session
 from job_applier.sources.base import RawJob
@@ -60,37 +60,37 @@ def _raw(**overrides) -> RawJob:
 
 class TestBlacklistService:
     def test_add_normalizes_and_stores_display_name(self, session):
-        row = services.add_blacklisted_company(session, "Meta, Inc.")
+        row = blacklist.add_blacklisted_company(session, "Meta, Inc.")
         assert row.name == "Meta, Inc."
         assert row.normalized_name == "meta"
 
     def test_add_is_idempotent_across_naming_variants(self, session):
-        a = services.add_blacklisted_company(session, "Meta, Inc.")
-        b = services.add_blacklisted_company(session, "meta")
-        c = services.add_blacklisted_company(session, "  META inc ")
+        a = blacklist.add_blacklisted_company(session, "Meta, Inc.")
+        b = blacklist.add_blacklisted_company(session, "meta")
+        c = blacklist.add_blacklisted_company(session, "  META inc ")
         assert a.id == b.id == c.id
-        assert len(services.list_blacklisted_companies(session)) == 1
+        assert len(blacklist.list_blacklisted_companies(session)) == 1
 
     def test_add_keeps_optional_reason(self, session):
-        row = services.add_blacklisted_company(session, "Acme", reason="  bad culture  ")
+        row = blacklist.add_blacklisted_company(session, "Acme", reason="  bad culture  ")
         assert row.reason == "bad culture"
 
     def test_blank_reason_stored_as_none(self, session):
-        row = services.add_blacklisted_company(session, "Acme", reason="   ")
+        row = blacklist.add_blacklisted_company(session, "Acme", reason="   ")
         assert row.reason is None
 
     def test_too_short_name_rejected(self, session):
-        with pytest.raises(services.BlacklistNameTooShort):
-            services.add_blacklisted_company(session, "!")
-        with pytest.raises(services.BlacklistNameTooShort):
-            services.add_blacklisted_company(session, "a")
-        assert services.list_blacklisted_companies(session) == []
+        with pytest.raises(blacklist.BlacklistNameTooShort):
+            blacklist.add_blacklisted_company(session, "!")
+        with pytest.raises(blacklist.BlacklistNameTooShort):
+            blacklist.add_blacklisted_company(session, "a")
+        assert blacklist.list_blacklisted_companies(session) == []
 
     def test_remove_returns_true_then_false(self, session):
-        row = services.add_blacklisted_company(session, "Acme")
-        assert services.remove_blacklisted_company(session, row.id) is True
-        assert services.remove_blacklisted_company(session, row.id) is False
-        assert services.list_blacklisted_companies(session) == []
+        row = blacklist.add_blacklisted_company(session, "Acme")
+        assert blacklist.remove_blacklisted_company(session, row.id) is True
+        assert blacklist.remove_blacklisted_company(session, row.id) is False
+        assert blacklist.list_blacklisted_companies(session) == []
 
 
 # Dropping a blacklisted company's postings is matching's job (per profile, at

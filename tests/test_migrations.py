@@ -59,7 +59,8 @@ CREATE TABLE matchscore (
     rubric JSON,
     reasoning VARCHAR,
     scored_by VARCHAR,
-    scored_at DATETIME
+    scored_at DATETIME,
+    UNIQUE (job_id)
 );
 CREATE TABLE matchscorehistory (
     id INTEGER PRIMARY KEY,
@@ -98,7 +99,8 @@ CREATE TABLE application (
     status VARCHAR NOT NULL,
     notes VARCHAR,
     applied_at DATETIME,
-    updated_at DATETIME
+    updated_at DATETIME,
+    UNIQUE (job_id)
 );
 CREATE TABLE company (
     id INTEGER PRIMARY KEY,
@@ -127,6 +129,7 @@ CREATE TABLE blacklistedcompany (
     reason VARCHAR,
     created_at DATETIME
 );
+CREATE UNIQUE INDEX ix_blacklistedcompany_normalized_name ON blacklistedcompany (normalized_name);
 CREATE TABLE jobprofilelink (
     job_id INTEGER NOT NULL,
     search_profile_id INTEGER NOT NULL,
@@ -457,6 +460,11 @@ def test_migration_moves_per_job_state_onto_the_default_profile(tmp_path, monkey
             "used_for_unemployment) VALUES (1, 4, 'new', '2026-08-03', 0)"
         )
         conn.execute(
+            "INSERT INTO matchscore (job_id, profile_id, score, rubric, reasoning, "
+            "scored_by, scored_at, score_kind) "
+            "VALUES (1, 4, 50, '{}', '', 'claude', '2026-08-03', 'baseline')"
+        )
+        conn.execute(
             "INSERT INTO blacklistedcompany (profile_id, name, normalized_name, created_at) "
             "VALUES (4, 'Meta', 'meta', '2026-08-03')"
         )
@@ -680,3 +688,66 @@ def test_no_ensure_helper_is_orphaned():
     startup_src = inspect.getsource(migrations.run)
     orphaned = [h for h in helpers if h not in startup_src]
     assert not orphaned, f"migration helpers never called from startup: {orphaned}"
+
+
+def test_every_profile_owner_column_is_required_after_migration(tmp_path, monkeypatch):
+    # A fresh install declares profile_id NOT NULL; an upgraded DB must match,
+    # and rebuilding resume must leave the resume_id keys pointing at "resume".
+    from job_applier.models.migrations import _PROFILE_OWNED_TABLES
+
+    db_path, _ = _run_startup_with(
+        tmp_path,
+        monkeypatch,
+        "INSERT INTO resume (id, original_filename, pdf_path, extracted_text, is_active)"
+        " VALUES (1, 'r.pdf', '/r.pdf', 'text', 1);",
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        for table in _PROFILE_OWNED_TABLES:
+            notnull = {r[1]: r[3] for r in conn.execute(f"PRAGMA table_info({table})")}
+            assert notnull["profile_id"] == 1, table
+        targets = {
+            row[2]
+            for table in ("matchscore", "matchscorehistory", "searchprofile")
+            for row in conn.execute(f"PRAGMA foreign_key_list({table})")
+        }
+        assert "resume" in targets
+        assert not any(t.endswith("__pre_profile") for t in targets)
+        assert conn.execute("SELECT profile_id FROM resume").fetchall() != [(None,)]
+    finally:
+        conn.close()
+
+
+def test_a_nullable_owner_column_from_an_earlier_migration_is_tightened(tmp_path, monkeypatch):
+    # DBs migrated before the rebuild got profile_id by ADD COLUMN (nullable).
+    db_path, models = _run_startup(tmp_path, monkeypatch)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            INSERT INTO searchprofile (id, name, is_active, role_titles, title_terms,
+                seniority_terms, required_tech, excluded_tech, extracted_skills, updated_at)
+                VALUES (7, 'Default', 1, '[]', '[]', '[]', '[]', '[]', '[]', '2026-08-01');
+            ALTER TABLE blacklistedcompany RENAME TO bl_old;
+            CREATE TABLE blacklistedcompany (
+                id INTEGER PRIMARY KEY, profile_id INTEGER, name VARCHAR NOT NULL,
+                normalized_name VARCHAR NOT NULL, reason VARCHAR, created_at DATETIME);
+            DROP TABLE bl_old;
+            INSERT INTO blacklistedcompany (name, normalized_name, created_at)
+                VALUES ('Meta', 'meta', '2026-08-01');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(models.db, "_engine", None)
+    models.db.create_db_and_tables()
+    conn = sqlite3.connect(db_path)
+    try:
+        notnull = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(blacklistedcompany)")}
+        assert notnull["profile_id"] == 1
+        assert conn.execute("SELECT profile_id, name FROM blacklistedcompany").fetchall() == [
+            (7, "Meta")
+        ]
+    finally:
+        conn.close()

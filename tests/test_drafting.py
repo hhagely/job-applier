@@ -15,7 +15,6 @@ from job_applier.config import settings
 from job_applier.contracts import AI_MODEL_KEY_LEGACY, ai_model_key
 from job_applier.models.db import (
     ApplicationStatus,
-    FilterStatus,
     JobPosting,
     MatchScore,
     Resume,
@@ -69,7 +68,6 @@ def _seed_job(session, title="Senior Engineer"):
         company_name="Acme",
         description="<p>We use <b>TypeScript</b> and Node.js.</p>",
         dedupe_hash=f"h-{title}",
-        filter_status=FilterStatus.passed,
     )
     session.add(j)
     session.commit()

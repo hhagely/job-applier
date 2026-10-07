@@ -1,5 +1,6 @@
 import { api, errorReason, type SearchProfileBody } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
+import { failStatus, formId } from '$lib/forms.server';
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -15,11 +16,6 @@ export const load: PageServerLoad = async ({ fetch }) => {
 	const hasResume = resumes.some((r) => r.is_active);
 	return { profile, profiles, resumes, hasResume, blacklist, coverage, watched };
 };
-
-function readId(form: FormData): number | null {
-	const id = Number(form.get('id'));
-	return Number.isInteger(id) && id > 0 ? id : null;
-}
 
 function splitList(raw: FormDataEntryValue | null): string[] {
 	if (typeof raw !== 'string') return [];
@@ -48,17 +44,16 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '').trim();
 		if (!name) return fail(400, { profileError: 'Give the profile a name.' });
-		const cloneFrom = Number(form.get('clone_from'));
 		try {
 			const created = await api.createSearchProfile(
 				fetch,
 				serverApiBase(),
 				name,
-				Number.isInteger(cloneFrom) && cloneFrom > 0 ? cloneFrom : undefined
+				formId(form, 'clone_from') ?? undefined
 			);
 			return { profileOk: true, profileMessage: `Created "${created.name}". Switch to it to edit its criteria.` };
 		} catch (e) {
-			return fail(422, { profileError: errorReason(e) });
+			return fail(failStatus(e), { profileError: errorReason(e) });
 		}
 	},
 
@@ -66,13 +61,13 @@ export const actions: Actions = {
 	// `redirect_to` so the user lands back where they were.
 	activateProfile: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = readId(form);
+		const id = formId(form);
 		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
 		let active;
 		try {
 			active = await api.activateSearchProfile(fetch, serverApiBase(), id);
 		} catch (e) {
-			return fail(422, { profileError: errorReason(e) });
+			return fail(failStatus(e), { profileError: errorReason(e) });
 		}
 		const back = String(form.get('redirect_to') ?? '');
 		// Same-origin paths only: never bounce to an arbitrary URL from a form field.
@@ -82,7 +77,7 @@ export const actions: Actions = {
 
 	updateProfileMeta: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = readId(form);
+		const id = formId(form);
 		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
 		const name = String(form.get('name') ?? '').trim();
 		if (!name) return fail(400, { profileError: 'Give the profile a name.' });
@@ -90,18 +85,18 @@ export const actions: Actions = {
 			await api.updateSearchProfileMeta(fetch, serverApiBase(), id, { name });
 			return { profileOk: true, profileMessage: 'Profile renamed.' };
 		} catch (e) {
-			return fail(422, { profileError: errorReason(e) });
+			return fail(failStatus(e), { profileError: errorReason(e) });
 		}
 	},
 
 	deleteProfile: async ({ request, fetch }) => {
-		const id = readId(await request.formData());
+		const id = formId(await request.formData());
 		if (id === null) return fail(400, { profileError: 'Bad profile id.' });
 		try {
 			await api.deleteSearchProfile(fetch, serverApiBase(), id);
 			return { profileOk: true, profileMessage: 'Profile deleted.' };
 		} catch (e) {
-			return fail(409, { profileError: errorReason(e) });
+			return fail(failStatus(e), { profileError: errorReason(e) });
 		}
 	},
 
@@ -111,7 +106,7 @@ export const actions: Actions = {
 			const profile = await api.saveSearchProfile(fetch, serverApiBase(), readProfile(form));
 			return { ok: true, profile, message: 'Saved.' };
 		} catch (e) {
-			return fail(422, { error: errorReason(e) });
+			return fail(failStatus(e), { error: errorReason(e) });
 		}
 	},
 
@@ -122,7 +117,7 @@ export const actions: Actions = {
 			return { ok: true, profile, message: 'Recommendations ready — review below.' };
 		} catch (e) {
 			// 409 when no provider / no resume; 502 on a provider failure.
-			return fail(422, { error: errorReason(e) });
+			return fail(failStatus(e), { error: errorReason(e) });
 		}
 	},
 
@@ -176,7 +171,7 @@ export const actions: Actions = {
 			const profile = await api.clearRecommendations(fetch, serverApiBase());
 			return { ok: true, profile, message: 'Recommendations applied.' };
 		} catch (e) {
-			return fail(422, { error: errorReason(e) });
+			return fail(failStatus(e), { error: errorReason(e) });
 		}
 	},
 
@@ -185,7 +180,7 @@ export const actions: Actions = {
 			const profile = await api.clearRecommendations(fetch, serverApiBase());
 			return { ok: true, profile, message: 'Recommendations dismissed.' };
 		} catch (e) {
-			return fail(422, { error: errorReason(e) });
+			return fail(failStatus(e), { error: errorReason(e) });
 		}
 	},
 
@@ -198,7 +193,7 @@ export const actions: Actions = {
 			await api.addBlacklist(fetch, serverApiBase(), name, reason);
 			return { blacklistOk: true, blacklistMessage: `Blacklisted ${name}.` };
 		} catch (e) {
-			return fail(422, { blacklistError: errorReason(e) });
+			return fail(failStatus(e), { blacklistError: errorReason(e) });
 		}
 	},
 
@@ -212,7 +207,7 @@ export const actions: Actions = {
 			const { task_id } = await api.startCompanyRefresh(fetch, serverApiBase(), reverify);
 			return { ok: true, task_id };
 		} catch (e) {
-			return fail(500, { coverageError: errorReason(e) });
+			return fail(failStatus(e), { coverageError: errorReason(e) });
 		}
 	},
 
@@ -232,31 +227,31 @@ export const actions: Actions = {
 				companyMessage: result.message
 			};
 		} catch (e) {
-			return fail(422, { companyError: errorReason(e) });
+			return fail(failStatus(e), { companyError: errorReason(e) });
 		}
 	},
 
 	removeCompany: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = Number(form.get('id'));
-		if (!Number.isFinite(id)) return fail(400, { companyError: 'Bad company id.' });
+		const id = formId(form);
+		if (id === null) return fail(400, { companyError: 'Bad company id.' });
 		try {
 			await api.removeWatchedCompany(fetch, serverApiBase(), id);
 			return { companyOk: true, companyAlready: false, companyMessage: '' };
 		} catch (e) {
-			return fail(400, { companyError: errorReason(e) });
+			return fail(failStatus(e), { companyError: errorReason(e) });
 		}
 	},
 
 	removeBlacklist: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = Number(form.get('id'));
-		if (!Number.isFinite(id)) return fail(400, { blacklistError: 'Bad entry id.' });
+		const id = formId(form);
+		if (id === null) return fail(400, { blacklistError: 'Bad entry id.' });
 		try {
 			await api.removeBlacklist(fetch, serverApiBase(), id);
 			return { blacklistOk: true };
 		} catch (e) {
-			return fail(400, { blacklistError: errorReason(e) });
+			return fail(failStatus(e), { blacklistError: errorReason(e) });
 		}
 	}
 };

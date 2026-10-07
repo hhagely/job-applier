@@ -7,6 +7,8 @@ transaction with ``_begin`` first: pysqlite autocommits DDL otherwise, and a
 crash between the ALTER and the backfill would skip the backfill forever.
 """
 
+from __future__ import annotations
+
 from enum import Enum
 from typing import Optional
 
@@ -29,13 +31,17 @@ def run() -> None:
     # After create_all (it backfills into the new jobprofilelink table).
     _ensure_multi_profile_columns()
     _ensure_sourceslug_columns()
-    # Last: rebuilds tables, so every column helper above must have run first.
+    # From here on, order matters: _ensure_per_profile_state rebuilds tables at
+    # the model's shape, so every column-add helper above must run before it.
     _ensure_per_profile_state()
     _ensure_match_columns()
     _ensure_resume_owner()
+    # After every helper that adds a profile_id column.
+    _ensure_profile_owner_required()
 
 
 def _table_cols(conn: Connection, table: str) -> set[str]:
+    """The column names ``table`` has right now."""
     return {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
 
 def _reset_posting_verdicts(conn: Connection) -> None:
@@ -58,7 +64,7 @@ def _ensure_cross_source_hash_column() -> None:
     ALTER TABLE here covers the migration path. Cheap to call every startup.
     """
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobposting)")}
+        cols = _table_cols(conn, "jobposting")
         if "cross_source_hash" not in cols:
             conn.exec_driver_sql(
                 "ALTER TABLE jobposting ADD COLUMN cross_source_hash VARCHAR"
@@ -72,7 +78,7 @@ def _ensure_cross_source_hash_column() -> None:
 
 def _ensure_matchscore_resume_id_column() -> None:
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(matchscore)")}
+        cols = _table_cols(conn, "matchscore")
         if "resume_id" not in cols:
             # Carry the FK so migrated DBs match the fresh-install shape
             # (model declares foreign_key="resume.id") and duplicate_of's pattern.
@@ -84,7 +90,7 @@ def _ensure_matchscore_resume_id_column() -> None:
 
 def _ensure_jd_dedupe_columns() -> None:
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobposting)")}
+        cols = _table_cols(conn, "jobposting")
         if "jd_fingerprint" not in cols:
             conn.exec_driver_sql(
                 "ALTER TABLE jobposting ADD COLUMN jd_fingerprint VARCHAR"
@@ -114,7 +120,7 @@ def _ensure_searchprofile_columns() -> None:
     so existing profiles match exactly as before until the user sets keywords.
     """
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(searchprofile)")}
+        cols = _table_cols(conn, "searchprofile")
         if "home_state" not in cols:
             conn.exec_driver_sql("ALTER TABLE searchprofile ADD COLUMN home_state VARCHAR")
         if "title_terms" not in cols:
@@ -202,7 +208,7 @@ def _ensure_sourceslug_columns() -> None:
     hand. ``label`` stays nullable — the UI falls back to the slug.
     """
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(sourceslug)")}
+        cols = _table_cols(conn, "sourceslug")
         added = False
         if "added_by_user" not in cols:
             conn.exec_driver_sql(
@@ -224,7 +230,7 @@ def _ensure_sourceslug_columns() -> None:
 def _ensure_score_kind_columns() -> None:
     with engine().connect() as conn:
         for table in ("matchscore", "matchscorehistory"):
-            cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            cols = _table_cols(conn, table)
             if "score_kind" not in cols:
                 # NOT NULL to match the model's non-Optional `score_kind: str`
                 # (fresh installs build it NOT NULL); the DEFAULT backfills the
@@ -242,7 +248,7 @@ def _ensure_score_kind_columns() -> None:
 
 def _ensure_application_followup_columns() -> None:
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(application)")}
+        cols = _table_cols(conn, "application")
         added = False
         if "next_followup_at" not in cols:
             conn.exec_driver_sql("ALTER TABLE application ADD COLUMN next_followup_at DATETIME")
@@ -259,7 +265,7 @@ def _ensure_application_followup_columns() -> None:
 
 def _ensure_application_unemployment_columns() -> None:
     with engine().connect() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(application)")}
+        cols = _table_cols(conn, "application")
         added = False
         if "used_for_unemployment" not in cols:
             conn.exec_driver_sql(
@@ -287,11 +293,13 @@ def _ensure_per_profile_state() -> None:
     active profile (the Default that ``_ensure_multi_profile_columns`` made), which
     is created here if per-profile rows exist with no profile yet.
 
-    ``application`` and ``matchscore`` shipped with an inline ``UNIQUE (job_id)``
-    that must become ``UNIQUE (job_id, profile_id)``; SQLite can't drop a table
-    constraint with ALTER, so those two are rebuilt (see ``_rebuild_with_profile``).
-    The other two only need the column, plus the blacklist's unique index moving
-    from ``normalized_name`` to ``(profile_id, normalized_name)``.
+    All four are rebuilt at the model's shape (see ``_rebuild_with_profile``)
+    rather than given an ``ADD COLUMN``: ``application`` and ``matchscore``
+    shipped with an inline ``UNIQUE (job_id)`` that must become
+    ``UNIQUE (job_id, profile_id)``, the blacklist's unique index moves from
+    ``normalized_name`` to ``(profile_id, normalized_name)``, SQLite can't drop a
+    table constraint or add a NOT NULL column without a default via ALTER, and a
+    rebuild leaves an upgraded DB exactly like a fresh install.
     """
     with engine().connect() as conn:
 
@@ -312,29 +320,47 @@ def _ensure_per_profile_state() -> None:
         ):
             pid = _insert_default_profile(conn)
 
-        for table in ("application", "matchscore"):
-            if table in todo:
-                _rebuild_with_profile(conn, table, pid, _table_cols(conn, table))
-        for table in ("matchscorehistory", "blacklistedcompany"):
-            if table in todo:
-                conn.exec_driver_sql(
-                    f"ALTER TABLE {table} ADD COLUMN profile_id INTEGER "
-                    "REFERENCES searchprofile(id)"
-                )
-                conn.exec_driver_sql(f"UPDATE {table} SET profile_id = ?", (pid,))
-                conn.exec_driver_sql(
-                    f"CREATE INDEX IF NOT EXISTS ix_{table}_profile_id ON {table} (profile_id)"
-                )
-        if "blacklistedcompany" in todo:
-            conn.exec_driver_sql("DROP INDEX IF EXISTS ix_blacklistedcompany_normalized_name")
-            conn.exec_driver_sql(
-                "CREATE INDEX ix_blacklistedcompany_normalized_name "
-                "ON blacklistedcompany (normalized_name)"
+        for table in todo:
+            _rebuild_with_profile(conn, table, pid, _table_cols(conn, table))
+        conn.commit()
+
+
+# Every table whose rows belong to a profile. Fresh installs declare
+# ``profile_id`` NOT NULL on each.
+_PROFILE_OWNED_TABLES = (
+    "application",
+    "matchscore",
+    "matchscorehistory",
+    "blacklistedcompany",
+    "resume",
+    "jobprofilelink",
+)
+
+
+def _ensure_profile_owner_required() -> None:
+    """Make ``profile_id`` NOT NULL wherever an earlier migration added it as a
+    nullable column (``resume``, which ``_ensure_resume_owner`` fills row by
+    row, and DBs migrated before ``_ensure_per_profile_state`` rebuilt its
+    tables). A NULL owner would let a raw insert land a row no profile sees.
+
+    Gated on the column's ``notnull`` flag, so it runs once per table. Any NULL
+    that slipped in goes to the active profile.
+    """
+    with engine().connect() as conn:
+        loose = [
+            t
+            for t in _PROFILE_OWNED_TABLES
+            if any(
+                r[1] == "profile_id" and not r[3]
+                for r in conn.exec_driver_sql(f"PRAGMA table_info({t})")
             )
-            conn.exec_driver_sql(
-                "CREATE UNIQUE INDEX IF NOT EXISTS ux_blacklistedcompany_profile_name "
-                "ON blacklistedcompany (profile_id, normalized_name)"
-            )
+        ]
+        if not loose:
+            return
+        _begin(conn)
+        pid = _active_profile_id_from(conn)
+        for table in loose:
+            _rebuild_with_profile(conn, table, pid, _table_cols(conn, table))
         conn.commit()
 
 
@@ -342,17 +368,25 @@ def _rebuild_with_profile(
     conn: Connection, table: str, pid: Optional[int], old_cols: set[str]
 ) -> None:
     """Recreate ``table`` at the model's current shape, copying rows across with
-    ``profile_id = pid``. SQLite's documented rebuild: rename the old table aside,
-    create the new one from the SQLModel metadata (so a migrated DB can't drift
-    from a fresh install), copy, drop the old. Runs inside the caller's
-    explicit transaction, so a failure part-way leaves the original table in place.
+    their ``profile_id`` (``pid`` where it's missing or NULL). SQLite's
+    documented rebuild: rename the old table aside, create the new one from the
+    SQLModel metadata (so a migrated DB can't drift from a fresh install), copy,
+    drop the old. Runs inside the caller's explicit transaction, so a failure
+    part-way leaves the original table in place.
 
     Foreign-key enforcement is never switched on for this engine (no
-    ``PRAGMA foreign_keys``), so the rename/drop can't trip a constraint, and no
-    other table references these two.
+    ``PRAGMA foreign_keys``), so the rename/drop can't trip a constraint. Other
+    tables do reference some of these (``resume`` is the target of several
+    ``resume_id`` keys), and a modern SQLite RENAME rewrites those references to
+    follow the table aside, where the DROP would leave them dangling; legacy
+    rename mode leaves them naming ``table``, which the rebuilt table then is.
     """
     old = f"{table}__pre_profile"
-    conn.exec_driver_sql(f"ALTER TABLE {table} RENAME TO {old}")
+    conn.exec_driver_sql("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.exec_driver_sql(f"ALTER TABLE {table} RENAME TO {old}")
+    finally:
+        conn.exec_driver_sql("PRAGMA legacy_alter_table = OFF")
     # The old indexes follow the rename but keep their names, which the new
     # table's indexes reuse. Auto-indexes (sql IS NULL) go with the table.
     for (name,) in conn.exec_driver_sql(
@@ -362,7 +396,11 @@ def _rebuild_with_profile(
     ).all():
         conn.exec_driver_sql(f"DROP INDEX {name}")
     SQLModel.metadata.tables[table].create(conn)
-    copied = [c for c in SQLModel.metadata.tables[table].columns if c.name in old_cols]
+    copied = [
+        c
+        for c in SQLModel.metadata.tables[table].columns
+        if c.name in old_cols and c.name != "profile_id"
+    ]
     # Legacy columns that were nullable are NOT NULL now, so fill their NULLs with
     # the model's default rather than failing the copy.
     select_list, params = [], []
@@ -376,9 +414,10 @@ def _rebuild_with_profile(
             value = default.arg
             select_list.append(f"COALESCE({c.name}, ?)")
             params.append(value.name if isinstance(value, Enum) else value)
+    owner = "COALESCE(profile_id, ?)" if "profile_id" in old_cols else "?"
     conn.exec_driver_sql(
         f"INSERT INTO {table} ({', '.join(c.name for c in copied)}, profile_id) "
-        f"SELECT {', '.join(select_list)}, ? FROM {old}",
+        f"SELECT {', '.join(select_list)}, {owner} FROM {old}",
         (*params, pid),
     )
     conn.exec_driver_sql(f"DROP TABLE {old}")

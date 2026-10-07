@@ -1,9 +1,13 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { whileBusy } from '$lib/busy';
 	import { untrack } from 'svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
+	import BlacklistCard from '$lib/BlacklistCard.svelte';
+	import CompanyCoverageCard from '$lib/CompanyCoverageCard.svelte';
+	import ProfilesCard from '$lib/ProfilesCard.svelte';
+	import WatchedCompaniesCard from '$lib/WatchedCompaniesCard.svelte';
 	import { US_STATES } from '$lib/usStates';
-	import { DAY_MS, fmtDate } from '$lib/date';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import type { ActionData, PageData } from './$types';
 
@@ -42,14 +46,6 @@
 	// profile against every stored posting in the background (no scrape). Its
 	// progress rides the shared task stream as kind `match`, ref = profile id.
 	const rematch = createTaskRunner({ kind: 'match', ref: () => String(profile.id ?? '') });
-	let profileBusy = $state(false);
-	const busyEnhance = () => {
-		profileBusy = true;
-		return async ({ update }: { update: () => Promise<void> }) => {
-			await update();
-			profileBusy = false;
-		};
-	};
 
 	function joinList(items: string[]): string {
 		return items.join('\n');
@@ -58,35 +54,6 @@
 	let draft = $derived(profile.recommendations_draft);
 	const hasProvider = $derived(Boolean(data.aiProvider));
 	let suggesting = $state(false);
-
-	// --- Company coverage ---------------------------------------------------
-	// Progress rides the shared task stream (same as the dashboard's scrape), so
-	// it survives navigating away mid-run.
-	const companies = createTaskRunner({
-		kind: 'refresh_companies',
-		failMessage: 'could not start the company update'
-	});
-
-	// A month without a check is enough to start missing new employers; never
-	// having run at all is treated as stale too.
-	const STALE_DAYS = 30;
-	const daysSinceCheck = $derived(
-		data.coverage.last_checked_at
-			? Math.floor((Date.now() - Date.parse(data.coverage.last_checked_at)) / DAY_MS)
-			: null
-	);
-	const coverageStale = $derived(daysSinceCheck === null || daysSinceCheck >= STALE_DAYS);
-	// The add-a-company POST probes live ATS APIs, so it's seconds-slow — hold the
-	// form disabled rather than letting it look like nothing happened.
-	let addingCompany = $state(false);
-
-	const lastCheckedLabel = $derived(
-		daysSinceCheck === null
-			? 'never'
-			: daysSinceCheck === 0
-				? 'today'
-				: `${daysSinceCheck}d ago`
-	);
 </script>
 
 <div class="view-head">
@@ -101,98 +68,11 @@
 
 <div class="view-body">
 	<div class="stack">
-		<div class="card">
-			<div class="card-h" id="profiles"><h2>Profiles</h2></div>
-			<div class="card-b">
-				<p class="muted" style="margin-bottom:14px">
-					One profile per person (or per kind of search), each with its own resumes, criteria,
-					statuses, scores, and drafts. A scrape runs once for everyone and then fills each
-					profile's queue by its own criteria. Adding a profile or changing its criteria
-					re-checks the jobs already found, so there's no need to scrape again. Switch who's
-					using the app from your name at the bottom of the sidebar; each person uploads and
-					picks their own resumes on the <a href="/resume">Resume</a> page.
-				</p>
-
-				{#if form && 'profileError' in form && form.profileError}
-					<p class="err-text" style="margin-bottom:10px">{form.profileError}</p>
-				{/if}
-				{#if form && 'profileMessage' in form && form.profileMessage}
-					<p class="banner ok" style="margin-bottom:10px">{form.profileMessage}</p>
-				{/if}
-
-				<ul class="pf-list">
-					{#each data.profiles as p (p.id)}
-						<li class:pf-active={p.is_active}>
-							<form method="POST" action="?/updateProfileMeta" class="pf-meta" use:enhance={busyEnhance}>
-								<input type="hidden" name="id" value={p.id} />
-								<input
-									class="input pf-name"
-									type="text"
-									name="name"
-									value={p.name}
-									aria-label="Profile name"
-									maxlength="80"
-									required
-								/>
-								<button type="submit" class="btn sm" disabled={profileBusy}>Rename</button>
-							</form>
-							<span class="pf-resume" class:muted={!p.resume_filename}>
-								{#if p.resume_filename}
-									<span class="mono">{p.resume_filename}</span>
-								{:else}
-									No resume yet
-								{/if}
-								{#if p.is_active}<a href="/resume">Manage</a>{/if}
-							</span>
-							{#if p.is_active}
-								<span class="pill pf-pill">Active</span>
-							{:else}
-								<form method="POST" action="?/activateProfile" use:enhance={busyEnhance}>
-									<input type="hidden" name="id" value={p.id} />
-									<button type="submit" class="btn sm primary" disabled={profileBusy}>Switch to</button>
-								</form>
-								<form method="POST" action="?/deleteProfile" use:enhance={busyEnhance}>
-									<input type="hidden" name="id" value={p.id} />
-									<button
-										type="submit"
-										class="btn ghost sm"
-										disabled={profileBusy}
-										aria-label="Delete {p.name}"
-										onclick={(e) => {
-											if (
-												!confirm(
-													`Delete "${p.name}"? This permanently removes its resumes, statuses, notes, scores, blacklist, and tailored drafts. Jobs are kept.`
-												)
-											)
-												e.preventDefault();
-										}}>Delete</button
-									>
-								</form>
-							{/if}
-						</li>
-					{/each}
-				</ul>
-
-				<form method="POST" action="?/createProfile" class="pf-new" use:enhance={busyEnhance}>
-					<input
-						class="input"
-						type="text"
-						name="name"
-						placeholder="New profile name"
-						autocomplete="off"
-						maxlength="80"
-						required
-					/>
-					<select class="input pf-clone" name="clone_from" aria-label="Start new profile from">
-						<option value="">Start blank (new person)</option>
-						{#each data.profiles as p (p.id)}
-							<option value={p.id}>Copy of {p.name}</option>
-						{/each}
-					</select>
-					<button type="submit" class="btn" disabled={profileBusy}>Add profile</button>
-				</form>
-			</div>
-		</div>
+		<ProfilesCard
+			profiles={data.profiles}
+			error={form && 'profileError' in form ? form.profileError : undefined}
+			message={form && 'profileMessage' in form ? form.profileMessage : undefined}
+		/>
 
 		{#if rematch.snap}
 			<ScoreProgress
@@ -260,13 +140,7 @@
 						<form
 							method="POST"
 							action="?/suggest"
-							use:enhance={() => {
-								suggesting = true;
-								return async ({ update }) => {
-									await update();
-									suggesting = false;
-								};
-							}}
+							use:enhance={whileBusy((b) => (suggesting = b))}
 						>
 							<button
 								type="submit"
@@ -284,13 +158,7 @@
 				id="save-form"
 				method="POST"
 				action="?/save"
-				use:enhance={() => {
-					saving = true;
-					return async ({ update }) => {
-						await update();
-						saving = false;
-					};
-				}}
+				use:enhance={whileBusy((b) => (saving = b))}
 			>
 				<div class="card-b">
 					<div class="field state-field">
@@ -350,331 +218,27 @@
 			</form>
 		</div>
 
-		<div class="card">
-			<div class="card-h"><h2>Companies searched</h2></div>
-			<div class="card-b">
-				<p class="muted" style="margin-bottom:14px">
-					Every scrape pulls from this list of company job boards. Companies open new boards
-					all the time, so the list goes out of date — updating it is how new employers enter
-					your queue in the first place.
-				</p>
+		<CompanyCoverageCard
+			coverage={data.coverage}
+			error={form && 'coverageError' in form ? form.coverageError : undefined}
+		/>
 
-				<div class="cov-stats">
-					<div class="cov-stat">
-						<div class="cov-num">{data.coverage.total.toLocaleString()}</div>
-						<div class="cov-lbl">company job boards</div>
-					</div>
-					<div
-						class="cov-stat"
-						title={data.coverage.last_checked_at
-							? fmtDate(data.coverage.last_checked_at)
-							: 'never run'}
-					>
-						<div class="cov-num" class:stale={coverageStale}>{lastCheckedLabel}</div>
-						<div class="cov-lbl">last updated</div>
-					</div>
-				</div>
+		<WatchedCompaniesCard
+			watched={data.watched}
+			error={form && 'companyError' in form ? form.companyError : undefined}
+			message={form?.companyOk && 'companyMessage' in form ? form.companyMessage || undefined : undefined}
+			already={Boolean(form && 'companyAlready' in form && form.companyAlready)}
+		/>
 
-				{#if coverageStale}
-					<p class="banner warn cov-warn">
-						This list hasn't been updated in a while. Any company that opened a job board since
-						then is invisible to your scrapes.
-					</p>
-				{/if}
-
-				<ul class="cov-sources">
-					{#each Object.entries(data.coverage.by_source) as [source, n] (source)}
-						<li><span class="cov-src">{source}</span><span class="cov-n">{n.toLocaleString()}</span></li>
-					{/each}
-				</ul>
-
-				<form
-					method="POST"
-					action="?/refreshCompanies"
-					class="cov-actions"
-					use:enhance={companies.enhance}
-				>
-					<button type="submit" class="btn primary" disabled={companies.busy}>
-						{companies.busy ? 'Updating…' : 'Update company list'}
-					</button>
-					<label class="cov-reverify">
-						<input type="checkbox" name="reverify" disabled={companies.busy} />
-						Also remove boards that no longer respond
-						<span class="muted">(slower — re-checks all {data.coverage.total.toLocaleString()})</span>
-					</label>
-				</form>
-
-				{#if form && 'coverageError' in form && form.coverageError}
-					<p class="err-text" style="margin-top:10px">{form.coverageError}</p>
-				{/if}
-				{#if companies.error && !companies.snap}
-					<p class="err-text" style="margin-top:10px">{companies.error}</p>
-				{/if}
-				<div style="margin-top:12px">
-					<ScoreProgress
-						task={companies.snap}
-						onDismiss={companies.dismiss}
-						runningVerb="Checking"
-						doneVerb="Checked"
-						resultsLabel="steps"
-					/>
-				</div>
-			</div>
-		</div>
-
-		<div class="card">
-			<div class="card-h"><h2>Check a company</h2></div>
-			<div class="card-b">
-				<p class="muted" style="margin-bottom:14px">
-					Have an employer in mind? Type their name to find out whether your scrapes already
-					cover them — most well-known companies are on the list already. If they aren't, and
-					their job board is one we can read (Greenhouse, Lever, Ashby, SmartRecruiters,
-					Workable, Workday, or Jibe), it gets added and searched from the next scrape on.
-					Pasting the URL of their job board works too, and is more exact than a name.
-				</p>
-
-				<form
-					method="POST"
-					action="?/addCompany"
-					class="wl-add"
-					use:enhance={() => {
-						addingCompany = true;
-						return async ({ update }) => {
-							await update();
-							addingCompany = false;
-						};
-					}}
-				>
-					<input
-						class="input"
-						type="text"
-						name="query"
-						placeholder="Company name or job-board URL"
-						autocomplete="off"
-						disabled={addingCompany}
-						required
-					/>
-					<button type="submit" class="btn primary" disabled={addingCompany}>
-						{addingCompany ? 'Checking…' : 'Check'}
-					</button>
-				</form>
-				<small class="muted wl-hint">Takes a few seconds — we ask each job board directly.</small>
-
-				{#if form && 'companyError' in form && form.companyError}
-					<p class="err-text" style="margin-top:10px">{form.companyError}</p>
-				{/if}
-				{#if form?.companyOk && 'companyMessage' in form && form.companyMessage}
-					<p class="banner {form.companyAlready ? 'warn' : 'ok'}" style="margin-top:10px">
-						{form.companyMessage}
-					</p>
-				{/if}
-
-				{#if data.watched.length > 0}
-					<div class="wl-list-head">Added this way</div>
-					<ul class="bl-list">
-						{#each data.watched as c (c.id)}
-							<li>
-								<div class="bl-main">
-									<span class="bl-name">{c.label}</span>
-									<span class="bl-reason">
-										{c.source} / {c.slug}
-										{#if c.last_job_count !== null && c.last_job_count !== undefined}
-											· {c.last_job_count} roles at last check
-										{/if}
-										{#if !c.enabled}· <span class="wl-off">disabled — board stopped responding</span>{/if}
-									</span>
-								</div>
-								<form method="POST" action="?/removeCompany" use:enhance>
-									<input type="hidden" name="id" value={c.id} />
-									<button type="submit" class="btn ghost sm bl-remove" aria-label="Remove {c.label}"
-										>Remove</button
-									>
-								</form>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-		</div>
-
-		<div class="card">
-			<div class="card-h"><h2>Company blacklist</h2></div>
-			<div class="card-b">
-				<p class="muted" style="margin-bottom:14px">
-					Jobs from these companies are dropped during ingest, before they ever reach your queue.
-					Matching ignores casing, punctuation, and legal suffixes, so <em>Meta</em>, <em>Meta Inc</em>,
-					and <em>Meta, Inc.</em> all count as the same company. Editing the list only affects future
-					ingests, not jobs already saved.
-				</p>
-
-				<form method="POST" action="?/addBlacklist" class="bl-add" use:enhance>
-					<input
-						class="input"
-						type="text"
-						name="company"
-						placeholder="Company name"
-						autocomplete="off"
-						required
-					/>
-					<input
-						class="input"
-						type="text"
-						name="reason"
-						placeholder="Reason (optional)"
-						autocomplete="off"
-					/>
-					<button type="submit" class="btn primary">Add</button>
-				</form>
-
-				{#if form && 'blacklistError' in form && form.blacklistError}
-					<p class="err-text" style="margin-top:10px">{form.blacklistError}</p>
-				{/if}
-				{#if form?.blacklistOk && 'blacklistMessage' in form && form.blacklistMessage}
-					<p class="banner ok" style="margin-top:10px">{form.blacklistMessage}</p>
-				{/if}
-
-				{#if data.blacklist.length === 0}
-					<p class="muted bl-empty">No companies blacklisted yet.</p>
-				{:else}
-					<ul class="bl-list">
-						{#each data.blacklist as c (c.id)}
-							<li>
-								<div class="bl-main">
-									<span class="bl-name">{c.name}</span>
-									{#if c.reason}<span class="bl-reason">{c.reason}</span>{/if}
-								</div>
-								<form method="POST" action="?/removeBlacklist" use:enhance>
-									<input type="hidden" name="id" value={c.id} />
-									<button type="submit" class="btn ghost sm bl-remove" aria-label="Remove {c.name}"
-										>Remove</button
-									>
-								</form>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-		</div>
+		<BlacklistCard
+			entries={data.blacklist}
+			error={form && 'blacklistError' in form ? form.blacklistError : undefined}
+			message={form?.blacklistOk && 'blacklistMessage' in form ? form.blacklistMessage || undefined : undefined}
+		/>
 	</div>
 </div>
 
 <style>
-	.pf-list {
-		list-style: none;
-		padding: 0;
-		margin: 0 0 14px;
-	}
-	.pf-list li {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-		padding: 10px 0;
-		border-bottom: 1px solid var(--border);
-	}
-	.pf-list li form {
-		margin: 0;
-	}
-	.pf-meta {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex: 1;
-		min-width: 0;
-		flex-wrap: wrap;
-	}
-	.pf-name {
-		width: 200px;
-	}
-	.pf-active .pf-name {
-		font-weight: 600;
-	}
-	.pf-resume {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: 12.5px;
-	}
-	.pf-resume a {
-		margin-left: 8px;
-	}
-	.pf-pill {
-		color: var(--accent);
-		border-color: var(--accent);
-	}
-	.pf-new {
-		display: flex;
-		gap: 8px;
-		align-items: center;
-		flex-wrap: wrap;
-	}
-	.pf-new .input {
-		flex: 1;
-		min-width: 160px;
-	}
-	.pf-new .pf-clone {
-		flex: 0 1 220px;
-	}
-	.cov-stats {
-		display: flex;
-		gap: 28px;
-		margin-bottom: 14px;
-	}
-	.cov-num {
-		font-size: 1.5rem;
-		font-weight: 650;
-		line-height: 1.1;
-	}
-	.cov-num.stale {
-		color: var(--warn);
-	}
-	.cov-lbl {
-		font-size: 0.78rem;
-		color: var(--muted);
-		margin-top: 2px;
-	}
-	.cov-warn {
-		margin-bottom: 14px;
-	}
-	.cov-sources {
-		list-style: none;
-		margin: 0 0 16px;
-		padding: 0;
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-	}
-	.cov-sources li {
-		display: flex;
-		align-items: baseline;
-		gap: 6px;
-		padding: 3px 9px;
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		font-size: 0.8rem;
-	}
-	.cov-src {
-		color: var(--muted);
-	}
-	.cov-n {
-		font-variant-numeric: tabular-nums;
-		font-weight: 600;
-	}
-	.cov-actions {
-		display: flex;
-		align-items: center;
-		gap: 14px;
-		flex-wrap: wrap;
-	}
-	.cov-reverify {
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		font-size: 0.85rem;
-		cursor: pointer;
-	}
 	.state-select {
 		max-width: 320px;
 	}
@@ -696,74 +260,5 @@
 	}
 	.criteria-actions form {
 		margin: 0;
-	}
-	.bl-add,
-	.wl-add {
-		display: flex;
-		gap: 8px;
-		align-items: center;
-		flex-wrap: wrap;
-	}
-	.wl-add .input {
-		flex: 1;
-		min-width: 220px;
-	}
-	.wl-hint {
-		display: block;
-		margin-top: 6px;
-	}
-	.wl-list-head {
-		margin-top: 18px;
-		font-size: 0.78rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--muted);
-	}
-	.wl-off {
-		color: var(--warn);
-	}
-	.bl-add .input {
-		flex: 1;
-		min-width: 140px;
-	}
-	.bl-empty {
-		margin-top: 14px;
-	}
-	.bl-list {
-		list-style: none;
-		padding: 0;
-		margin: 14px 0 0;
-	}
-	.bl-list li {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 10px 0;
-		border-bottom: 1px solid var(--border);
-	}
-	.bl-list li:last-child {
-		border-bottom: 0;
-		padding-bottom: 0;
-	}
-	.bl-main {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-	.bl-name {
-		font-weight: 600;
-		font-size: 13px;
-		word-break: break-word;
-	}
-	.bl-reason {
-		font-size: 12px;
-		color: var(--faint);
-		word-break: break-word;
-	}
-	.bl-remove {
-		flex-shrink: 0;
 	}
 </style>

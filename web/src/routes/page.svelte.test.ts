@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { STATUS_FACETS, type Application, type FilterStatus, type Job, type SearchProfile, type StatusCounts, type StatusFacet } from '$lib/api';
 import { FILTERS_STORAGE_KEY, type PersistedFilters } from '$lib/queueFilters';
@@ -237,5 +237,47 @@ describe('show-archived toggle', () => {
 	it('is pressed when archived jobs are being shown', () => {
 		render(Board, { props: { data: data({ include_archived: true }) } });
 		expect(chip('Show archived')).toHaveAttribute('aria-pressed', 'true');
+	});
+});
+
+describe('Open N postings', () => {
+	const openButton = () => screen.getByRole('button', { name: /^\s*Open \d+ posting/ });
+	const selectAllVisible = () => fireEvent.click(screen.getByLabelText(/Select all visible/));
+
+	beforeEach(() => {
+		vi.spyOn(window, 'open').mockImplementation(() => null);
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	it('opens each selected posting once and skips rows with no URL', async () => {
+		const jobs = [
+			job({ id: 1, url: 'https://e.com/a' }),
+			job({ id: 2, url: 'https://e.com/a', title: 'Same posting, other source' }),
+			job({ id: 3, url: '', title: 'No link' })
+		];
+		render(Board, { props: { data: data({ jobs }) } });
+		await selectAllVisible();
+		expect(openButton().textContent).toContain('Open 1 posting');
+		await fireEvent.click(openButton());
+		expect(window.open).toHaveBeenCalledTimes(1);
+		expect(window.open).toHaveBeenCalledWith('https://e.com/a', '_blank', 'noopener');
+	});
+
+	it('is disabled when no selected row has a URL', async () => {
+		render(Board, { props: { data: data({ jobs: [job({ id: 3, url: '' })] }) } });
+		await fireEvent.click(screen.getByLabelText('select job'));
+		expect(openButton()).toHaveProperty('disabled', true);
+	});
+
+	it('asks before opening a big batch, and opens nothing when declined', async () => {
+		const jobs = Array.from({ length: 11 }, (_, i) =>
+			job({ id: i + 1, url: `https://e.com/${i + 1}`, title: `Job ${i + 1}` })
+		);
+		const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+		render(Board, { props: { data: data({ jobs }) } });
+		await selectAllVisible();
+		await fireEvent.click(openButton());
+		expect(confirm).toHaveBeenCalledWith('Open 11 postings in your browser?');
+		expect(window.open).not.toHaveBeenCalled();
 	});
 });

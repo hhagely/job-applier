@@ -177,9 +177,11 @@ backstop, but produce clean text.)
 
 ## Notes
 
-- The API saves the markdown to `applications/<id>/{resume,cover_letter}.md` and
-  renders alongside as `.pdf`. The user can manually edit the markdown and click
+- The API saves the markdown to
+  `applications/profile-<profile_id>/<job_id>/{resume,cover_letter}.md` (the
+  active profile's folder; each profile keeps its own drafts) and renders
+  alongside as `.pdf`. The user can manually edit the markdown and click
   "Re-render PDFs from markdown" in the UI.
 - Don't rewrite the master resume on disk — drafts live per-job under
-  `applications/<id>/`.
+  `applications/profile-<profile_id>/<job_id>/`.
 - If the job already has a draft, overwrite it (the API does an in-place save).

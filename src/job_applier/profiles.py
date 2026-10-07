@@ -13,11 +13,13 @@ uploads one.
 **Which resume is in use** has one source of truth: the profile's
 ``resume_id`` (or, while that's unset, its newest upload). Every reader goes
 through ``active_resume``. ``Resume.is_active`` is only a mirror of the active
-profile's choice, written by ``set_active_resume`` and read by nothing in the
-app; it exists for the API's ``is_active`` field and the legacy slash commands.
+profile's choice, written by ``set_active_resume``. The ORM never reads it; the
+raw-SQL bootstrap does (``scoping._insert_default_profile`` and the
+migrations), since on a pre-profile DB the flag is the only record of which
+resume was in use. The API's ``is_active`` field is derived from ``resume_id``.
 
-Depends only on the models so the filter, ingest, and the services layer can all
-import it without a cycle.
+Depends only on the models and the (pure) filter rules, so ingest, matching,
+and the services layer can all import it without a cycle.
 """
 
 from __future__ import annotations
@@ -31,7 +33,9 @@ from sqlalchemy import delete, update
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
+from job_applier.config import settings
 from job_applier.contracts import profile_pref_prefix
+from job_applier.filters import FilterConfig, config_for
 from job_applier.models.db import (
     Application,
     ApplicationStatus,
@@ -67,6 +71,12 @@ def active_profile(session: Session) -> Optional[SearchProfile]:
     return session.get(SearchProfile, pid) if pid is not None else None
 
 
+def is_active_profile(session: Session, profile_id: int) -> bool:
+    """Whether ``profile_id`` is the profile this session works for (see
+    ``active_profile``), without loading the row."""
+    return session_profile_id(session) == profile_id
+
+
 def active_resume(session: Session) -> Optional[Resume]:
     """The resume this session's profile scores and drafts with — the one
     reader of "which resume is in use" (staleness, scoring, drafting).
@@ -89,6 +99,24 @@ def active_resume(session: Session) -> Optional[Resume]:
 def active_resume_id(session: Session) -> Optional[int]:
     resume = active_resume(session)
     return resume.id if resume is not None else None
+
+
+def active_config(session: Session) -> FilterConfig:
+    """The active profile's filter config (``filters.config_for``): the built-in
+    defaults when there's no profile or it has no criteria of its own."""
+    return config_for(active_profile(session))
+
+
+def ensure_profile_id(session: Session) -> int:
+    """The session's profile id, creating and committing the Default profile on
+    a fresh install. The commit is its own short transaction, so a caller about
+    to do slow work (render PDFs, run an AI CLI) isn't holding SQLite's write
+    lock while it does."""
+    pid = session_profile_id(session)
+    if pid is None:
+        pid = load_or_create_profile(session).id
+        session.commit()
+    return pid
 
 
 def load_or_create_profile(session: Session) -> SearchProfile:
@@ -290,8 +318,7 @@ def update_profile_meta(
         if owned_resume(session, p.id, resume_id) is None:
             raise LookupError(f"resume {resume_id} not found for this profile")
         p.resume_id = resume_id
-        active = active_profile(session)
-        if active is not None and active.id == p.id:
+        if is_active_profile(session, p.id):
             set_active_resume(session, resume_id)
     p.updated_at = _now()
     session.add(p)
@@ -309,11 +336,17 @@ def delete_profile(session: Session, profile_id: int) -> None:
     data; leaving them behind would orphan rows pointing at a deleted profile.
     """
     from job_applier import drafts
+    from job_applier.ai import tasks
 
     p = get_profile(session, profile_id)
-    active = active_profile(session)
-    if active is not None and active.id == p.id:
+    if is_active_profile(session, p.id):
         raise ProfileError("can't delete the active profile — switch to another first")
+    # A re-match checks for its profile before every write, so it can't
+    # resurrect rows; anything else pinned here (a draft, a scoring run) would.
+    if tasks.busy_for_profile(p.id, ignore=("match",)) is not None:
+        raise ProfileError(
+            "this profile has a task still running; wait for it to finish, then delete"
+        )
     # Drafts go aside first, so a reused id never finds them. If that's blocked,
     # nothing has been deleted yet and a retry is safe.
     try:
@@ -329,17 +362,25 @@ def delete_profile(session: Session, profile_id: int) -> None:
             .execution_options(all_profiles=True)
         ).all()
     )
-    for model in PROFILE_SCOPED:
+    try:
+        for model in PROFILE_SCOPED:
+            session.execute(
+                delete(model)
+                .where(model.profile_id == p.id)
+                .execution_options(all_profiles=True)
+            )
         session.execute(
-            delete(model)
-            .where(model.profile_id == p.id)
-            .execution_options(all_profiles=True)
+            delete(AppSetting).where(AppSetting.key.startswith(profile_pref_prefix(p.id)))  # type: ignore[union-attr]
         )
-    session.execute(
-        delete(AppSetting).where(AppSetting.key.startswith(profile_pref_prefix(p.id)))  # type: ignore[union-attr]
-    )
-    session.delete(p)
-    session.commit()
+        session.delete(p)
+        session.commit()
+    except Exception:
+        # The profile survives (e.g. a lost write-lock race), so its drafts
+        # must too: put the folder back where draft_dir looks for it.
+        session.rollback()
+        if doomed is not None:
+            doomed.rename(drafts.profile_dir(p.id))
+        raise
     # A copied profile's resume rows share the PDF; only remove files nobody
     # else's row still points at, and only inside the resumes folder.
     still_used = set(
@@ -349,7 +390,7 @@ def delete_profile(session: Session, profile_id: int) -> None:
             .execution_options(all_profiles=True)
         ).all()
     )
-    resumes_dir = drafts.settings.resumes_dir.resolve()
+    resumes_dir = settings.resumes_dir.resolve()
     for pdf in pdfs - still_used:
         path = Path(pdf).resolve()
         if path.is_relative_to(resumes_dir):
@@ -388,6 +429,16 @@ def adopt_legacy_drafts() -> int:
     return drafts.move_legacy_draft_dirs(pid)
 
 
+# The link predicate for "this posting is in that profile's queue": any verdict
+# but dropped. One definition for the queue, the raw trim, and prune.
+IN_QUEUE = JobProfileLink.filter_status != FilterStatus.dropped
+
+
+def matched_job_ids() -> SelectOfScalar[int]:
+    """Subquery of the posting ids in *any* profile's queue."""
+    return select(JobProfileLink.job_id).where(IN_QUEUE).execution_options(all_profiles=True)
+
+
 def queue_job_ids(
     session: Session, status: Optional[FilterStatus] = None
 ) -> SelectOfScalar[int]:
@@ -399,5 +450,5 @@ def queue_job_ids(
         JobProfileLink.profile_id == session_profile_id(session)
     )
     if status is None:
-        return stmt.where(JobProfileLink.filter_status != FilterStatus.dropped)
+        return stmt.where(IN_QUEUE)
     return stmt.where(JobProfileLink.filter_status == status)

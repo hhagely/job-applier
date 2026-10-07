@@ -13,7 +13,6 @@ from job_applier.models.db import (
     JobProfileLink,
     Application,
     ApplicationStatus,
-    FilterStatus,
     get_session,
 )
 from job_applier.models.scoping import session_profile_id
@@ -47,7 +46,6 @@ def _seed_job(engine, *, source_id: str = "u-1") -> int:
             title="Senior Engineer",
             description="role",
             dedupe_hash=source_id,
-            filter_status=FilterStatus.passed,
         )
         s.add(job)
         s.flush()

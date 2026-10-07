@@ -1,5 +1,6 @@
 import { api, errorReason } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
+import { formId } from '$lib/forms.server';
 import { DEFAULT_GHOSTED_AFTER_DAYS, isGhosted } from '$lib/jobFilters';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
@@ -32,15 +33,10 @@ export const load: PageServerLoad = async ({ fetch }) => {
 	};
 };
 
-function parseId(form: FormData): number | null {
-	const id = Number(form.get('id'));
-	return Number.isFinite(id) ? id : null;
-}
-
 export const actions: Actions = {
 	snooze: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = parseId(form);
+		const id = formId(form);
 		if (id === null) return fail(400, { error: 'invalid id' });
 		const days = Number(form.get('days') ?? 7) || 7;
 		const next_followup_at = shiftDays(new Date(), days);
@@ -54,7 +50,7 @@ export const actions: Actions = {
 
 	contacted: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = parseId(form);
+		const id = formId(form);
 		if (id === null) return fail(400, { error: 'invalid id' });
 		const now = new Date();
 		try {
@@ -70,7 +66,7 @@ export const actions: Actions = {
 
 	rejected: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = parseId(form);
+		const id = formId(form);
 		if (id === null) return fail(400, { error: 'invalid id' });
 		// Rejection is both a terminal outcome and a status transition — flip both
 		// so the row drops out of /followups AND the main "applied" filter.
@@ -106,7 +102,7 @@ export const actions: Actions = {
 
 	noResponse: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = parseId(form);
+		const id = formId(form);
 		if (id === null) return fail(400, { error: 'invalid id' });
 		// Terminal like ?/rejected, but the employer never actually answered — a
 		// separate status keeps it out of the dashboard's rejection count, and the
@@ -123,7 +119,7 @@ export const actions: Actions = {
 
 	setOutcome: async ({ request, fetch }) => {
 		const form = await request.formData();
-		const id = parseId(form);
+		const id = formId(form);
 		if (id === null) return fail(400, { error: 'invalid id' });
 		const outcome = String(form.get('outcome') ?? '').trim();
 		if (!outcome) return fail(400, { error: 'outcome required' });

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from job_applier import pdf
+from job_applier import pdf, profiles
 from job_applier.ai import tasks
 from job_applier.api.app import app
 from job_applier.config import settings
@@ -46,7 +46,6 @@ def setup(tmp_path, monkeypatch):
                 title="Senior Engineer",
                 description="TypeScript.",
                 dedupe_hash="h-1",
-                filter_status=FilterStatus.passed,
             )
             s.add(job)
             s.flush()
@@ -121,6 +120,15 @@ def test_blacklist_is_per_profile(setup):
     assert c.get("/api/blacklist").json() == []
     # The same company can be blacklisted independently by the other person.
     assert c.post("/api/blacklist", json={"name": "Meta, Inc."}).status_code in (200, 201)
+    _switch(c, a)
+    assert [x["name"] for x in c.get("/api/blacklist").json()] == ["Meta"]
+
+
+def test_a_profile_cannot_remove_another_profiles_blacklist_entry(setup):
+    c, _, a, b, _job = setup
+    entry = c.post("/api/blacklist", json={"name": "Meta"}).json()["id"]
+    _switch(c, b)
+    assert c.delete(f"/api/blacklist/{entry}").status_code == 404
     _switch(c, a)
     assert [x["name"] for x in c.get("/api/blacklist").json()] == ["Meta"]
 
@@ -200,6 +208,38 @@ def test_deleting_a_profile_removes_only_its_own_data(setup, monkeypatch):
     assert not (settings.applications_dir / f"profile-{b}").exists()
     # A's data and the shared posting survive.
     assert c.get(f"/api/jobs/{job}").json()["application"]["status"] == "applied"
+
+
+def test_a_profile_with_a_running_task_is_not_deleted(setup):
+    # The worker would keep writing rows and drafts for the deleted id.
+    c, _, _a, b, _job = setup
+    state = tasks.TaskState(id="busy", kind="draft", total=1, profile_id=b)
+    tasks._tasks[state.id] = state
+    try:
+        assert c.delete(f"/api/search-profiles/{b}").status_code == 409
+    finally:
+        del tasks._tasks[state.id]
+    assert c.delete(f"/api/search-profiles/{b}").status_code == 204
+
+
+def test_a_failed_delete_puts_the_profiles_drafts_back(setup, monkeypatch):
+    c, engine, a, b, job = setup
+    monkeypatch.setattr(pdf, "render_to_pdf", lambda _url: b"%PDF fake")
+    _switch(c, b)
+    c.post(f"/api/jobs/{job}/draft", json={"resume_md": "# B\n"})
+    _switch(c, a)
+    folder = settings.applications_dir / f"profile-{b}"
+    assert folder.is_dir()
+
+    def lost_lock_race():
+        raise RuntimeError("database is locked")
+
+    with Session(engine) as s:
+        s.commit = lost_lock_race
+        with pytest.raises(RuntimeError):
+            profiles.delete_profile(s, b)
+    assert (folder / str(job)).is_dir()
+    assert len(c.get("/api/search-profiles").json()) == 2
 
 
 def test_changes_to_what_a_profile_accepts_rematch_it(setup, rematches):

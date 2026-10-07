@@ -207,6 +207,21 @@ def active_task(kind: str, profile_id: Optional[int] = None) -> "TaskState | Non
     return None
 
 
+def busy_for_profile(profile_id: int, *, ignore: tuple[str, ...] = ()) -> "TaskState | None":
+    """A running task pinned to ``profile_id`` (any kind not in ``ignore``), if
+    any. Deleting a profile refuses while one is in flight: the worker would
+    write rows and draft folders for an id that no longer exists."""
+    with _lock:
+        for state in _tasks.values():
+            if (
+                state.profile_id == profile_id
+                and state.status == "running"
+                and state.kind not in ignore
+            ):
+                return state
+    return None
+
+
 def active_snapshots() -> "list[TaskSnapshot]":
     """Snapshots of every currently-running task, for a client that just connected
     (or reconnected) to re-attach its progress UI."""

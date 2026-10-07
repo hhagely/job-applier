@@ -7,7 +7,7 @@ HTTP routing) lives in one place and can be shared by any router. These build th
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, overload
 
 from sqlmodel import Session, select
 
@@ -23,12 +23,30 @@ from job_applier.models.db import (
 )
 
 
+@overload
+def company_out(c: Company) -> CompanyOut: ...
+@overload
+def company_out(c: None) -> None: ...
 def company_out(c: Optional[Company]) -> Optional[CompanyOut]:
     if c is None:
         return None
     return CompanyOut(id=c.id, name=c.name, domain=c.domain, is_blocked=c.is_blocked, notes=c.notes)
 
 
+@overload
+def score_out(
+    s: MatchScore | MatchScoreHistory,
+    *,
+    resume_filename: Optional[str] = None,
+    active_resume_id: Optional[int] = None,
+) -> ScoreOut: ...
+@overload
+def score_out(
+    s: None,
+    *,
+    resume_filename: Optional[str] = None,
+    active_resume_id: Optional[int] = None,
+) -> None: ...
 def score_out(
     s: Optional[MatchScore | MatchScoreHistory],
     *,
@@ -51,6 +69,10 @@ def score_out(
     )
 
 
+@overload
+def application_out(a: Application) -> ApplicationOut: ...
+@overload
+def application_out(a: None) -> None: ...
 def application_out(a: Optional[Application]) -> Optional[ApplicationOut]:
     if a is None:
         return None

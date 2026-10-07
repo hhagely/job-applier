@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel import Session
 
-from job_applier import services
+from job_applier import watchlist
 from job_applier.api.schemas import (
     WatchedCompanyAddIn,
     WatchedCompanyAddOut,
@@ -29,7 +29,7 @@ def _watched_out(row: SourceSlug) -> WatchedCompanyOut:
         id=row.id,
         source=row.source,
         slug=row.slug,
-        label=services.company_display_name(row),
+        label=watchlist.company_display_name(row),
         enabled=row.enabled,
         last_job_count=row.last_job_count,
         last_error=row.last_error,
@@ -38,12 +38,12 @@ def _watched_out(row: SourceSlug) -> WatchedCompanyOut:
 
 
 @router.get("/api/watched-companies", response_model=list[WatchedCompanyOut])
-def list_watched(session: Session = Depends(get_session)):
-    return [_watched_out(r) for r in services.list_watched_companies(session)]
+def list_watched(session: Session = Depends(get_session)) -> list[WatchedCompanyOut]:
+    return [_watched_out(r) for r in watchlist.list_watched_companies(session)]
 
 
 @router.post("/api/watched-companies", response_model=WatchedCompanyAddOut)
-def add_watched(body: WatchedCompanyAddIn, session: Session = Depends(get_session)):
+def add_watched(body: WatchedCompanyAddIn, session: Session = Depends(get_session)) -> WatchedCompanyAddOut:
     """Add one company to the searched list.
 
     A company already being searched — whether the user added it or the seed /
@@ -52,8 +52,8 @@ def add_watched(body: WatchedCompanyAddIn, session: Session = Depends(get_sessio
     resolved to a live board is a 422 with the reason.
     """
     try:
-        result = services.add_watched_company(session, body.query)
-    except services.WatchedCompanyError as exc:
+        result = watchlist.add_watched_company(session, body.query)
+    except watchlist.WatchedCompanyError as exc:
         raise HTTPException(422, str(exc)) from exc
     return WatchedCompanyAddOut(
         status=result.status,
@@ -63,7 +63,7 @@ def add_watched(body: WatchedCompanyAddIn, session: Session = Depends(get_sessio
 
 
 @router.delete("/api/watched-companies/{slug_id}", status_code=204)
-def remove_watched(slug_id: int, session: Session = Depends(get_session)):
-    if not services.remove_watched_company(session, slug_id):
+def remove_watched(slug_id: int, session: Session = Depends(get_session)) -> Response:
+    if not watchlist.remove_watched_company(session, slug_id):
         raise HTTPException(404, "company not found in your added list")
     return Response(status_code=204)

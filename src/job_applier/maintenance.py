@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
+from job_applier import profiles
 from job_applier.contracts import RawJob
 from job_applier.dedupe import (
     JD_HAMMING_THRESHOLD,
@@ -21,7 +22,6 @@ from job_applier.dedupe import (
     jd_simhash,
 )
 from job_applier.models import Application, ApplicationStatus, JobPosting, JobProfileLink, engine
-from job_applier.models.db import FilterStatus
 
 # Postings that match prune criteria have their description + raw blob cleared
 # to keep the DB small. The dedupe columns (source/source_id/dedupe_hash/
@@ -90,7 +90,7 @@ def prune_old_postings(session: Session, now: datetime | None = None) -> PruneSt
     # can't blank the JD this one hasn't read.
     for job_id, pid in session.exec(
         select(JobProfileLink.job_id, JobProfileLink.profile_id)
-        .where(JobProfileLink.filter_status != FilterStatus.dropped)
+        .where(profiles.IN_QUEUE)
         .execution_options(all_profiles=True)
     ).all():
         if (job_id, pid) not in tracked:

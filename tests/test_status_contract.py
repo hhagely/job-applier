@@ -17,6 +17,7 @@ import re
 import typing
 from pathlib import Path
 
+from job_applier import services
 from job_applier.api.schemas import ScoreOut, StatusFacet, TaskOut
 from job_applier.models.db import ApplicationStatus
 
@@ -74,6 +75,8 @@ def test_status_facet_is_every_status_plus_none():
     unusable.
     """
     assert [f.value for f in StatusFacet] == EXPECTED_STATUSES + ["none"]
+    # services counts and filters on the same synthetic facet.
+    assert services.UNTRIAGED == StatusFacet.none.value
 
 
 def test_typescript_status_facet_matches_python():

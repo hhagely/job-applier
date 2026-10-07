@@ -4,6 +4,8 @@ Importing this module installs the Session hooks; ``job_applier.models`` does
 so on import, so any code that touches the models gets them.
 """
 
+from __future__ import annotations
+
 from contextvars import ContextVar
 from typing import Optional
 

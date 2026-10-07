@@ -21,7 +21,7 @@ from job_applier.models.db import (
     get_session,
     set_setting,
 )
-from job_applier.models.db import ApplicationStatus, FilterStatus, JobProfileLink
+from job_applier.models.db import ApplicationStatus, JobProfileLink
 from job_applier.profiles import load_or_create_profile
 
 CANNED = (
@@ -65,7 +65,6 @@ def _seed_job(session, *, title="Senior Engineer", desc="<p>We use TypeScript.</
         title=title,
         description=desc,
         dedupe_hash=f"h-{title}",
-        filter_status=FilterStatus.passed,
     )
     session.add(j)
     session.flush()

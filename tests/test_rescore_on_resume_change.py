@@ -8,7 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from job_applier.api.app import app
 from job_applier.models import JobPosting, JobProfileLink, Resume
 from job_applier.profiles import load_or_create_profile
-from job_applier.models.db import FilterStatus, MatchScoreHistory, get_session
+from job_applier.models.db import MatchScoreHistory, get_session
 
 
 @pytest.fixture
@@ -39,7 +39,6 @@ def _seed_job(engine, *, source_id: str = "t-1", title: str = "Senior Engineer")
             title=title,
             description="TypeScript role.",
             dedupe_hash=f"h-{source_id}",
-            filter_status=FilterStatus.passed,
         )
         s.add(job)
         s.flush()

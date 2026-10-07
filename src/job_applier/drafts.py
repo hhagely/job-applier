@@ -139,11 +139,16 @@ def draft_dir(job_id: int, *, profile_id: int) -> Path:
 
 def legacy_draft_dirs() -> list[Path]:
     """Pre-profile draft folders (``<applications>/<job_id>/``) still to move.
-    The new layout's ``profile-`` prefix can never match."""
+    The new layout's ``profile-`` prefix can never match. Runs at startup, so an
+    unreadable folder is logged and reads as "none" rather than stopping boot."""
     root = settings.applications_dir
-    if not root.is_dir():
+    try:
+        if not root.is_dir():
+            return []
+        return [e for e in root.iterdir() if e.is_dir() and e.name.isdigit()]
+    except OSError as exc:
+        log.warning("couldn't list legacy draft folders in %s: %s", root, exc)
         return []
-    return [e for e in root.iterdir() if e.is_dir() and e.name.isdigit()]
 
 
 def set_aside_profile_drafts(profile_id: int) -> Path | None:
@@ -184,8 +189,8 @@ def move_legacy_draft_dirs(profile_id: int) -> int:
         dest = dest_root / entry.name
         if dest.exists():
             continue
-        dest_root.mkdir(parents=True, exist_ok=True)
         try:
+            dest_root.mkdir(parents=True, exist_ok=True)
             entry.rename(dest)
         except OSError as exc:
             # Best effort at startup: a file open in a viewer blocks the rename

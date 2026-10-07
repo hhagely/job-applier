@@ -38,11 +38,8 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
-from sqlmodel import Session
-
 from job_applier.contracts import RawJob
-from job_applier.models.db import FilterStatus, SearchProfile, engine
-from job_applier.profiles import active_profile
+from job_applier.models.db import FilterStatus, SearchProfile
 
 
 def _alt_pattern(terms: list[str]) -> str:
@@ -254,24 +251,6 @@ _BUILTIN_DEFAULT = build_config(
     ],
     excluded_tech=["angular", "angularjs"],
 )
-
-
-def load_active_config(session: Optional[Session] = None) -> FilterConfig:
-    """Load the filter config from the active SearchProfile row.
-
-    Falls back to ``_BUILTIN_DEFAULT`` when no profile exists or it has no
-    criteria at all (see ``config_for``).
-    """
-    close_after = False
-    if session is None:
-        session = Session(engine())
-        close_after = True
-    try:
-        profile = active_profile(session)
-    finally:
-        if close_after:
-            session.close()
-    return config_for(profile)
 
 
 def has_criteria(profile: SearchProfile) -> bool:
@@ -555,12 +534,14 @@ def union_title_config(configs: list[FilterConfig]) -> FilterConfig:
 
 
 def title_quick_fail(title: str, config: Optional[FilterConfig] = None) -> bool:
-    """Cheap title-only check — does this title fail seniority or sales rules?
+    """Cheap title-only check — does this title fail the seniority, title-keyword,
+    or sales rules?
 
     Used by adapters that fan out per-job HTTP requests (Workable,
     SmartRecruiters) to skip the expensive detail fetch when the title alone
-    already disqualifies the posting. Mirrors the seniority and sales rules;
-    deliberately conservative — anything that *could* pass returns ``False``.
+    already disqualifies the posting. Mirrors the seniority, title-keyword, and
+    sales rules; deliberately conservative — anything that *could* pass returns
+    ``False``.
     With several profiles, pass ``union_title_config(...)`` so a title is only
     skipped when it fails *every* profile.
     """
@@ -620,8 +601,9 @@ def evaluate_shared(raw: RawJob) -> FilterResult:
 
 
 def evaluate_profile(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult:
-    """One profile's personal rules (home-state allow-list, seniority, excluded
-    and required tech) on a posting that already passed ``evaluate_shared``.
+    """One profile's personal rules (home-state allow-list, seniority, title
+    keywords, excluded and required tech) on a posting that already passed
+    ``evaluate_shared``.
     Applied per profile by ``matching``, against the stored posting."""
     cfg = config or _BUILTIN_DEFAULT
     title = raw.title or ""

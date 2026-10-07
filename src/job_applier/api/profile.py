@@ -28,6 +28,7 @@ from job_applier.api.schemas import (
 )
 from job_applier.filters import has_criteria, normalize_home_state
 from job_applier.models.db import SearchProfile, get_session
+from job_applier.models.scoping import session_profile_id
 
 router = APIRouter(tags=["search-profile"])
 
@@ -85,9 +86,8 @@ def profile_errors(*, conflict: int = 422) -> Iterator[None]:
 
 
 @router.get("/api/search-profiles", response_model=list[SearchProfileOut])
-def list_search_profiles(session: Session = Depends(get_session)):
-    active = profiles.active_profile(session)
-    active_id = active.id if active else None
+def list_search_profiles(session: Session = Depends(get_session)) -> list[SearchProfileOut]:
+    active_id = session_profile_id(session)
     filenames = profiles.resume_filenames(session)
     return [
         _profile_out(p, is_active=p.id == active_id, resume_filename=filenames.get(p.id))
@@ -98,7 +98,7 @@ def list_search_profiles(session: Session = Depends(get_session)):
 @router.post("/api/search-profiles", response_model=SearchProfileOut, status_code=201)
 def create_search_profile(
     body: SearchProfileCreate, session: Session = Depends(get_session)
-):
+) -> SearchProfileOut:
     # Make sure the pre-existing setup has a row before adding a second, so the
     # current criteria stay the active profile rather than the new blank one.
     _load_or_create_profile(session)
@@ -115,17 +115,16 @@ def update_search_profile_meta(
     profile_id: int,
     body: SearchProfileMetaUpdate,
     session: Session = Depends(get_session),
-):
+) -> SearchProfileOut:
     with profile_errors():
         p = profiles.update_profile_meta(
             session, profile_id, name=body.name, resume_id=body.resume_id
         )
-    active = profiles.active_profile(session)
-    return _profile_out(p, is_active=active is not None and active.id == p.id)
+    return _profile_out(p, is_active=profiles.is_active_profile(session, p.id))
 
 
 @router.delete("/api/search-profiles/{profile_id}", status_code=204)
-def delete_search_profile(profile_id: int, session: Session = Depends(get_session)):
+def delete_search_profile(profile_id: int, session: Session = Depends(get_session)) -> None:
     with profile_errors(conflict=409):
         profiles.delete_profile(session, profile_id)
 
@@ -133,21 +132,21 @@ def delete_search_profile(profile_id: int, session: Session = Depends(get_sessio
 @router.post(
     "/api/search-profiles/{profile_id}/activate", response_model=SearchProfileOut
 )
-def activate_search_profile(profile_id: int, session: Session = Depends(get_session)):
+def activate_search_profile(profile_id: int, session: Session = Depends(get_session)) -> SearchProfileOut:
     with profile_errors():
         p = profiles.activate_profile(session, profile_id)
     return _profile_out(p)
 
 
 @router.get("/api/search-profile", response_model=SearchProfileOut)
-def get_search_profile(session: Session = Depends(get_session)):
+def get_search_profile(session: Session = Depends(get_session)) -> SearchProfileOut:
     return _profile_out(profiles.active_profile(session))
 
 
 @router.put("/api/search-profile", response_model=SearchProfileOut)
 def put_search_profile(
     body: SearchProfileBody, session: Session = Depends(get_session)
-):
+) -> SearchProfileOut:
     try:
         home_state = normalize_home_state(body.home_state)
     except ValueError as exc:
@@ -171,7 +170,7 @@ def put_search_profile(
 @router.post("/api/search-profile/recommendations", response_model=SearchProfileOut)
 def post_recommendations(
     body: SearchProfileRecommendationIn, session: Session = Depends(get_session)
-):
+) -> SearchProfileOut:
     """Save an LLM-generated proposal as a draft on the profile.
 
     Does NOT mutate the active fields — the user reviews + accepts via PUT to
@@ -182,7 +181,7 @@ def post_recommendations(
 
 
 @router.delete("/api/search-profile/recommendations", response_model=SearchProfileOut)
-def clear_recommendations(session: Session = Depends(get_session)):
+def clear_recommendations(session: Session = Depends(get_session)) -> SearchProfileOut:
     p = profiles.active_profile(session)
     if p is None:
         return _profile_out(None)

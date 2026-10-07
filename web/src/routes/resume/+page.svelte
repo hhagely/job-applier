@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { whileBusy } from '$lib/busy';
 	import { api } from '$lib/api';
 	import Icon from '$lib/Icon.svelte';
 	import { fmtDateTime } from '$lib/date';
@@ -52,13 +53,7 @@
 					method="POST"
 					action="?/upload"
 					enctype="multipart/form-data"
-					use:enhance={() => {
-						uploading = true;
-						return async ({ update }) => {
-							await update();
-							uploading = false;
-						};
-					}}
+					use:enhance={whileBusy((b) => (uploading = b))}
 				>
 					<div class="upload-drop">
 						<div class="ud-ico"><Icon name="upload" size={20} /></div>
@@ -156,13 +151,7 @@
 									<form
 										method="POST"
 										action="?/use"
-										use:enhance={() => {
-											switchingId = r.id;
-											return async ({ update }) => {
-												await update();
-												switchingId = null;
-											};
-										}}
+										use:enhance={whileBusy((b) => (switchingId = b ? r.id : null))}
 									>
 										<input type="hidden" name="id" value={r.id} />
 										<button type="submit" class="btn sm" disabled={switchingId !== null}>

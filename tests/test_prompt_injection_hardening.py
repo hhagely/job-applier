@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from job_applier import drafts, pdf
 from job_applier.ai import bans, drafting, prompt_safety, providers, scoring, suggest
 from job_applier.config import settings
-from job_applier.models.db import FilterStatus, JobPosting, Resume
+from job_applier.models.db import JobPosting, Resume
 
 
 def _job(
@@ -220,7 +220,6 @@ def _seed_for_draft(session):
         company_name="Acme",
         description="We use TypeScript.",
         dedupe_hash="h-1",
-        filter_status=FilterStatus.passed,
     )
     session.add(job)
     session.commit()

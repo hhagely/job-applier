@@ -13,9 +13,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from job_applier import services
+from job_applier import blacklist, watchlist
 from job_applier.api.app import app
-from job_applier.models.db import SourceSlug, get_session
+from job_applier.models.db import SearchProfile, SourceSlug, get_session
 from job_applier.sources import discover
 
 
@@ -145,7 +145,7 @@ class TestSlugCandidates:
 class TestAddByName:
     def test_adds_every_board_found(self, session, probe):
         probe.boards = [discover.Board("greenhouse", "acme", 12)]
-        result = services.add_watched_company(session, "Acme")
+        result = watchlist.add_watched_company(session, "Acme")
         assert result.status == "added"
         assert [(r.source, r.slug) for r in result.companies] == [("greenhouse", "acme")]
         row = result.companies[0]
@@ -156,29 +156,41 @@ class TestAddByName:
 
     def test_added_board_shows_up_in_the_watched_list(self, session, probe):
         probe.boards = [discover.Board("lever", "acme", 3)]
-        services.add_watched_company(session, "Acme")
-        assert [r.slug for r in services.list_watched_companies(session)] == ["acme"]
+        watchlist.add_watched_company(session, "Acme")
+        assert [r.slug for r in watchlist.list_watched_companies(session)] == ["acme"]
 
     def test_no_board_found_raises(self, session, probe):
         probe.boards = []
-        with pytest.raises(services.WatchedCompanyNotFound):
-            services.add_watched_company(session, "Nowhere Ltd")
-        assert services.list_watched_companies(session) == []
+        with pytest.raises(watchlist.WatchedCompanyNotFound):
+            watchlist.add_watched_company(session, "Nowhere Ltd")
+        assert watchlist.list_watched_companies(session) == []
 
     def test_blank_query_raises(self, session):
-        with pytest.raises(services.WatchedCompanyError):
-            services.add_watched_company(session, "   ")
+        with pytest.raises(watchlist.WatchedCompanyError):
+            watchlist.add_watched_company(session, "   ")
 
     def test_unreadable_url_raises_without_probing(self, session, probe):
-        with pytest.raises(services.WatchedCompanyUnknownUrl):
-            services.add_watched_company(session, "https://example.com/careers")
+        with pytest.raises(watchlist.WatchedCompanyUnknownUrl):
+            watchlist.add_watched_company(session, "https://example.com/careers")
         assert probe.calls == []
 
     def test_blacklisted_company_is_refused(self, session, probe):
-        services.add_blacklisted_company(session, "Evil Corp")
-        with pytest.raises(services.WatchedCompanyBlacklisted):
-            services.add_watched_company(session, "Evil Corp")
+        blacklist.add_blacklisted_company(session, "Evil Corp")
+        with pytest.raises(watchlist.WatchedCompanyBlacklisted):
+            watchlist.add_watched_company(session, "Evil Corp")
         assert probe.calls == []
+
+    def test_only_the_active_profiles_blacklist_refuses(self, session, probe):
+        # Blacklists are per profile: another person's entry doesn't stop this one.
+        other = SearchProfile(name="Partner")
+        session.add_all([SearchProfile(name="Default", is_active=True), other])
+        session.commit()
+        session.info["profile_id"] = other.id
+        blacklist.add_blacklisted_company(session, "Evil Corp")
+        session.info.pop("profile_id")
+        probe.boards = [discover.Board("greenhouse", "evilcorp", 3)]
+        result = watchlist.add_watched_company(session, "Evil Corp")
+        assert result.status == "added"
 
 
 class TestAlreadySearched:
@@ -187,9 +199,9 @@ class TestAlreadySearched:
 
     def test_company_added_twice_is_reported_not_duplicated(self, session, probe):
         probe.boards = [discover.Board("greenhouse", "acme", 12)]
-        services.add_watched_company(session, "Acme")
+        watchlist.add_watched_company(session, "Acme")
 
-        again = services.add_watched_company(session, "Acme")
+        again = watchlist.add_watched_company(session, "Acme")
         assert again.status == "already_searched"
         assert "already in your search list" in again.message
         assert "greenhouse / acme" in again.message
@@ -201,16 +213,16 @@ class TestAlreadySearched:
         session.add(SourceSlug(source="greenhouse", slug="acme"))
         session.commit()
 
-        result = services.add_watched_company(session, "Acme")
+        result = watchlist.add_watched_company(session, "Acme")
         assert result.status == "already_searched"
         assert probe.calls == []
-        assert services.list_watched_companies(session) == []
+        assert watchlist.list_watched_companies(session) == []
 
     def test_matches_across_naming_variants(self, session, probe):
         session.add(SourceSlug(source="lever", slug="acme-corp"))
         session.commit()
         for spelling in ("Acme Corp", "acme corp", "ACME-CORP", "Acme, Corp."):
-            assert services.add_watched_company(session, spelling).status == (
+            assert watchlist.add_watched_company(session, spelling).status == (
                 "already_searched"
             )
         assert probe.calls == []
@@ -218,12 +230,12 @@ class TestAlreadySearched:
     def test_matches_a_workday_tenant_inside_a_packed_slug(self, session, probe):
         session.add(SourceSlug(source="workday", slug="acme|wd5|External_Career_Site"))
         session.commit()
-        assert services.add_watched_company(session, "Acme").status == "already_searched"
+        assert watchlist.add_watched_company(session, "Acme").status == "already_searched"
 
     def test_pasted_url_for_a_watched_board_is_reported(self, session, verify):
         session.add(SourceSlug(source="greenhouse", slug="acme"))
         session.commit()
-        result = services.add_watched_company(session, "https://boards.greenhouse.io/acme")
+        result = watchlist.add_watched_company(session, "https://boards.greenhouse.io/acme")
         assert result.status == "already_searched"
         assert len(session.exec(select(SourceSlug)).all()) == 1
 
@@ -234,7 +246,7 @@ class TestAlreadySearched:
         # answer doesn't depend on which of the two inputs the user reached for.
         session.add(SourceSlug(source="greenhouse", slug="acme"))
         session.commit()
-        result = services.add_watched_company(session, "https://jobs.lever.co/acme")
+        result = watchlist.add_watched_company(session, "https://jobs.lever.co/acme")
         assert result.status == "already_searched"
         assert result.companies[0].source == "greenhouse"
         assert len(session.exec(select(SourceSlug)).all()) == 1
@@ -243,13 +255,13 @@ class TestAlreadySearched:
         session.add(SourceSlug(source="greenhouse", slug="acme"))
         session.commit()
         probe.boards = [discover.Board("greenhouse", "globex", 4)]
-        assert services.add_watched_company(session, "Globex").status == "added"
+        assert watchlist.add_watched_company(session, "Globex").status == "added"
 
 
 class TestAddByUrl:
     def test_verified_board_is_stored(self, session, verify):
         verify.result = (True, 5, None)
-        result = services.add_watched_company(session, "https://jobs.lever.co/Acme")
+        result = watchlist.add_watched_company(session, "https://jobs.lever.co/Acme")
         assert result.status == "added"
         row = result.companies[0]
         assert (row.source, row.slug, row.last_job_count) == ("lever", "acme", 5)
@@ -257,8 +269,8 @@ class TestAddByUrl:
 
     def test_dead_board_is_not_stored(self, session, verify):
         verify.result = (False, None, "didn't respond (HTTP 404)")
-        with pytest.raises(services.WatchedCompanyUnreachable) as exc:
-            services.add_watched_company(session, "https://jobs.lever.co/nope")
+        with pytest.raises(watchlist.WatchedCompanyUnreachable) as exc:
+            watchlist.add_watched_company(session, "https://jobs.lever.co/nope")
         assert "HTTP 404" in str(exc.value)
         assert session.exec(select(SourceSlug)).all() == []
 
@@ -268,7 +280,7 @@ class TestAddByUrl:
         # Ashby 404s an unknown board, so a 200 with zero openings is a real
         # employer who just isn't hiring today — exactly what you want watched.
         verify.result = (True, 0, None)
-        result = services.add_watched_company(session, "https://jobs.ashbyhq.com/Clerk")
+        result = watchlist.add_watched_company(session, "https://jobs.ashbyhq.com/Clerk")
         assert result.status == "added"
         assert result.companies[0].slug == "Clerk"
 
@@ -276,9 +288,9 @@ class TestAddByUrl:
 class TestRemove:
     def test_remove_hand_added_row(self, session, probe):
         probe.boards = [discover.Board("greenhouse", "acme", 1)]
-        row = services.add_watched_company(session, "Acme").companies[0]
-        assert services.remove_watched_company(session, row.id) is True
-        assert services.remove_watched_company(session, row.id) is False
+        row = watchlist.add_watched_company(session, "Acme").companies[0]
+        assert watchlist.remove_watched_company(session, row.id) is True
+        assert watchlist.remove_watched_company(session, row.id) is False
         assert session.exec(select(SourceSlug)).all() == []
 
     def test_will_not_remove_a_discovered_row(self, session):
@@ -287,7 +299,7 @@ class TestRemove:
         row = SourceSlug(source="greenhouse", slug="acme")
         session.add(row)
         session.commit()
-        assert services.remove_watched_company(session, row.id) is False
+        assert watchlist.remove_watched_company(session, row.id) is False
         assert len(session.exec(select(SourceSlug)).all()) == 1
 
 

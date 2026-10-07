@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Column, Index, UniqueConstraint, event
+from sqlalchemy import JSON, Column, Index, String, UniqueConstraint, event
+from sqlalchemy import Enum as SAEnum
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
 from job_applier.config import settings
@@ -81,12 +82,20 @@ class JobPosting(SQLModel, table=True):
     # would have been at ingest. Null on postings saved before the column.
     tags: Optional[list[str]] = Field(default=None, sa_column=Column(JSON))
 
-    # Legacy: always ``passed`` (only postings that pass the shared rules are
-    # stored, and the migration moved old per-profile verdicts onto the links).
-    # Nothing writes or reads these; a profile's verdict is
-    # ``JobProfileLink.filter_status``. Kept so existing DBs and old rows load.
-    filter_status: FilterStatus = FilterStatus.passed
-    filter_reason: Optional[str] = None
+    # Legacy columns ``filter_status`` / ``filter_reason``: always ``passed``
+    # (only postings that pass the shared rules are stored, and the migration
+    # moved old per-profile verdicts onto the links). A profile's verdict is
+    # ``JobProfileLink.filter_status``. Still mapped because upgraded DBs have
+    # the column NOT NULL with no default, so every INSERT must fill it; the
+    # ``legacy_`` names keep a query on "the posting's filter status" from
+    # compiling and silently matching every stored row.
+    legacy_filter_status: FilterStatus = Field(
+        default=FilterStatus.passed,
+        sa_column=Column("filter_status", SAEnum(FilterStatus), nullable=False),
+    )
+    legacy_filter_reason: Optional[str] = Field(
+        default=None, sa_column=Column("filter_reason", String, nullable=True)
+    )
 
     company_id: Optional[int] = Field(default=None, foreign_key="company.id")
     company: Optional[Company] = Relationship(back_populates="jobs")
@@ -226,7 +235,9 @@ class Resume(SQLModel, table=True):
     page_count: Optional[int] = None
     # Mirror of the active profile's in-use resume, written only by
     # ``profiles.set_active_resume``. The app reads ``SearchProfile.resume_id``
-    # (via ``profiles.active_resume``); this stays for the legacy slash commands.
+    # (via ``profiles.active_resume``); the raw-SQL bootstrap paths read this
+    # flag (``scoping._insert_default_profile`` and the migrations), because on
+    # a pre-profile DB it's the only record of which resume was in use.
     is_active: bool = Field(default=False, index=True)
     uploaded_at: datetime = Field(default_factory=_utcnow)
 
@@ -284,8 +295,8 @@ class JobProfileLink(SQLModel, table=True):
     """One profile's verdict on one stored posting.
 
     The scrape stores every posting that passes the shared rules, once; then
-    ``matching`` runs each profile's personal rules (seniority, tech, home-state
-    allow-list, blacklist) and records the outcome here — including ``dropped``,
+    ``matching`` runs each profile's personal rules (title keywords, seniority,
+    tech, home-state allow-list, blacklist) and records the outcome here — including ``dropped``,
     so a row's existence means "this profile has evaluated this posting" and a
     re-scrape only evaluates what's new. A profile's queue is its ``passed``
     (or ``manual``) rows. Profile-scoped like ``Application``.
@@ -314,10 +325,10 @@ class AppSetting(SQLModel, table=True):
 
 
 class BlacklistedCompany(SQLModel, table=True):
-    """A company the user never wants surfaced. Matched at ingest against the
-    normalized company name, so a job from a blacklisted employer is dropped
-    before it's persisted — even the first time we see that company (no
-    ``Company`` row needs to exist yet).
+    """A company one profile never wants surfaced. Applied at match time
+    (``matching``) against the normalized company name: the posting is stored
+    like any other and gets a ``dropped`` verdict for this profile only, even the
+    first time we see that company (no ``Company`` row needs to exist yet).
 
     ``normalized_name`` is produced by ``ingest.normalize_company`` — the SAME
     normalizer used for cross-source dedupe — so user-typed variants like

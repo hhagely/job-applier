@@ -8,7 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from job_applier import profiles
 from job_applier.api.app import app
 from job_applier.models import JobPosting, Resume
-from job_applier.models.db import FilterStatus, get_session
+from job_applier.models.db import get_session
 
 
 @pytest.fixture
@@ -39,7 +39,6 @@ def _seed_job(engine) -> int:
             title="Senior Engineer",
             description="TypeScript role.",
             dedupe_hash="h1",
-            filter_status=FilterStatus.passed,
         )
         s.add(job)
         s.commit()

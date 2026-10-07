@@ -10,7 +10,7 @@ from job_applier.ai import bans
 from job_applier.api.app import app
 from job_applier.config import settings
 from job_applier.models import JobPosting
-from job_applier.models.db import FilterStatus, get_session
+from job_applier.models.db import get_session
 from job_applier.models.scoping import session_profile_id
 
 RESUME_MD = "# Jane Dev\n\n## Experience\n\n- Built **TypeScript** services on Node.js\n"
@@ -48,7 +48,6 @@ def _seed_job(engine) -> int:
             title="Senior Engineer",
             description="TypeScript role.",
             dedupe_hash="h1",
-            filter_status=FilterStatus.passed,
         )
         s.add(job)
         s.commit()

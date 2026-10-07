@@ -8,7 +8,10 @@ const { api } = vi.hoisted(() => ({
 		createSearchProfile: vi.fn(),
 		activateSearchProfile: vi.fn(),
 		updateSearchProfileMeta: vi.fn(),
-		deleteSearchProfile: vi.fn()
+		deleteSearchProfile: vi.fn(),
+		saveSearchProfile: vi.fn(),
+		getSearchProfile: vi.fn(),
+		clearRecommendations: vi.fn()
 	}
 }));
 vi.mock('$lib/api', async (importOriginal) => ({
@@ -75,11 +78,18 @@ describe('createProfile', () => {
 		expect(api.createSearchProfile).toHaveBeenCalledWith(expect.anything(), 'http://test', 'Copy', 2);
 	});
 
-	it('maps an API error to a failure with its reason', async () => {
+	it("passes the API's status and reason through", async () => {
 		api.createSearchProfile.mockRejectedValue(new ApiError('nope', 404, 'search profile 9 not found'));
 		const r = (await run('createProfile', { name: 'X', clone_from: '9' })) as Failure;
-		expect(r.status).toBe(422);
+		expect(r.status).toBe(404);
 		expect(r.data.profileError).toContain('search profile 9 not found');
+	});
+
+	it('maps a call that never got an answer to 502', async () => {
+		api.createSearchProfile.mockRejectedValue(new TypeError('fetch failed'));
+		const r = (await run('createProfile', { name: 'X' })) as Failure;
+		expect(r.status).toBe(502);
+		expect(r.data.profileError).toContain('fetch failed');
 	});
 });
 
@@ -105,7 +115,7 @@ describe('activateProfile redirect_to', () => {
 	it('does not redirect when activation fails', async () => {
 		api.activateSearchProfile.mockRejectedValue(new ApiError('gone', 404, 'search profile 2 not found'));
 		const r = (await run('activateProfile', { id: '2', redirect_to: '/' })) as Failure;
-		expect(r.status).toBe(422);
+		expect(r.status).toBe(404);
 	});
 });
 
@@ -124,12 +134,47 @@ describe('updateProfileMeta', () => {
 });
 
 describe('deleteProfile', () => {
-	it('maps the API refusal (deleting the active profile) to 409', async () => {
+	it('passes the API refusal (deleting the active profile) through as 409', async () => {
 		api.deleteSearchProfile.mockRejectedValue(
 			new ApiError('conflict', 409, "can't delete the active profile")
 		);
 		const r = (await run('deleteProfile', { id: '1' })) as Failure;
 		expect(r.status).toBe(409);
 		expect(r.data.profileError).toContain("can't delete the active profile");
+	});
+});
+
+describe('title keywords', () => {
+	const saved = () => api.saveSearchProfile.mock.calls[0][2];
+
+	it('save splits the textarea into title_terms', async () => {
+		await run('save', { title_terms: 'project manager\nprogram manager, scrum master' });
+		expect(saved().title_terms).toEqual(['project manager', 'program manager', 'scrum master']);
+	});
+
+	describe('acceptDraft', () => {
+		beforeEach(() => {
+			api.getSearchProfile.mockResolvedValue({
+				role_titles: [],
+				title_terms: ['project manager'],
+				seniority_terms: [],
+				required_tech: [],
+				excluded_tech: [],
+				extracted_skills: [],
+				home_state: 'Missouri',
+				recommendations_draft: { title_terms: ['Project Manager', 'program manager'] }
+			});
+		});
+
+		it('append merges title_terms case-insensitively', async () => {
+			await run('acceptDraft', { mode: 'append' });
+			expect(saved().title_terms).toEqual(['project manager', 'program manager']);
+			expect(saved().home_state).toBe('Missouri');
+		});
+
+		it('replace takes the draft title_terms', async () => {
+			await run('acceptDraft', { mode: 'replace' });
+			expect(saved().title_terms).toEqual(['Project Manager', 'program manager']);
+		});
 	});
 });

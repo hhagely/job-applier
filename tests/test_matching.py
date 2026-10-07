@@ -14,9 +14,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import Session, select
 
-from job_applier import ingest, matching, services
+from job_applier import blacklist, ingest, matching
+from job_applier.ai import tasks
 from job_applier.config import settings
 from job_applier.filters import build_config, title_quick_fail, union_title_config
+from job_applier.filters.rules import _BUILTIN_DEFAULT
 from job_applier.models import db
 from job_applier.models.db import (
     Application,
@@ -83,6 +85,9 @@ def _verdicts(engine, profile_id: int) -> dict[int, FilterStatus]:
     return {r.job_id: r.filter_status for r in rows}
 
 
+# Captured at import, before conftest's autouse ``rematches`` stub replaces it.
+_REAL_START_REMATCH = matching.start_rematch
+
 TS = dict(seniority_terms=["senior"], required_tech=["typescript"])
 RUST = dict(seniority_terms=["senior"], required_tech=["rust"])
 
@@ -120,7 +125,7 @@ def test_blacklist_drops_only_for_the_profile_that_blacklisted(fresh_db):
     with Session(fresh_db) as s:
         s.info["profile_id"] = a
         # A naming variant: "Globex" catches "Globex Inc".
-        services.add_blacklisted_company(s, "Globex")
+        blacklist.add_blacklisted_company(s, "Globex")
     (job,) = _store(fresh_db, _raw(1, company_name="Globex Inc"))
     matching.match_all_profiles()
     assert _verdicts(fresh_db, a) == {job: FilterStatus.dropped}
@@ -199,6 +204,21 @@ def test_raw_is_trimmed_only_from_postings_nobody_matched(fresh_db):
         assert trimmed_row.description
 
 
+def test_raw_is_kept_when_the_source_sent_no_description(fresh_db):
+    # Empty description + empty raw is how matching recognises a pruned row;
+    # trimming this one would hide it from every future profile.
+    p = _profile(fresh_db, "A", **TS)
+    (job,) = _store(fresh_db, _raw(1, title="Software Engineer", description="", raw={"id": 1}))
+    matching.match_all_profiles()
+    assert ingest._trim_unmatched_raw([job]) == 0
+    other = _profile(fresh_db, "B", required_tech=["typescript"])
+    with Session(fresh_db) as s:
+        s.get(JobPosting, job).tags = ["TypeScript"]
+        s.commit()
+    assert matching.match_profile(other).evaluated == 1
+    assert _verdicts(fresh_db, p) == {job: FilterStatus.dropped}
+
+
 def test_title_preskip_only_skips_a_title_every_profile_rejects():
     senior = build_config(role_titles=[], seniority_terms=["senior"], required_tech=["ts"], excluded_tech=[])
     manager = build_config(role_titles=[], seniority_terms=["manager"], required_tech=["ts"], excluded_tech=[])
@@ -208,6 +228,51 @@ def test_title_preskip_only_skips_a_title_every_profile_rejects():
     assert title_quick_fail("Junior Engineer", union)
     # Sales titles are a shared rule: skipped regardless.
     assert title_quick_fail("Senior Account Executive", union)
+
+
+def _cfg(**criteria):
+    return build_config(
+        role_titles=[], required_tech=[], excluded_tech=[],
+        **{"seniority_terms": [], **criteria},
+    )
+
+
+def test_title_preskip_turns_a_gate_off_when_any_profile_lacks_it():
+    # One profile with no seniority terms accepts any level, so nobody may skip on it.
+    union = union_title_config([_cfg(seniority_terms=["senior"]), _cfg()])
+    assert not title_quick_fail("Junior Engineer", union)
+    # Title keywords union across the profiles that have them...
+    union = union_title_config([_cfg(title_terms=["project manager"]), _cfg(title_terms=["engineer"])])
+    assert not title_quick_fail("Senior Project Manager", union)
+    assert not title_quick_fail("Senior Engineer", union)
+    assert title_quick_fail("Marketing Coordinator", union)
+    # ...and switch off when one profile has none.
+    union = union_title_config([_cfg(title_terms=["project manager"]), _cfg(seniority_terms=["senior"])])
+    assert not title_quick_fail("Senior Data Analyst", union)
+    assert union_title_config([]) is _BUILTIN_DEFAULT
+
+
+def test_start_rematch_runs_a_full_rematch_as_a_pinned_match_task(fresh_db, monkeypatch):
+    started = {}
+
+    def run_now(kind, total, fn, *, ref=None, profile_id=None):
+        started.update(kind=kind, ref=ref, profile_id=profile_id)
+        started["state"] = state = tasks.TaskState(id="t", kind=kind, total=total)
+        fn(state)
+        return "t"
+
+    monkeypatch.setattr(tasks, "start_task", run_now)
+    p = _profile(fresh_db, "A", **TS)
+    (job,) = _store(fresh_db, _raw(1))
+    matching.match_profile(p)
+    with Session(fresh_db) as s:
+        s.get(SearchProfile, p).required_tech = ["rust"]
+        s.commit()
+    assert _REAL_START_REMATCH(p) == "t"
+    assert (started["kind"], started["ref"], started["profile_id"]) == ("match", str(p), p)
+    # An already-judged posting is re-evaluated, which only rematch=True does.
+    assert _verdicts(fresh_db, p) == {job: FilterStatus.dropped}
+    assert started["state"].results == ["0 in your queue, 0 to review, 1 filtered out"]
 
 
 def test_a_deleted_profile_gets_no_links(fresh_db):
@@ -284,10 +349,60 @@ def test_rematch_reaches_old_postings_already_in_the_queue(fresh_db):
         )
         s.add(old)
         s.info["profile_id"] = p
-        services.add_blacklisted_company(s, "Initech")
+        blacklist.add_blacklisted_company(s, "Initech")
         s.commit()
     matching.match_profile(p, rematch=True)
     assert _verdicts(fresh_db, p) == {job: FilterStatus.dropped}
+
+
+def test_a_kept_verdict_keeps_its_reason(fresh_db):
+    # A manual verdict on a job you applied to stays manual, banner reason intact.
+    p = _profile(fresh_db, "A", **TS)
+    (job,) = _store(fresh_db, _raw(1))
+    with Session(fresh_db) as s:
+        s.add(JobProfileLink(job_id=job, profile_id=p, filter_status=FilterStatus.manual,
+                             filter_reason="tech only implied"))
+        s.info["profile_id"] = p
+        s.add(Application(job_id=job, status=ApplicationStatus.applied))
+        s.get(SearchProfile, p).required_tech = ["rust"]
+        s.commit()
+    matching.match_profile(p, rematch=True)
+    with Session(fresh_db) as s:
+        link = s.exec(select(JobProfileLink).execution_options(all_profiles=True)).one()
+    assert (link.filter_status, link.filter_reason) == (FilterStatus.manual, "tech only implied")
+
+
+def test_rematch_blacklists_pruned_postings_but_keeps_their_other_verdicts(fresh_db):
+    # A pruned posting has only its company left to judge.
+    p = _profile(fresh_db, "A", **TS)
+    blocked, kept = _store(fresh_db, _raw(1, company_name="Initech"), _raw(2, company_name="Hooli"))
+    matching.match_profile(p)
+    with Session(fresh_db) as s:
+        for job in (blocked, kept):
+            row = s.get(JobPosting, job)
+            row.description, row.raw = "", {}  # what prune leaves behind
+        s.info["profile_id"] = p
+        blacklist.add_blacklisted_company(s, "Initech")
+        s.commit()
+    stats = matching.match_profile(p, rematch=True)
+    assert stats.evaluated == 2
+    assert _verdicts(fresh_db, p) == {blocked: FilterStatus.dropped, kept: FilterStatus.passed}
+
+
+def test_a_profile_deleted_mid_run_stops_getting_links(fresh_db, monkeypatch):
+    monkeypatch.setattr(matching, "MATCH_BATCH", 1)
+    p = _profile(fresh_db, "A", **TS)
+    _store(fresh_db, _raw(1), _raw(2))
+
+    def delete_after_first_batch(done: int, _total: int) -> None:
+        if done == 1:
+            with Session(fresh_db) as s:
+                s.delete(s.get(SearchProfile, p))
+                s.commit()
+
+    stats = matching.match_profile(p, progress_cb=delete_after_first_batch)
+    assert stats.evaluated == 2  # the second batch was judged, then not written
+    assert len(_verdicts(fresh_db, p)) == 1
 
 
 def test_one_profiles_matching_failure_does_not_stop_the_others(fresh_db, monkeypatch):

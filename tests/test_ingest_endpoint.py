@@ -110,6 +110,21 @@ def test_run_ingest_isolates_a_failing_source(monkeypatch):
     assert stats.inserted == 2
 
 
+def test_a_failing_source_does_not_lose_earlier_postings_for_the_raw_trim(monkeypatch):
+    # The cache reload after a failure must carry this run's new ids across, or
+    # the trim never sees the postings stored before the failing source.
+    e = _engine()
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
+    unmatched = _raw("a1", title="Junior Software Engineer", company="Alpha Co")
+    unmatched.raw = {"payload": "drop me"}
+    ingest.run_ingest(sources=[FakeSource("alpha", [unmatched]), _BoomSource()])
+    with Session(e) as s:
+        row = s.exec(select(JobPosting).where(JobPosting.source_id == "a1")).one()
+    # The Default profile's built-in seniority rule dropped it, so nobody matched it.
+    assert row.raw == {}
+    assert row.description
+
+
 def test_run_ingest_keeps_batches_committed_before_a_source_fails(monkeypatch):
     """A source that dies part-way keeps the batches it already committed.
 

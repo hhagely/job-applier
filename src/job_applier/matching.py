@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, not_, or_
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
@@ -89,8 +89,15 @@ def _to_raw(row) -> RawJob:  # noqa: ANN001
     )
 
 
-def _verdict(row, cfg: FilterConfig, blacklist: frozenset[str]) -> tuple[FilterStatus, str | None]:  # noqa: ANN001
-    if blacklist and normalize_company(row.company_name or "") in blacklist:
+Verdict = tuple[FilterStatus, str | None]
+
+
+def _blacklisted(row, blacklist: frozenset[str]) -> bool:  # noqa: ANN001
+    return bool(blacklist) and normalize_company(row.company_name or "") in blacklist
+
+
+def _verdict(row, cfg: FilterConfig, blacklist: frozenset[str]) -> Verdict:  # noqa: ANN001
+    if _blacklisted(row, blacklist):
         return FilterStatus.dropped, BLACKLISTED_REASON
     result = evaluate_profile(_to_raw(row), cfg)
     return result.status, result.reason
@@ -106,12 +113,18 @@ def match_profile(
     """Evaluate ``profile_id``'s rules over stored postings and record verdicts.
 
     Without ``rematch``, only recent postings the profile has no verdict for.
-    With it, every recent posting plus every one it already has a verdict on; an existing verdict is overwritten except that a
-    posting the profile has already acted on (has a non-``archived``
-    ``Application``) never goes from visible to dropped — editing your criteria
-    narrows what's *new*, it doesn't hide a job you applied to. ``archived`` is
-    the machine-owned bucket for postings never pursued (mostly auto-archived on
-    a low score), so those drop like any other.
+    With it, every recent posting plus every one it already has a verdict on; an
+    existing verdict is overwritten except that a posting the profile has
+    already acted on (has a non-``archived`` ``Application``) never goes from
+    visible to dropped — editing your criteria narrows what's *new*, it doesn't
+    hide a job you applied to, and the kept verdict keeps its reason.
+    ``archived`` is the machine-owned bucket for postings never pursued (mostly
+    auto-archived on a low score), so those drop like any other.
+
+    A pruned posting (``make prune`` cleared its description and raw) has
+    nothing left for the personal rules to read, so it's never newly matched;
+    on a re-match its existing verdict stands unless the blacklist, which needs
+    only the company name, now hides it.
 
     ``progress_cb(done, total)`` is called after each written batch.
     """
@@ -132,6 +145,12 @@ def match_profile(
                 )
             ).all()
         )
+        # Pruned = description and raw both cleared; a posting whose source
+        # simply sent no description still has its raw.
+        pruned = and_(
+            JobPosting.description == "",
+            func.json(JobPosting.raw).in_(["{}", "null"]),
+        )
         stmt = (
             select(
                 JobPosting.id,
@@ -144,16 +163,9 @@ def match_profile(
                 JobPosting.remote,
                 JobPosting.tags,
                 Company.name.label("company_name"),
+                pruned.label("pruned"),
             )
             .join(Company, Company.id == JobPosting.company_id, isouter=True)  # type: ignore[arg-type]
-            # Skip pruned rows (description and raw both cleared), not postings
-            # whose source simply sent no description.
-            .where(
-                or_(
-                    JobPosting.description != "",
-                    func.json(JobPosting.raw).not_in(["{}", "null"]),
-                )
-            )
         )
         recent = func.coalesce(JobPosting.posted_at, JobPosting.ingested_at) >= cutoff
         linked = select(JobProfileLink.job_id).where(JobProfileLink.profile_id == profile_id)
@@ -167,21 +179,23 @@ def match_profile(
                     )
                 ).all()
             )
-            # Everything recent, plus every posting it already has a verdict on
-            # whatever its age: a blacklist or criteria edit must reach an old
-            # job still sitting in the queue.
-            stmt = stmt.where(or_(recent, JobPosting.id.in_(linked)))  # type: ignore[union-attr]
+            # Everything recent and unpruned, plus every posting it already has
+            # a verdict on whatever its age or pruning: a blacklist or criteria
+            # edit must reach an old job still sitting in the queue.
+            stmt = stmt.where(or_(and_(recent, not_(pruned)), JobPosting.id.in_(linked)))  # type: ignore[union-attr]
         else:
-            # "Recent postings this profile hasn't judged yet."
-            stmt = stmt.where(recent).where(JobPosting.id.not_in(linked))  # type: ignore[union-attr]
+            # "Recent, unpruned postings this profile hasn't judged yet."
+            stmt = stmt.where(recent, not_(pruned), JobPosting.id.not_in(linked))  # type: ignore[union-attr]
         rows = s.exec(stmt).all()
-        current = (
+        current: dict[int, Verdict] = (
             {
-                job_id: status
-                for job_id, status in s.exec(
-                    select(JobProfileLink.job_id, JobProfileLink.filter_status).where(
-                        JobProfileLink.profile_id == profile_id
-                    )
+                job_id: (status, reason)
+                for job_id, status, reason in s.exec(
+                    select(
+                        JobProfileLink.job_id,
+                        JobProfileLink.filter_status,
+                        JobProfileLink.filter_reason,
+                    ).where(JobProfileLink.profile_id == profile_id)
                 ).all()
             }
             if rematch
@@ -193,14 +207,20 @@ def match_profile(
     for start in range(0, total, MATCH_BATCH):
         values = []
         for row in rows[start : start + MATCH_BATCH]:
-            status, reason = _verdict(row, cfg, blacklist)
+            prior = current.get(row.id, (FilterStatus.dropped, None))
+            if not row.pruned:
+                status, reason = _verdict(row, cfg, blacklist)
+            elif _blacklisted(row, blacklist):
+                status, reason = FilterStatus.dropped, BLACKLISTED_REASON
+            else:
+                status, reason = prior
             if (
                 status is FilterStatus.dropped
                 and row.id in acted
-                and current.get(row.id, FilterStatus.dropped) is not FilterStatus.dropped
+                and prior[0] is not FilterStatus.dropped
             ):
                 stats.kept_acted += 1
-                status, reason = current[row.id], None
+                status, reason = prior
             stats.evaluated += 1
             setattr(stats, status.value, getattr(stats, status.value) + 1)
             values.append(
@@ -234,7 +254,8 @@ MATCH_TASK_KIND = "match"
 
 
 def start_rematch(profile_id: int) -> str:
-    """Re-match one profile against every stored posting, in the background.
+    """Re-match one profile in the background: every recent stored posting
+    (``MATCH_WINDOW_DAYS``) plus every one it already has a verdict on.
 
     Called whenever what the profile accepts changes (criteria, home state,
     blacklist) or a profile is created. Local only, no scrape, but ~10 s over a

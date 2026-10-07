@@ -4,7 +4,7 @@
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { type ApplicationStatus, type Job, type StatusFacet } from '$lib/api';
+	import type { ApplicationStatus, Job, StatusFacet } from '$lib/api';
 	import { createTaskRunner } from '$lib/taskRunner.svelte';
 	import { defaultFollowupDate } from '$lib/date';
 	import { draftCart } from '$lib/draftCart.svelte';
@@ -22,12 +22,11 @@
 	import Icon from '$lib/Icon.svelte';
 	import { sourceInfo, type Ease } from '$lib/sources';
 	import { toast } from '$lib/toast.svelte';
-	import { profileLabel } from '$lib/profiles';
+	import ProfileTag from '$lib/ProfileTag.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 	// Whose view this is, shown only when there's more than one profile.
-	const whose = $derived(profileLabel(data.profiles));
 
 	const isManual = $derived(data.filter_status === 'manual');
 
@@ -355,7 +354,7 @@
 	<div class="vh-titles">
 		<h1>{isManual ? 'Manual review' : 'Queue'}</h1>
 		<div class="vh-sub">
-			{#if whose}<b>{whose}</b>{' · '}{/if}{visible.length}{visible.length === data.jobs.length
+			<ProfileTag profiles={data.profiles} />{visible.length}{visible.length === data.jobs.length
 				? ''
 				: ` of ${data.jobs.length}`} jobs · sorted by match score
 		</div>

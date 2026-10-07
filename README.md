@@ -105,11 +105,16 @@ with no new scrape.
 
 | Field | Effect |
 | --- | --- |
+| **Title keywords** | The job function: the title must contain one of these (`engineer`, `developer`; or `project manager`, `program manager`). This is what keeps a project-manager profile from matching every senior engineering role. Leave out seniority words; those go in the next field. |
 | **Seniority terms** | The job title must contain one of these. The strictest rule here — `senior` alone excludes every `Staff` and `Principal` posting. |
 | **Required tech** | The posting body or tags must reference one. Tokens of ≤2 characters (`js`, `go`, `ml`) are too ambiguous to pass on their own, so on their own they route a posting to **Manual review** instead. |
 | **Excluded tech** | In the title, disqualifies outright. In the tags, disqualifies unless a competing required-tech framework is also tagged. Mentioned only in the description with no positive signal, it goes to **Manual review** so you decide. |
 | **State of residence** | Optional. Drops postings whose "we can only hire in X, Y, Z" list leaves your state out. **Unset skips the rule entirely** — no state is assumed. Used only for this filter, stored locally, never sent anywhere. |
-| **Role titles** | The roles you're targeting. Recorded on the profile and filled in by *Suggest roles*; descriptive rather than functional — seniority and tech do the actual filtering. |
+| **Role titles** | The roles you're targeting. Recorded on the profile and filled in by *Suggest roles*; context for AI scoring and drafting only, never used by the filter (title keywords, seniority and tech do the filtering). |
+
+Every list is optional and an empty one skips its rule. A profile with no title
+keywords, seniority terms, or required tech at all falls back to the built-in
+JavaScript-engineer defaults, so a fresh install still finds something.
 
 Click **Suggest roles from resume** (needs a provider from step 1) to have the model
 read your resume and propose a whole profile. It's saved as a *draft* and changes
@@ -135,6 +140,15 @@ Two more tools on the same page, both aimed at *which employers* get searched:
   so the usual answer is "already covered". See
   [Managing the company slug list](#managing-the-company-slug-list) for what can and
   can't be added by hand.
+
+**Several profiles.** One install can hold several profiles, for different
+people or different searches, with exactly one active. Switch with the name chip
+at the bottom of the sidebar; add, copy, rename, or delete profiles on the
+**Search profile** page. Each profile has its own resumes (upload them on
+**Resume**), criteria, home state, blacklist, preferences, and per-job statuses,
+scores, and drafts. The scraped postings are shared, so one scrape fills every
+profile's queue. *Copy of …* starts a new profile from an existing one's criteria
+and resume; deleting a profile removes everything that's only its.
 
 ### 4. Run your first scrape
 
@@ -301,6 +315,10 @@ src/job_applier/
   models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
   sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters, Jibe, Oracle, RemoteOK, WWR, HN, YC)
   ingest.py    # Pipeline: fetch → dedupe (per-source, cross-source, JD-SimHash) → filter → persist
+  matching.py  # Per-profile matching: each profile's rules over the stored postings
+  profiles.py  # Profile lifecycle: active profile, resumes, queue scoping
+  services.py  # Shared queries/mutations (queue, scores, statuses, search) for routes + AI
+  blacklist.py / watchlist.py / preferences.py  # Company blacklist, hand-added boards, per-profile settings
   drafts.py    # Tailored resume / cover-letter markdown + PDF persistence (rendering in pdf.py)
   resume_io.py # PDF → text extraction + on-disk storage
   cli.py       # `job-applier` typer CLI
@@ -354,6 +372,7 @@ Then the per-profile rules, edited on the **Search profile** page:
   or "nationwide" overrides. **When the profile's state is left unset this rule is
   skipped entirely** (no state is assumed). Your state is used only for this
   filter, stored locally, and never sent anywhere.
+- **Title keywords** — title must contain one of `title_terms` (the job function).
 - **Seniority** — title must contain one of `seniority_terms`.
 - **Required tech** — posting body or tags must reference one of `required_tech`.
   Short tokens (≤2 chars, e.g. `js`, `ts`, `go`) only mark a posting as `manual`
@@ -367,8 +386,9 @@ Defaults shipped for fresh installs: senior+/staff/principal/lead seniority,
 JS/TS family stacks, Angular excluded. **Suggest roles from resume** on `/search`
 has your selected AI CLI propose a profile from your resume; the recommendation is
 saved as a draft on `SearchProfile.recommendations_draft` and applied only when you
-accept it in the UI. The filter falls back to the built-in defaults whenever no
-profile row exists or its required-tech list is empty.
+accept it in the UI. Each list is optional (an empty one skips its rule); the
+filter falls back to the built-in defaults only when no profile row exists or it
+has no title keywords, seniority terms, or required tech at all.
 
 ## Sources
 

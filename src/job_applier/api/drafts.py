@@ -46,26 +46,13 @@ def _draft_out(job_id: int, profile_id: int, *, include_markdown: bool = False) 
     )
 
 
-def _profile(session: Session) -> int:
-    """The profile whose drafts this request reads and writes.
-
-    A fresh install has no profile yet: the Default one is created and committed
-    here, in its own short transaction, so no request holds SQLite's write lock
-    while it renders PDFs (a loopback request plus a browser engine)."""
-    pid = session_profile_id(session)
-    if pid is None:
-        pid = profiles.load_or_create_profile(session).id
-        session.commit()
-    return pid
-
-
 @router.get("/api/jobs/{job_id}/draft", response_model=DraftOut)
 def get_draft(
     include_markdown: bool = False,
     job: JobPosting = Depends(require_job),
     session: Session = Depends(get_session),
-):
-    return _draft_out(job.id, _profile(session), include_markdown=include_markdown)
+) -> DraftOut:
+    return _draft_out(job.id, profiles.ensure_profile_id(session), include_markdown=include_markdown)
 
 
 def _print_url(request: Request, job_id: int, kind: drafts.DraftKind, profile_id: int) -> str:
@@ -111,10 +98,10 @@ def save_draft(
     request: Request,
     job: JobPosting = Depends(require_job),
     session: Session = Depends(get_session),
-):
+) -> DraftOut:
     if body.resume_md is None and body.cover_letter_md is None:
         raise HTTPException(422, "provide at least one of resume_md, cover_letter_md")
-    profile_id = _profile(session)
+    profile_id = profiles.ensure_profile_id(session)
     try:
         drafts.save_markdown(
             job.id, body.resume_md, body.cover_letter_md, profile_id=profile_id
@@ -136,8 +123,8 @@ def render_draft(
     request: Request,
     job: JobPosting = Depends(require_job),
     session: Session = Depends(get_session),
-):
-    profile_id = _profile(session)
+) -> DraftOut:
+    profile_id = profiles.ensure_profile_id(session)
     s = drafts.get_status(job.id, profile_id=profile_id)
     if not (s.has_resume_md or s.has_cover_letter_md):
         raise HTTPException(404, "no draft markdown to render")
@@ -151,7 +138,7 @@ def draft_print_html(
     kind: str,
     profile_id: Optional[int] = None,
     session: Session = Depends(get_session),
-):
+) -> HTMLResponse:
     """Standalone print-ready HTML for a draft kind. The PDF driver / Electron
     loads this and prints it to PDF, so the CSS lives in one place. The PDF
     driver passes ``profile_id``; a direct visit falls back to the active one."""
@@ -159,7 +146,7 @@ def draft_print_html(
         raise HTTPException(404, "unknown draft kind")
     if session.get(JobPosting, job_id) is None:
         raise HTTPException(404, "job not found")
-    pid = profile_id if profile_id is not None else _profile(session)
+    pid = profile_id if profile_id is not None else profiles.ensure_profile_id(session)
     md = drafts.read_markdown(job_id, kind, profile_id=pid)  # type: ignore[arg-type]
     if md is None:
         raise HTTPException(404, "draft markdown not found")
@@ -169,8 +156,8 @@ def draft_print_html(
 @router.get("/api/jobs/{job_id}/draft/resume.pdf")
 def download_draft_resume(
     job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
-):
-    path = drafts.pdf_path(job.id, "resume", profile_id=_profile(session))
+) -> FileResponse:
+    path = drafts.pdf_path(job.id, "resume", profile_id=profiles.ensure_profile_id(session))
     if not path.exists():
         raise HTTPException(404, "tailored resume PDF not found — run /draft first")
     return FileResponse(path, media_type="application/pdf", filename=f"resume-{job.id}.pdf")
@@ -179,8 +166,8 @@ def download_draft_resume(
 @router.get("/api/jobs/{job_id}/draft/cover-letter.pdf")
 def download_draft_cover_letter(
     job: JobPosting = Depends(require_job), session: Session = Depends(get_session)
-):
-    path = drafts.pdf_path(job.id, "cover_letter", profile_id=_profile(session))
+) -> FileResponse:
+    path = drafts.pdf_path(job.id, "cover_letter", profile_id=profiles.ensure_profile_id(session))
     if not path.exists():
         raise HTTPException(404, "cover letter PDF not found — run /draft first")
     return FileResponse(
@@ -193,7 +180,7 @@ def start_ai_draft(
     job: JobPosting = Depends(require_job),
     provider: str = Depends(require_ai_ready),
     session: Session = Depends(get_session),
-):
+) -> StartTaskOut:
     """Start a background tailored-draft run (draft -> render PDFs -> re-score).
     Poll GET /api/ai/tasks/{id} for staged progress."""
     model = ai_endpoints.generation_model(session, provider)
