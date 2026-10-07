@@ -35,6 +35,7 @@ from job_applier.dedupe import normalize_company
 from job_applier.filters import FilterConfig, config_for, evaluate_profile
 from job_applier.models.db import (
     Application,
+    ApplicationStatus,
     BlacklistedCompany,
     Company,
     FilterStatus,
@@ -106,9 +107,11 @@ def match_profile(
 
     Without ``rematch``, only recent postings the profile has no verdict for.
     With it, every recent posting plus every one it already has a verdict on; an existing verdict is overwritten except that a
-    posting the profile has already acted on (has an ``Application``) never goes
-    from visible to dropped — editing your criteria narrows what's *new*, it
-    doesn't hide a job you applied to.
+    posting the profile has already acted on (has a non-``archived``
+    ``Application``) never goes from visible to dropped — editing your criteria
+    narrows what's *new*, it doesn't hide a job you applied to. ``archived`` is
+    the machine-owned bucket for postings never pursued (mostly auto-archived on
+    a low score), so those drop like any other.
 
     ``progress_cb(done, total)`` is called after each written batch.
     """
@@ -157,7 +160,12 @@ def match_profile(
         acted: set[int] = set()
         if rematch:
             acted = set(
-                s.exec(select(Application.job_id).where(Application.profile_id == profile_id)).all()
+                s.exec(
+                    select(Application.job_id).where(
+                        Application.profile_id == profile_id,
+                        Application.status != ApplicationStatus.archived,
+                    )
+                ).all()
             )
             # Everything recent, plus every posting it already has a verdict on
             # whatever its age: a blacklist or criteria edit must reach an old

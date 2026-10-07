@@ -151,13 +151,15 @@ def test_new_profile_is_matched_against_existing_postings_without_a_scrape(fresh
 
 def test_rematch_applies_edited_criteria_but_keeps_jobs_already_acted_on(fresh_db):
     p = _profile(fresh_db, "A", **TS)
-    applied_job, other_job = _store(
-        fresh_db, _raw(1), _raw(2, title="Senior Platform Engineer")
+    applied_job, other_job, archived_job = _store(
+        fresh_db, _raw(1), _raw(2, title="Senior Platform Engineer"), _raw(3, title="Senior Web Engineer")
     )
     matching.match_profile(p)
     with Session(fresh_db) as s:
         s.info["profile_id"] = p
         s.add(Application(job_id=applied_job, status=ApplicationStatus.applied))
+        # Archived (e.g. auto-archived on a low score) was never pursued, so it isn't protected.
+        s.add(Application(job_id=archived_job, status=ApplicationStatus.archived))
         prof = s.get(SearchProfile, p)
         prof.required_tech = ["rust"]  # now neither posting qualifies
         s.add(prof)
@@ -167,6 +169,7 @@ def test_rematch_applies_edited_criteria_but_keeps_jobs_already_acted_on(fresh_d
     assert _verdicts(fresh_db, p) == {
         applied_job: FilterStatus.passed,  # you applied: it stays in your queue
         other_job: FilterStatus.dropped,
+        archived_job: FilterStatus.dropped,
     }
 
 
