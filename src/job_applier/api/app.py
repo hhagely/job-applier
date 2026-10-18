@@ -393,6 +393,8 @@ def pending_match(
     Always includes unscored jobs. With ``include_stale=true``, also includes
     jobs whose only score is against a non-active resume — the queue the
     background scorer reads when refreshing scores after a resume change.
+    Jobs the user has acted on (archived, drafted, applied, ...) and duplicates
+    are never included; see ``services.SCORABLE_FACETS``.
     """
     pending = services.select_pending_jobs(
         session, limit=limit, include_stale=include_stale
@@ -410,10 +412,27 @@ def pending_match(
     ]
 
 
+@app.get("/api/pending-match/count")
+def pending_match_count(
+    include_stale: bool = False,
+    session: Session = Depends(get_session),
+) -> dict:
+    """What a scoring run would cover, from the same selection the run uses.
+
+    ``count`` is every job that needs a score; ``run_size`` is how many one run
+    takes (``services.SCORE_RUN_LIMIT`` at most), i.e. the total its progress
+    starts from. The UI labels the "Score pending" button from this rather than
+    counting jobs itself, which is how the two came to disagree.
+    """
+    count = services.count_pending_jobs(session, include_stale=include_stale)
+    return {"count": count, "run_size": min(count, services.SCORE_RUN_LIMIT)}
+
+
 @app.get("/api/scores/stale-count")
 def stale_score_count(session: Session = Depends(get_session)) -> dict:
     """Count of baseline scores not against the active resume, on the active
-    profile's postings (the set "Re-score" and "Keep existing scores" act on).
+    profile's postings (the set "Keep existing scores" adopts; "Re-score" runs
+    only the ones ``/api/pending-match/count`` reports).
 
     Returns 0 when there's no active resume — there's nothing to be stale
     against in that case.

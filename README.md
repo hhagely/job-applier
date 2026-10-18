@@ -163,7 +163,7 @@ sources log a warning and don't sink the run.
 ### 5. Score the queue
 
 **Dashboard → Score pending (N)**. The backend pulls your active resume and scores
-each unscored job against its description via your AI CLI — batched into one call per
+each unscored job you haven't acted on against its description via your AI CLI — batched into one call per
 group, with a per-job retry so a single bad response can't poison a batch. Another
 background task; scores land in the queue as they arrive.
 
@@ -500,7 +500,7 @@ on this repo.
 
 | Flow (UI trigger)                                     | Legacy command             | What it does                                                                                                    |
 | ----------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Score pending** (`/dashboard`)                      | `/match-pending`           | Score every unscored job (and stale-scored jobs) against the active resume. Writes baseline scores.            |
+| **Score pending** (`/dashboard`)                      | `/match-pending`           | Score every unscored (or stale-scored) job you haven't acted on against the active resume. Writes baseline scores.            |
 | **Draft list** (queue cart) or draft one (`/jobs/[id]`)| `/draft <id> ...`          | Generate a tailored resume + cover letter per job (markdown + PDF), set status to `drafted`, re-score the draft.|
 | _(runs automatically after each draft)_               | `/score-draft <id> ...`    | Re-score a tailored draft against the JD using the same rubric as scoring. Writes a `tailored`-kind score.      |
 | **Suggest roles from resume** (`/search`)             | `/suggest-roles`           | Read the active resume and propose a `SearchProfile` to `recommendations_draft` for review at `/search`.        |

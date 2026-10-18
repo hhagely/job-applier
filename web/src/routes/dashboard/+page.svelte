@@ -25,6 +25,10 @@
 	// a server form action; the client then polls GET /api/ai/tasks/{id}. ---
 	const hasProvider = $derived(Boolean(data.aiProvider));
 	const pendingCount = $derived(data.pending);
+	// A run is capped, so say so when more is waiting than one run will take.
+	const pendingLabel = $derived(
+		data.pendingTotal > pendingCount ? `${pendingCount} of ${data.pendingTotal}` : `${pendingCount}`
+	);
 
 	// Progress is driven by the shared event stream (via the runner) so it survives
 	// leaving this page; the layout invalidates page data when a task settles.
@@ -69,10 +73,10 @@
 					disabled={pendingCount === 0 || score.busy}
 					title={pendingCount === 0
 						? 'Nothing to score'
-						: `Score ${pendingCount} pending via ${data.aiProvider}`}
+						: `Score ${pendingLabel} pending via ${data.aiProvider}`}
 				>
 					<Icon name="star" size={15} stroke={2} />
-					{score.busy ? 'Scoring…' : `Score pending (${pendingCount})`}
+					{score.busy ? 'Scoring…' : `Score pending (${pendingLabel})`}
 				</button>
 			</form>
 		{:else}

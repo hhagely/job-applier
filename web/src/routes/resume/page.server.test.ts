@@ -4,7 +4,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 vi.mock('$lib/apiBase.server', () => ({ serverApiBase: () => 'http://test' }));
 
 const { api } = vi.hoisted(() => ({
-	api: { useResume: vi.fn(), getStaleScoreCount: vi.fn() }
+	api: { useResume: vi.fn(), getStaleScoreCount: vi.fn(), getPendingScoreCount: vi.fn() }
 }));
 vi.mock('$lib/api', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/api')>()),
@@ -39,10 +39,12 @@ describe('use resume action', () => {
 	it('switches and raises the stale-scores prompt', async () => {
 		api.useResume.mockResolvedValue({ id: 4 });
 		api.getStaleScoreCount.mockResolvedValue({ count: 12 });
+		api.getPendingScoreCount.mockResolvedValue({ count: 5, run_size: 5 });
 		expect(await use({ id: '4' })).toEqual({
 			ok: true,
 			resume: { id: 4 },
 			staleCount: 12,
+			rescoreCount: 5,
 			switched: true
 		});
 		expect(api.useResume).toHaveBeenCalledWith(expect.anything(), 'http://test', 4);
@@ -51,10 +53,12 @@ describe('use resume action', () => {
 	it('still reports the switch when only the stale count fails', async () => {
 		api.useResume.mockResolvedValue({ id: 4 });
 		api.getStaleScoreCount.mockRejectedValue(new ApiError('locked', 503));
+		api.getPendingScoreCount.mockResolvedValue({ count: 5, run_size: 5 });
 		expect(await use({ id: '4' })).toEqual({
 			ok: true,
 			resume: { id: 4 },
 			staleCount: 0,
+			rescoreCount: 0,
 			switched: true
 		});
 	});

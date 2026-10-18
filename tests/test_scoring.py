@@ -205,7 +205,8 @@ def test_score_pending_only_archives_untriaged_low_scorers(
         job = _seed_job(s, title="LowFit Engineer")
         if status is not None:
             services.bulk_set_status(s, [job.id], status)
-        outcomes = scoring.score_pending(s, provider="claude")
+        # Targeted by id: the pending queue itself skips jobs already acted on.
+        outcomes = scoring.score_pending(s, provider="claude", job_ids=[job.id])
         assert outcomes[0].score == 40  # below ARCHIVE_BELOW
         s.refresh(job)
         assert job.application is not None

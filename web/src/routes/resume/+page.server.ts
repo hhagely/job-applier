@@ -30,6 +30,18 @@ async function aiCanSuggest(fetch: typeof globalThis.fetch): Promise<boolean> {
 	}
 }
 
+/** The two numbers the stale-scores prompt shows. They differ on purpose:
+ * `staleCount` is every score against the old resume (what "Keep" re-stamps),
+ * `rescoreCount` is the run "Re-score" would actually start, which skips jobs
+ * already archived or applied to. */
+async function staleCounts(fetch: typeof globalThis.fetch) {
+	const [{ count: staleCount }, { run_size: rescoreCount }] = await Promise.all([
+		api.getStaleScoreCount(fetch, serverApiBase()),
+		api.getPendingScoreCount(fetch, serverApiBase(), true)
+	]);
+	return { staleCount, rescoreCount };
+}
+
 export const actions: Actions = {
 	upload: async ({ request, fetch }) => {
 		const form = await request.formData();
@@ -39,9 +51,9 @@ export const actions: Actions = {
 		}
 		try {
 			const resume = await api.uploadResume(fetch, serverApiBase(), file);
-			const { count: staleCount } = await api.getStaleScoreCount(fetch, serverApiBase());
+			const counts = await staleCounts(fetch);
 			const canSuggest = await aiCanSuggest(fetch);
-			return { ok: true, resume, staleCount, nextSteps: true, aiCanSuggest: canSuggest };
+			return { ok: true, resume, ...counts, nextSteps: true, aiCanSuggest: canSuggest };
 		} catch (e) {
 			return fail(failStatus(e), { error: errorReason(e) });
 		}
@@ -59,10 +71,8 @@ export const actions: Actions = {
 			return fail(failStatus(e), { error: errorReason(e) });
 		}
 		// The switch already happened: a failed count only costs the prompt.
-		const { count: staleCount } = await api
-			.getStaleScoreCount(fetch, serverApiBase())
-			.catch(() => ({ count: 0 }));
-		return { ok: true, resume, staleCount, switched: true };
+		const counts = await staleCounts(fetch).catch(() => ({ staleCount: 0, rescoreCount: 0 }));
+		return { ok: true, resume, ...counts, switched: true };
 	},
 
 	// The two answers to the "N scores are now stale" prompt the upload raises.

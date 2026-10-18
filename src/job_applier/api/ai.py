@@ -312,7 +312,9 @@ def start_score_pending(
             raise HTTPException(400, "no valid jobs to score")
     else:
         pending = services.select_pending_jobs(
-            session, limit=200, include_stale=body.include_stale
+            session,
+            limit=services.SCORE_RUN_LIMIT,
+            include_stale=body.include_stale,
         )
         ids = [j.id for j in pending]
 
