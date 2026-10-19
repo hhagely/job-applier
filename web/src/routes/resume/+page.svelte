@@ -16,8 +16,8 @@
 	// Only the upload action sets `staleCount`, so answering the prompt (either
 	// button) replaces `form` and retires it.
 	let staleCount = $derived(form?.staleCount ?? 0);
-	// What "Re-score" would run: smaller than `staleCount` whenever some of those
-	// scores sit on jobs already archived or applied to.
+	// The size of the run "Re-score" would start, not a subset of `staleCount`:
+	// it also takes unscored jobs, and skips ones moved past new/interested.
 	let rescoreCount = $derived(form?.rescoreCount ?? 0);
 	let keptCount = $derived(form?.kept ?? 0);
 	let owner = $derived(data.profileName ?? 'this profile');
@@ -110,8 +110,8 @@
 						</div>
 						<div class="hint">
 							Typo or reworded bullet? Keep them — re-scoring spends an AI call per job. Rewrote a
-							section, or changed your titles or tech? Re-score. Re-scoring only covers jobs you
-							haven't acted on yet; archived and applied-to jobs keep the score they have.
+							section, or changed your titles or tech? Re-score. Re-scoring only covers jobs still
+							new or marked interested, plus any not scored yet; the rest keep the score they have.
 						</div>
 					</div>
 				{/if}

@@ -30,14 +30,25 @@ async function aiCanSuggest(fetch: typeof globalThis.fetch): Promise<boolean> {
 	}
 }
 
-/** The two numbers the stale-scores prompt shows. They differ on purpose:
+/** The two numbers the stale-scores prompt shows. They measure different things:
  * `staleCount` is every score against the old resume (what "Keep" re-stamps),
- * `rescoreCount` is the run "Re-score" would actually start, which skips jobs
- * already archived or applied to. */
+ * `rescoreCount` is the size of the run "Re-score" would start: every stale or
+ * unscored job still untriaged, `new` or `interested` (no duplicates), capped
+ * at one run. Either can be the larger one.
+ *
+ * Called after the resume already changed, so neither count may fail the
+ * action: a failed stale count only costs the prompt, a failed rescore count
+ * only disables its button. */
 async function staleCounts(fetch: typeof globalThis.fetch) {
-	const [{ count: staleCount }, { run_size: rescoreCount }] = await Promise.all([
-		api.getStaleScoreCount(fetch, serverApiBase()),
-		api.getPendingScoreCount(fetch, serverApiBase(), true)
+	const [staleCount, rescoreCount] = await Promise.all([
+		api
+			.getStaleScoreCount(fetch, serverApiBase())
+			.then((r) => r.count)
+			.catch(() => 0),
+		api
+			.getPendingScoreCount(fetch, serverApiBase(), true)
+			.then((r) => r.run_size)
+			.catch(() => 0)
 	]);
 	return { staleCount, rescoreCount };
 }
@@ -49,14 +60,15 @@ export const actions: Actions = {
 		if (!(file instanceof File) || file.size === 0) {
 			return fail(400, { error: 'pick a PDF file first' });
 		}
+		let resume;
 		try {
-			const resume = await api.uploadResume(fetch, serverApiBase(), file);
-			const counts = await staleCounts(fetch);
-			const canSuggest = await aiCanSuggest(fetch);
-			return { ok: true, resume, ...counts, nextSteps: true, aiCanSuggest: canSuggest };
+			resume = await api.uploadResume(fetch, serverApiBase(), file);
 		} catch (e) {
 			return fail(failStatus(e), { error: errorReason(e) });
 		}
+		const counts = await staleCounts(fetch);
+		const canSuggest = await aiCanSuggest(fetch);
+		return { ok: true, resume, ...counts, nextSteps: true, aiCanSuggest: canSuggest };
 	},
 
 	// Switch this profile to another of its uploads. Scores made against the
@@ -70,8 +82,7 @@ export const actions: Actions = {
 		} catch (e) {
 			return fail(failStatus(e), { error: errorReason(e) });
 		}
-		// The switch already happened: a failed count only costs the prompt.
-		const counts = await staleCounts(fetch).catch(() => ({ staleCount: 0, rescoreCount: 0 }));
+		const counts = await staleCounts(fetch);
 		return { ok: true, resume, ...counts, switched: true };
 	},
 
