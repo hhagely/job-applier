@@ -17,7 +17,8 @@ export const load: PageServerLoad = async ({ fetch }) => {
 		// What "Score pending" will run, asked of the selection the run itself
 		// uses (same `include_stale` as the action below). Counting the loaded
 		// jobs here instead is how the button once read 27 for a 200-job run.
-		api.getPendingScoreCount(fetch, base, true)
+		// A failed count only disables the button; it must not take the page down.
+		api.getPendingScoreCount(fetch, base, true).catch(() => ({ count: 0, run_size: 0 }))
 	]);
 	const scored = jobs.filter((j) => j.score != null);
 
