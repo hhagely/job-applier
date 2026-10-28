@@ -116,12 +116,14 @@ def _ensure_jd_dedupe_columns() -> None:
 
 
 def _ensure_searchprofile_columns() -> None:
-    """Add SearchProfile.home_state / title_terms on existing DBs that pre-date them.
+    """Add SearchProfile.home_state / title_terms / markets on existing DBs that
+    pre-date them.
 
     home_state is nullable with no default: existing profiles migrate to "no home
     state set", which skips the state-allow-list rule until the user picks a state
     at /search. title_terms defaults to an empty list, which skips the title gate,
     so existing profiles match exactly as before until the user sets keywords.
+    markets defaults to an empty list too: the US only, as before.
     """
     with engine().connect() as conn:
         cols = _table_cols(conn, "searchprofile")
@@ -130,6 +132,10 @@ def _ensure_searchprofile_columns() -> None:
         if "title_terms" not in cols:
             conn.exec_driver_sql(
                 "ALTER TABLE searchprofile ADD COLUMN title_terms JSON NOT NULL DEFAULT '[]'"
+            )
+        if "markets" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE searchprofile ADD COLUMN markets JSON NOT NULL DEFAULT '[]'"
             )
         conn.commit()
 

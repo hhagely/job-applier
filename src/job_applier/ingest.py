@@ -1,7 +1,7 @@
 """Ingestion pipeline: pull raw jobs from sources, dedupe, filter, persist.
 
 Scrape once for every profile: ingest applies only the *shared* rules
-(``filters.evaluate_shared``: remote, US, sales, crypto) and stores each
+(``filters.evaluate_shared``: remote, the searched countries, sales, crypto) and stores each
 surviving posting once. Each profile's personal rules and blacklist run
 afterwards, locally, in ``matching`` -- so one scrape fills every profile's
 queue, and adding or editing a profile never needs another scrape.
@@ -34,7 +34,8 @@ from job_applier.dedupe import (
     normalize_title,
 )
 from job_applier import matching, profiles
-from job_applier.filters import config_for, evaluate_shared, union_title_config
+from job_applier.countries import US_MARKET, Market
+from job_applier.filters import config_for, evaluate_shared, union_markets, union_title_config
 from job_applier.maintenance import (
     PRUNE_INGESTED_AFTER_DAYS,
     PRUNE_POSTED_AFTER_DAYS,
@@ -204,8 +205,12 @@ def ingest_one(
     stats: IngestStats,
     *,
     caches: "_IngestCaches | None" = None,
+    markets: tuple[Market, ...] = (US_MARKET,),
 ) -> None:
     """Dedupe, apply the shared rules, and (if it survives) persist one raw job.
+
+    ``markets`` is every profile's searched countries unioned
+    (``filters.union_markets``), so a posting only one profile could want is kept.
 
     No profile's rules run here -- see ``matching``. A blacklisted company is
     therefore stored like any other; each profile's blacklist drops it from that
@@ -231,7 +236,7 @@ def ingest_one(
         stats.stale += 1
         return
 
-    decision = evaluate_shared(raw)
+    decision = evaluate_shared(raw, markets)
     if decision.status == FilterStatus.dropped:
         stats.dropped_filter += 1
         return
@@ -331,6 +336,7 @@ def _write_batch(
     stats: IngestStats,
     *,
     caches: _IngestCaches,
+    markets: tuple[Market, ...] = (US_MARKET,),
 ) -> None:
     """Persist one batch in its own short-lived session + transaction.
 
@@ -341,7 +347,7 @@ def _write_batch(
     with Session(engine()) as session:
         try:
             for raw in batch:
-                ingest_one(session, raw, stats, caches=caches)
+                ingest_one(session, raw, stats, caches=caches, markets=markets)
             session.commit()
         except Exception:
             session.rollback()
@@ -388,10 +394,13 @@ def run_ingest(
         # scrape has somebody to match for.
         profiles.load_or_create_profile(session)
         session.commit()
+        configs = [config_for(p) for p in session.exec(select(SearchProfile)).all()]
+        # Keep what any profile's countries admit; each profile's own are
+        # applied when it's matched.
+        markets = union_markets(configs)
         if sources is None:
             # Adapters that pre-skip detail fetches by title may only skip a title
             # every profile would reject.
-            configs = [config_for(p) for p in session.exec(select(SearchProfile)).all()]
             sources = get_all_sources(filter_config=union_title_config(configs))
         caches = _IngestCaches.load(session)
 
@@ -399,7 +408,7 @@ def run_ingest(
     for i, source in enumerate(sources):
         try:
             for batch in _batched(source.fetch(), batch_size):
-                _write_batch(batch, stats, caches=caches)
+                _write_batch(batch, stats, caches=caches, markets=markets)
         except Exception as exc:  # noqa: BLE001 - one source can't abort the run
             log.warning("source %s failed during ingest, skipping: %s", source.name, exc)
             # A rolled-back batch leaves the caches holding rows that were never

@@ -234,6 +234,8 @@ export interface SearchProfile {
 	extracted_skills: string[];
 	/** Canonical full name of the user's state of residence, or null. Ingest-filter only. */
 	home_state: string | null;
+	/** Countries searched besides the US; empty means the US only. */
+	markets?: Market[];
 	recommendations_draft: SearchProfileRecommendation | null;
 	updated_at: string | null;
 	using_defaults: boolean;
@@ -247,6 +249,24 @@ export interface CompanyCoverage {
 	by_source: Record<string, number>;
 	/** ISO timestamp of the last discovery run, or null if it has never run. */
 	last_checked_at: string | null;
+}
+
+/** A country a profile searches besides the US (always searched, remote only). */
+export interface Market {
+	/** ISO alpha-2 code, e.g. "GB". */
+	country: string;
+	/** The user would need a work visa there: postings that won't sponsor are dropped. */
+	needs_sponsorship: boolean;
+	/** Where a hybrid or on-site role is fine instead of remote-only. */
+	hybrid_cities: string[];
+}
+
+/** A country the /search picker offers (`GET /api/countries`). */
+export interface Country {
+	code: string;
+	name: string;
+	/** Other codes and names it goes by ("UK", "Britain"). */
+	aliases: string[];
 }
 
 export interface SearchProfileRecommendation {
@@ -270,6 +290,8 @@ export interface SearchProfileBody {
 	extracted_skills: string[];
 	/** Full state name (e.g. "Missouri") or null/"" to leave the rule off. */
 	home_state?: string | null;
+	/** Countries searched besides the US. Omitted leaves them as they are; [] clears them. */
+	markets?: Market[];
 }
 
 export interface Resume {
@@ -632,6 +654,9 @@ export const api = {
 			method: 'PUT',
 			body: JSON.stringify(body)
 		}),
+
+	listCountries: (fetchFn: FetchFn, base: string) =>
+		call<Country[]>(fetchFn, base, '/api/countries'),
 
 	clearRecommendations: (fetchFn: FetchFn, base: string) =>
 		call<SearchProfile>(fetchFn, base, '/api/search-profile/recommendations', {

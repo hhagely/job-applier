@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SearchProfile } from '$lib/api';
@@ -40,6 +40,7 @@ function data(overrides = {}) {
 		counts: { jobs: 1, queue: 1, followups: 0, strong: 0 },
 		blacklist: [],
 		watched: [],
+		countries: [{ code: 'GB', name: 'United Kingdom', aliases: ['GBR', 'UK', 'Britain'] }],
 		coverage: {
 			total: 1432,
 			enabled: 1430,
@@ -179,5 +180,55 @@ describe('search page company check', () => {
 		});
 
 		expect(screen.getByText(/Acme is already in your search list/)).toBeInTheDocument();
+	});
+});
+
+describe('search page Where you can work', () => {
+	const marketsField = (container: HTMLElement) =>
+		JSON.parse((container.querySelector('input[name="markets"]') as HTMLInputElement).value);
+	const toggle = () => screen.getByRole('switch', { name: /Search outside the United States/ });
+
+	async function addCountry(text: string) {
+		await fireEvent.input(screen.getByLabelText('Add a country'), { target: { value: text } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Add country' }));
+	}
+
+	it('posts no other countries until the toggle is on', () => {
+		const { container } = render(Page, { props: { data: data(), form: null } });
+		expect(screen.queryByLabelText('Add a country')).not.toBeInTheDocument();
+		expect(marketsField(container)).toEqual([]);
+	});
+
+	it('adds a country by alias and posts its settings', async () => {
+		const { container } = render(Page, { props: { data: data(), form: null } });
+		await fireEvent.click(toggle());
+		await addCountry('uk');
+
+		expect(screen.getByText('United Kingdom')).toBeInTheDocument();
+		await fireEvent.click(screen.getByLabelText(/visa sponsorship/));
+		await fireEvent.input(screen.getByPlaceholderText(/Edinburgh, Glasgow/), {
+			target: { value: 'Edinburgh, Glasgow' }
+		});
+		expect(marketsField(container)).toEqual([
+			{ country: 'GB', needs_sponsorship: true, hybrid_cities: ['Edinburgh', 'Glasgow'] }
+		]);
+	});
+
+	it('rejects a country outside the list', async () => {
+		render(Page, { props: { data: data(), form: null } });
+		await fireEvent.click(toggle());
+		await addCountry('Narnia');
+		expect(screen.getByText(/isn't a country we can search/)).toBeInTheDocument();
+	});
+
+	it('seeds the editor from the saved profile', () => {
+		const saved = profile({
+			markets: [{ country: 'GB', needs_sponsorship: false, hybrid_cities: ['Glasgow'] }]
+		});
+		const { container } = render(Page, { props: { data: data({ profile: saved }), form: null } });
+		expect(toggle()).toHaveAttribute('aria-checked', 'true');
+		expect(marketsField(container)).toEqual([
+			{ country: 'GB', needs_sponsorship: false, hybrid_cities: ['Glasgow'] }
+		]);
 	});
 });

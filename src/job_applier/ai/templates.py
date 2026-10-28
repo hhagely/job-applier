@@ -37,6 +37,7 @@ def render_job_prompt(
     job: JobPosting,
     *,
     state_rule: str = "",
+    where_rule: str = "",
 ) -> str:
     """Render a single-job prompt (score or draft) from ``template_name``.
 
@@ -44,7 +45,8 @@ def render_job_prompt(
     nonce so an injected instruction in the posting can't escape its block (see
     :mod:`prompt_safety`). ``state_rule`` fills the ``{{STATE_RULE}}`` placeholder in
     the score templates (the home-state allow-list hard rule) and is empty for
-    templates that don't carry the placeholder (e.g. ``draft.md``).
+    templates that don't carry the placeholder (e.g. ``draft.md``); ``where_rule``
+    likewise fills ``{{WHERE_RULE}}`` (the remote and country hard rules).
     """
     nonce = prompt_safety.new_nonce()
     description = prompt_safety.clean_untrusted(html_to_text(job.description or ""), nonce)
@@ -56,5 +58,6 @@ def render_job_prompt(
         .replace("{{LOCATION}}", job.location or "Not specified")
         .replace("{{NONCE}}", nonce)
         .replace("{{STATE_RULE}}", state_rule)
+        .replace("{{WHERE_RULE}}", where_rule)
         .replace("{{DESCRIPTION}}", description)
     )

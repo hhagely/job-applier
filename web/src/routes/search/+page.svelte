@@ -5,6 +5,7 @@
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
 	import BlacklistCard from '$lib/BlacklistCard.svelte';
 	import CompanyCoverageCard from '$lib/CompanyCoverageCard.svelte';
+	import MarketsField from '$lib/MarketsField.svelte';
 	import ProfilesCard from '$lib/ProfilesCard.svelte';
 	import WatchedCompaniesCard from '$lib/WatchedCompaniesCard.svelte';
 	import { US_STATES } from '$lib/usStates';
@@ -176,6 +177,11 @@
 							locally in your own database, never sent anywhere, and never used for any other
 							purpose. Leave it unset to skip state filtering entirely.
 						</small>
+					</div>
+					<div style="margin-top:14px">
+						{#key lastSeen}
+							<MarketsField markets={profile.markets ?? []} countries={data.countries} />
+						{/key}
 					</div>
 					<div class="grid-2" style="margin-top:14px">
 						<div class="field">

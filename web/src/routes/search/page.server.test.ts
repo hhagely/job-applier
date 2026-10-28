@@ -152,6 +152,16 @@ describe('title keywords', () => {
 		expect(saved().title_terms).toEqual(['project manager', 'program manager', 'scrum master']);
 	});
 
+	it('save passes the markets field through, and leaves markets out when absent', async () => {
+		const markets = [{ country: 'GB', needs_sponsorship: true, hybrid_cities: ['Edinburgh'] }];
+		await run('save', { markets: JSON.stringify(markets) });
+		expect(saved().markets).toEqual(markets);
+
+		api.saveSearchProfile.mockReset();
+		await run('save', {});
+		expect(saved().markets).toBeUndefined();
+	});
+
 	describe('acceptDraft', () => {
 		beforeEach(() => {
 			api.getSearchProfile.mockResolvedValue({

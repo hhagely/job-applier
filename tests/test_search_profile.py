@@ -367,6 +367,45 @@ def test_put_profile_rejects_unknown_home_state(client):
     assert "Ontario" in resp.json()["detail"]
 
 
+def test_put_profile_markets_normalize_and_survive_an_omitting_put(client):
+    c, _ = client
+    base = {"seniority_terms": ["senior"], "required_tech": ["typescript"]}
+    body = c.put(
+        "/api/search-profile",
+        json={
+            **base,
+            "markets": [
+                {"country": "uk", "needs_sponsorship": True, "hybrid_cities": ["Edinburgh"]},
+                {"country": "US"},
+            ],
+        },
+    ).json()
+    expected = [{"country": "GB", "needs_sponsorship": True, "hybrid_cities": ["Edinburgh"]}]
+    assert body["markets"] == expected
+
+    # A PUT that predates markets (no field) leaves them; an empty list clears them.
+    assert c.put("/api/search-profile", json=base).json()["markets"] == expected
+    assert c.put("/api/search-profile", json={**base, "markets": []}).json()["markets"] == []
+
+
+def test_put_profile_rejects_unknown_country(client):
+    c, _ = client
+    resp = c.put(
+        "/api/search-profile",
+        json={"seniority_terms": ["senior"], "markets": [{"country": "Narnia"}]},
+    )
+    assert resp.status_code == 422
+    assert "Narnia" in resp.json()["detail"]
+
+
+def test_list_countries_offers_the_catalog_without_the_us(client):
+    c, _ = client
+    countries = c.get("/api/countries").json()
+    uk = next(row for row in countries if row["code"] == "GB")
+    assert uk["name"] == "United Kingdom" and "UK" in uk["aliases"]
+    assert all(row["code"] != "US" for row in countries)
+
+
 def test_post_recommendations_does_not_mutate_active_fields(client):
     c, _ = client
     c.put(

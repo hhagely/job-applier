@@ -10,6 +10,7 @@ from job_applier.filters.rules import (
     has_criteria,
     normalize_home_state,
     title_quick_fail,
+    union_markets,
     union_title_config,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "has_criteria",
     "normalize_home_state",
     "title_quick_fail",
+    "union_markets",
     "union_title_config",
 ]
