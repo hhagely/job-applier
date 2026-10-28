@@ -59,7 +59,12 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
     team = categories.get("team") or ""
     commitment = categories.get("commitment") or ""
 
-    remote = workplace_type == "remote" or looks_remote(location, *all_locations)
+    # A stated workplaceType wins, so a "hybrid" posting whose location list
+    # also names a remote option isn't read as remote. "unspecified" says nothing.
+    if workplace_type in ("remote", "hybrid", "onsite"):
+        remote = workplace_type == "remote"
+    else:
+        remote = looks_remote(location, *all_locations)
 
     description_html = item.get("description") or item.get("descriptionBody") or ""
     description_plain = item.get("descriptionPlain") or ""

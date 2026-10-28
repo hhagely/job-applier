@@ -9,12 +9,14 @@ crash between the ALTER and the backfill would skip the backfill forever.
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import Optional
 
 from sqlalchemy.engine import Connection
 from sqlmodel import SQLModel
 
+from job_applier.countries import posting_countries
 from job_applier.models.db import engine
 from job_applier.models.scoping import _active_profile_id_from, _insert_default_profile
 
@@ -38,6 +40,8 @@ def run() -> None:
     _ensure_resume_owner()
     # After every helper that adds a profile_id column.
     _ensure_profile_owner_required()
+    _ensure_countries_column()
+    _fix_stated_workplace_remote()
 
 
 def _table_cols(conn: Connection, table: str) -> set[str]:
@@ -471,6 +475,55 @@ def _ensure_match_columns() -> None:
             )
         if not has_tags:
             conn.exec_driver_sql("ALTER TABLE jobposting ADD COLUMN tags JSON")
+        conn.commit()
+
+
+def _ensure_countries_column() -> None:
+    """``jobposting.countries``: the source's structured countries, so the
+    US-only rule can read them on a re-match (which never loads ``raw``).
+
+    One-time backfill from each stored ``raw``, gated on the column. A posting
+    whose raw was pruned stays null and keeps the location-text check.
+    """
+    with engine().connect() as conn:
+        if "countries" in _table_cols(conn, "jobposting"):
+            return
+        _begin(conn)
+        conn.exec_driver_sql("ALTER TABLE jobposting ADD COLUMN countries JSON")
+        updates = []
+        for job_id, source, raw in conn.exec_driver_sql(
+            "SELECT id, source, raw FROM jobposting WHERE raw IS NOT NULL"
+        ):
+            try:
+                payload = json.loads(raw) if isinstance(raw, str) else raw
+            except ValueError:
+                continue
+            countries = posting_countries(source, payload)
+            if countries:
+                updates.append((json.dumps(countries), job_id))
+        if updates:
+            conn.exec_driver_sql(
+                "UPDATE jobposting SET countries = ? WHERE id = ?", updates
+            )
+        conn.commit()
+
+
+def _fix_stated_workplace_remote() -> None:
+    """Un-flag stored Ashby/Lever postings their board marked hybrid or on-site.
+
+    The adapters used to let ``isRemote`` / a "remote" location string override a
+    stated ``workplaceType``, so hybrid roles were stored as remote. This
+    corrects the stored flag from ``raw``; the next re-match then drops them via
+    the shared remote rule. Idempotent (a corrected row no longer matches), and a
+    pruned posting has no ``raw`` left to read, so it's untouched.
+    """
+    with engine().connect() as conn:
+        conn.exec_driver_sql(
+            "UPDATE jobposting SET remote = 0 "
+            "WHERE remote = 1 AND source IN ('ashby', 'lever') "
+            "AND lower(CASE WHEN json_valid(raw) "
+            "THEN json_extract(raw, '$.workplaceType') END) IN ('hybrid', 'onsite')"
+        )
         conn.commit()
 
 

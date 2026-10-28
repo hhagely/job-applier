@@ -4,8 +4,8 @@
 *ingest* persists — it belongs to none of them in particular, so it lives here.
 The date parsers are shared source-adapter helpers with the same property. The
 ``AppSetting`` key names for the AI configuration live here for the same reason:
-three routers read them and none owns them. This module deliberately has ZERO
-intra-package dependencies (only stdlib), so both ``job_applier.sources`` and
+three routers read them and none owns them. This module deliberately has no
+intra-package dependencies beyond the stdlib-only ``countries``, so both ``job_applier.sources`` and
 ``job_applier.filters`` can import it without forming the
 ``sources -> filters -> sources`` import cycle that used to require a
 ``TYPE_CHECKING`` guard in the filter and a lazy import in the source registry —
@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+
+from job_applier.countries import posting_countries
 
 # ---- AppSetting keys for the AI configuration ------------------------------
 #
@@ -158,3 +160,12 @@ class RawJob:
     posted_at: Optional[datetime] = None
     tags: list[str] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+    # Countries the source's structured fields list for the posting ("US" for
+    # the United States). Filled from ``raw`` here, so no adapter has to know
+    # about it; matching rebuilds a RawJob without raw and passes the stored
+    # ``JobPosting.countries`` instead.
+    countries: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.countries and self.raw:
+            self.countries = posting_countries(self.source, self.raw)
