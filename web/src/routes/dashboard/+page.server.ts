@@ -7,17 +7,20 @@ import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
 	const base = serverApiBase();
-	const [jobs, followups, statusCounts] = await Promise.all([
+	const [jobs, followups, statusCounts, pending] = await Promise.all([
 		// exclude_archived server-side: auto-archived low scorers outnumber live
 		// ones several times over, so filtering them out client-side spent almost
 		// the whole limit on rows this page throws away.
 		api.listJobs(fetch, base, { filter_status: 'passed', exclude_archived: true, limit: 500 }),
 		api.getFollowups(fetch, base),
-		api.getStatusCounts(fetch, base, { filter_status: 'passed' }).catch(() => null)
+		api.getStatusCounts(fetch, base, { filter_status: 'passed' }).catch(() => null),
+		// What "Score pending" will run, asked of the selection the run itself
+		// uses (same `include_stale` as the action below). Counting the loaded
+		// jobs here instead is how the button once read 27 for a 200-job run.
+		// A failed count only disables the button; it must not take the page down.
+		api.getPendingScoreCount(fetch, base, true).catch(() => ({ count: 0, run_size: 0 }))
 	]);
 	const scored = jobs.filter((j) => j.score != null);
-	// Unscored or stale-scored roles — the count the "Score pending" action targets.
-	const pending = jobs.filter((j) => j.score == null || j.score?.is_stale).length;
 
 	const strong = scored.filter((j) => scoreBand(j.score?.score) === 'strong').length;
 	// Whole-queue totals — these are lifetime counts, so they must not be limited
@@ -62,7 +65,9 @@ export const load: PageServerLoad = async ({ fetch }) => {
 			followupsDue: followups.length,
 			avg
 		},
-		pending,
+		// One run's size, and everything waiting when that's more than one run.
+		pending: pending.run_size,
+		pendingTotal: pending.count,
 		dist,
 		bySource,
 		topMatches,

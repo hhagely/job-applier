@@ -29,6 +29,8 @@ subscription instead of paying for API tokens.
 
    Stale scores (those against an older resume) are re-evaluated against the
    current resume. The previous score is preserved automatically in history.
+   The queue only holds jobs the user hasn't acted on: archived, drafted, and
+   applied-to jobs (and duplicates) are left out.
 
 4. **Score each job** against the rubric below. The total `score` must equal the sum
    of the five buckets and lie in `[0, 100]`.

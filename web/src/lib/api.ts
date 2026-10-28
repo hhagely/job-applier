@@ -584,6 +584,17 @@ export const api = {
 	getStaleScoreCount: (fetchFn: FetchFn, base: string) =>
 		call<{ count: number }>(fetchFn, base, '/api/scores/stale-count'),
 
+	/**
+	 * What a scoring run would cover, from the selection the run itself uses:
+	 * `count` jobs need a score, and one run takes `run_size` of them.
+	 */
+	getPendingScoreCount: (fetchFn: FetchFn, base: string, includeStale = false) =>
+		call<{ count: number; run_size: number }>(
+			fetchFn,
+			base,
+			`/api/pending-match/count?include_stale=${includeStale}`
+		),
+
 	/** Keep scores from the previous resume by re-stamping them onto the active one. */
 	adoptScores: (fetchFn: FetchFn, base: string) =>
 		call<{ count: number }>(fetchFn, base, '/api/scores/adopt', { method: 'POST' }),

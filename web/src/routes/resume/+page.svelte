@@ -16,6 +16,9 @@
 	// Only the upload action sets `staleCount`, so answering the prompt (either
 	// button) replaces `form` and retires it.
 	let staleCount = $derived(form?.staleCount ?? 0);
+	// The size of the run "Re-score" would start, not a subset of `staleCount`:
+	// it also takes unscored jobs, and skips ones moved past new/interested.
+	let rescoreCount = $derived(form?.rescoreCount ?? 0);
 	let keptCount = $derived(form?.kept ?? 0);
 	let owner = $derived(data.profileName ?? 'this profile');
 	let switchingId = $state<number | null>(null);
@@ -96,14 +99,19 @@
 								<button type="submit" class="btn">Keep existing scores</button>
 							</form>
 							<form method="POST" action="?/rescoreStale" use:enhance={rescore.enhance}>
-								<button type="submit" class="btn primary" disabled={rescore.busy}>
-									{rescore.busy ? 'Scoring…' : `Re-score ${staleCount}`}
+								<button
+									type="submit"
+									class="btn primary"
+									disabled={rescore.busy || rescoreCount === 0}
+								>
+									{rescore.busy ? 'Scoring…' : `Re-score ${rescoreCount}`}
 								</button>
 							</form>
 						</div>
 						<div class="hint">
 							Typo or reworded bullet? Keep them — re-scoring spends an AI call per job. Rewrote a
-							section, or changed your titles or tech? Re-score.
+							section, or changed your titles or tech? Re-score. Re-scoring only covers jobs still
+							new or marked interested, plus any not scored yet; the rest keep the score they have.
 						</div>
 					</div>
 				{/if}

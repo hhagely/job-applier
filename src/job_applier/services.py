@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, false, func, or_
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
@@ -236,41 +236,78 @@ def queue_status_counts(
 # ---- pending-match selection ----------------------------------------------
 
 
+#: Most jobs one "Score pending" run takes. A first scrape can pass thousands of
+#: postings, and scoring them all in one go would drain a subscription window.
+SCORE_RUN_LIMIT = 200
+
+#: The facets a job can sit in and still be worth a baseline score: the ones the
+#: user hasn't acted on. An auto-archived low scorer stays archived whatever a
+#: re-score says, and a new baseline on a job already drafted or applied to
+#: changes nothing, so scoring either is an AI call nobody sees the result of.
+SCORABLE_FACETS = frozenset(
+    {UNTRIAGED, ApplicationStatus.new.value, ApplicationStatus.interested.value}
+)
+
+
+# The same set as Application statuses; untriaged is "no Application row".
+_SCORABLE_STATUSES = [ApplicationStatus(f) for f in SCORABLE_FACETS if f != UNTRIAGED]
+
+
+def _where_pending(stmt, session: Session, *, include_stale: bool):
+    """Narrow ``stmt`` (which must select from ``JobPosting``) to the jobs the
+    pending-match selection covers. The one definition behind both the scoring
+    run and the count the UI shows for it, so the button and the progress total
+    can't disagree. Runs entirely in SQL, so counting never loads a posting."""
+    resume = active_resume(session) if include_stale else None
+    # Tailored scores carry no resume id, so they are never stale.
+    stale = (
+        and_(MatchScore.resume_id.is_not(None), MatchScore.resume_id != resume.id)  # type: ignore[union-attr]
+        if resume
+        else false()
+    )
+    # Both joins are profile-scoped by the session hook, like queue_status_counts.
+    return (
+        stmt.outerjoin(Application, Application.job_id == JobPosting.id)  # type: ignore[arg-type]
+        .outerjoin(MatchScore, MatchScore.job_id == JobPosting.id)  # type: ignore[arg-type]
+        .where(JobPosting.id.in_(profiles.queue_job_ids(session, FilterStatus.passed)))  # type: ignore[union-attr]
+        # A duplicate is hidden behind the posting it duplicates, so its score
+        # would never be read.
+        .where(JobPosting.duplicate_of.is_(None))  # type: ignore[union-attr]
+        .where(or_(Application.id.is_(None), Application.status.in_(_SCORABLE_STATUSES)))  # type: ignore[union-attr, attr-defined]
+        .where(or_(MatchScore.id.is_(None), stale))  # type: ignore[union-attr]
+    )
+
+
 def select_pending_jobs(
     session: Session, *, limit: int = 25, include_stale: bool = False
 ) -> list[JobPosting]:
-    """Jobs that passed the hard filter and need scoring.
+    """Jobs that passed the hard filter and need scoring, newest first.
 
     Always includes unscored jobs. With ``include_stale``, also includes jobs
-    whose only score is against a non-active resume. Limited to the active
-    profile's postings, so a re-score never runs one profile's jobs against
-    another profile's resume.
+    whose only score is against a non-active resume. Only jobs the user hasn't
+    acted on (``SCORABLE_FACETS``) and that aren't duplicates qualify. Limited
+    to the active profile's postings, so a re-score never runs one profile's
+    jobs against another profile's resume.
     """
-    # Eager-load the relationships the selection + its consumers read per row
-    # (score for _needs_scoring; company/application for the pending-match
-    # serializer and the scoring loop), avoiding a lazy load per job.
+    # Eager-load what the pending-match serializer and the scoring loop read per
+    # row (company, score, application), avoiding a lazy load per job.
     stmt = (
-        select(JobPosting)
-        .where(JobPosting.id.in_(profiles.queue_job_ids(session, FilterStatus.passed)))  # type: ignore[union-attr]
+        _where_pending(select(JobPosting), session, include_stale=include_stale)
         .options(
             selectinload(JobPosting.company),
             selectinload(JobPosting.score),
             selectinload(JobPosting.application),
         )
         .order_by(JobPosting.ingested_at.desc())
+        .limit(limit)
     )
-    jobs = list(session.exec(stmt).all())
-    active_id = active_resume(session).id if include_stale and active_resume(session) else None
+    return list(session.exec(stmt).all())
 
-    def _needs_scoring(j: JobPosting) -> bool:
-        if j.score is None:
-            return True
-        if include_stale and active_id is not None:
-            sid = j.score.resume_id
-            return sid is not None and sid != active_id
-        return False
 
-    return [j for j in jobs if _needs_scoring(j)][:limit]
+def count_pending_jobs(session: Session, *, include_stale: bool = False) -> int:
+    """How many jobs ``select_pending_jobs`` would return with no limit."""
+    stmt = select(func.count(JobPosting.id)).select_from(JobPosting)
+    return session.exec(_where_pending(stmt, session, include_stale=include_stale)).one()
 
 
 # ---- bulk status ----------------------------------------------------------

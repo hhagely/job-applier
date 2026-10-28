@@ -160,6 +160,42 @@ def test_pending_match_include_stale_skips_tailored_scores(client):
     assert all(j["id"] != job_id for j in rows)
 
 
+def test_pending_match_skips_jobs_already_acted_on_and_duplicates(client):
+    """Regression: the selection ignored application status, so a resume switch
+    sent every auto-archived low scorer back through the scorer (a 200-job run
+    behind a button that read 27). The count endpoint is what the button shows,
+    so it has to agree with the selection."""
+    c, engine = client
+    ids = {
+        name: _seed_job(engine, source_id=name)
+        for name in ("open", "interested", "archived", "applied", "dupe", "unscored")
+    }
+    r1 = _seed_resume(engine, filename="v1.pdf", active=True)
+    for name in ("open", "interested", "archived", "applied", "dupe"):
+        c.post(f"/api/jobs/{ids[name]}/score", json={"score": 70, "rubric": {}})
+    for name in ("interested", "archived", "applied"):
+        c.post(
+            "/api/jobs/bulk-status", json={"job_ids": [ids[name]], "status": name}
+        )
+    with Session(engine) as s:
+        dupe = s.get(JobPosting, ids["dupe"])
+        dupe.duplicate_of = ids["open"]
+        s.add(dupe)
+        s.commit()
+
+    _deactivate(engine, r1)
+    _seed_resume(engine, filename="v2.pdf", active=True)
+
+    rows = c.get("/api/pending-match?include_stale=true").json()
+    assert {j["id"] for j in rows} == {ids["open"], ids["interested"], ids["unscored"]}
+    assert c.get("/api/pending-match/count?include_stale=true").json() == {
+        "count": 3,
+        "run_size": 3,
+    }
+    # Every stale score still counts for "Keep existing scores".
+    assert c.get("/api/scores/stale-count").json() == {"count": 5}
+
+
 def test_stale_count_endpoint(client):
     c, engine = client
     stale_a = _seed_job(engine, source_id="a")

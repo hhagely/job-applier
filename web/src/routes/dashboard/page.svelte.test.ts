@@ -43,6 +43,7 @@ function data(overrides = {}) {
 		profile: null,
 		kpis: { jobs: 12, scored: 8, unreviewed: 5, strong: 3, applied: 4, rejected: 1, followupsDue: 2, avg: 77 },
 		pending: 1,
+		pendingTotal: 1,
 		dist: [
 			{ label: '80–100', band: 'strong', n: 3 },
 			{ label: '65–79', band: 'good', n: 4 },
@@ -74,12 +75,12 @@ describe('dashboard Score-pending button', () => {
 	});
 
 	it('shows an enabled "Score pending (N)" button when a provider is set', () => {
-		render(Page, { props: { data: data({ pending: 1 }) } });
+		render(Page, { props: { data: data({ pending: 1, pendingTotal: 1 }) } });
 		expect(screen.getByRole('button', { name: /Score pending \(1\)/ })).toBeEnabled();
 	});
 
 	it('disables the button when nothing is pending', () => {
-		render(Page, { props: { data: data({ pending: 0 }) } });
+		render(Page, { props: { data: data({ pending: 0, pendingTotal: 0 }) } });
 		expect(screen.getByRole('button', { name: /Score pending \(0\)/ })).toBeDisabled();
 	});
 });

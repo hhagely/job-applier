@@ -360,7 +360,7 @@ def score_pending(
     model: Optional[str] = None,
     job_ids: Optional[list[int]] = None,
     include_stale: bool = True,
-    limit: int = 200,
+    limit: int = services.SCORE_RUN_LIMIT,
     progress_cb: Optional[Callable[[JobScoreOutcome], None]] = None,
 ) -> list[JobScoreOutcome]:
     """Score a batch of jobs, then auto-archive any *untriaged* job that scored `< 60`.
