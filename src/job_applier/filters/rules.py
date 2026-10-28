@@ -39,6 +39,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from job_applier.contracts import RawJob
+from job_applier.countries import US
 from job_applier.models.db import FilterStatus, SearchProfile
 
 
@@ -582,11 +583,19 @@ def evaluate_shared(raw: RawJob) -> FilterResult:
     if ONSITE_HINTS.search(title) or ONSITE_HINTS.search(raw.location or ""):
         return FilterResult(FilterStatus.dropped, "title/location indicates on-site or hybrid")
 
-    # 2. US-only location (when a country/region is named)
+    # 2. US-only location. When the source sends structured countries they
+    #    decide: none of them US means the role isn't done from the US, however
+    #    bare the location text ("Bengaluru-HQ"), unless that text itself names
+    #    the US (a Lever role filed under Canada with a "Remote - US" location);
+    #    US among them keeps it, even beside "Vancouver". Only a source with no
+    #    structured country falls back to guessing from the text.
     location = raw.location or ""
-    if NON_US_LOCATION.search(location) and not _has_us_hint(location):
-        return FilterResult(FilterStatus.dropped, "location is non-US only")
-    if _is_specific_non_us(location):
+    if raw.countries:
+        if US not in raw.countries and not _has_us_hint(location):
+            return FilterResult(FilterStatus.dropped, "location is non-US only")
+    elif (
+        NON_US_LOCATION.search(location) and not _has_us_hint(location)
+    ) or _is_specific_non_us(location):
         return FilterResult(FilterStatus.dropped, "location is non-US only")
 
     # 3. Sales / pre-sales / biz-dev titles

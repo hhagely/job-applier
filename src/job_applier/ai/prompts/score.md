@@ -50,8 +50,12 @@ The total `score` must equal the sum of the five bucket points and lie in `[0, 1
 
 ## Hard rules — force the score down when:
 
-- The job requires on-site presence in a single location despite being tagged remote:
-  score `0`, reasoning explains.
+- The job is not fully remote: it requires in-office presence on any schedule
+  (on-site, hybrid, "N days a week in the office"). Score `0`, reasoning explains.
+  Optional office access, or occasional travel (an offsite, a week a quarter), is
+  still remote.
+- The job must be done from outside the United States (e.g. based in or hiring
+  only in another country): score `0`, reasoning explains.
 - The role is below Senior (e.g. "Senior" in the title but the body says 2-4 years
   total): score `<= 30` and explain.
 {{STATE_RULE}}

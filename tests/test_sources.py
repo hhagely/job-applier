@@ -419,6 +419,16 @@ class TestLever:
         r = next(lever_normalize("co", item))
         assert r.remote is True
 
+    def test_stated_hybrid_overrides_remote_location(self):
+        item = {
+            "id": "1",
+            "text": "Staff Engineer",
+            "workplaceType": "hybrid",
+            "categories": {"location": "Remote or NYC", "allLocations": ["Remote", "NYC"]},
+        }
+        r = next(lever_normalize("co", item))
+        assert r.remote is False
+
     def test_ms_timestamp_and_plain_description_fallback(self):
         item = {
             "id": "2",
@@ -478,6 +488,31 @@ class TestAshby:
         }
         r = next(ashby_normalize("Co", item))
         assert r.remote is True
+
+    def test_stated_hybrid_overrides_is_remote(self):
+        # Ashby sends isRemote=True on Hybrid postings; the workplaceType wins.
+        item = {
+            "id": "x",
+            "title": "Staff Software Engineer",
+            "location": "Bengaluru-HQ",
+            "workplaceType": "Hybrid",
+            "isRemote": True,
+        }
+        r = next(ashby_normalize("Co", item))
+        assert r.remote is False
+
+    def test_countries_from_primary_and_secondary_addresses(self):
+        item = {
+            "id": "x",
+            "title": "Staff Software Engineer",
+            "location": "Bengaluru-HQ",
+            "address": {"postalAddress": {"addressCountry": "India"}},
+            "secondaryLocations": [
+                {"location": "Remote", "address": {"postalAddress": {"addressCountry": "United States"}}}
+            ],
+        }
+        r = next(ashby_normalize("Co", item))
+        assert r.countries == ["India", "US"]
 
     def test_blank_title_skipped(self):
         item = {"id": "x", "title": ""}

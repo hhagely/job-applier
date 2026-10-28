@@ -2,8 +2,8 @@
 
 The scrape stores every posting that passes the *shared* rules once, for
 everyone (see ``ingest``). Matching is the second, local step: for one profile,
-evaluate its blacklist and personal filter (``filters.evaluate_profile``) over
-the stored postings and record the verdict as a ``JobProfileLink`` — passed,
+evaluate its blacklist and the hard filter (``filters.evaluate``: the shared
+rules again, then the profile's own) over the stored postings and record the verdict as a ``JobProfileLink`` — passed,
 manual, or dropped. A profile's queue is its passed/manual links.
 
 Recording drops too is what keeps re-scrapes cheap: a link's existence means
@@ -32,7 +32,7 @@ from sqlmodel import Session, select
 
 from job_applier.ai import tasks
 from job_applier.dedupe import normalize_company
-from job_applier.filters import FilterConfig, config_for, evaluate_profile
+from job_applier.filters import FilterConfig, config_for, evaluate
 from job_applier.models.db import (
     Application,
     ApplicationStatus,
@@ -86,6 +86,7 @@ def _to_raw(row) -> RawJob:  # noqa: ANN001
         location=row.location,
         remote=row.remote,
         tags=list(row.tags or []),
+        countries=list(row.countries or []),
     )
 
 
@@ -99,7 +100,10 @@ def _blacklisted(row, blacklist: frozenset[str]) -> bool:  # noqa: ANN001
 def _verdict(row, cfg: FilterConfig, blacklist: frozenset[str]) -> Verdict:  # noqa: ANN001
     if _blacklisted(row, blacklist):
         return FilterStatus.dropped, BLACKLISTED_REASON
-    result = evaluate_profile(_to_raw(row), cfg)
+    # The shared rules again, not just the profile's: they already passed at
+    # scrape time, but re-running them is what lets a tightened shared rule (or
+    # a corrected ``remote`` flag) reach postings stored before the change.
+    result = evaluate(_to_raw(row), cfg)
     return result.status, result.reason
 
 
@@ -162,6 +166,7 @@ def match_profile(
                 JobPosting.location,
                 JobPosting.remote,
                 JobPosting.tags,
+                JobPosting.countries,
                 Company.name.label("company_name"),
                 pruned.label("pruned"),
             )

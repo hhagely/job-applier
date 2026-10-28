@@ -81,6 +81,10 @@ class JobPosting(SQLModel, table=True):
     # after the scrape can be matched against the stored posting exactly as it
     # would have been at ingest. Null on postings saved before the column.
     tags: Optional[list[str]] = Field(default=None, sa_column=Column(JSON))
+    # The source's structured countries (RawJob.countries), kept for the same
+    # reason: re-matching reads them without the raw payload. Null when the
+    # source sends none, or the posting's raw was pruned before the column.
+    countries: Optional[list[str]] = Field(default=None, sa_column=Column(JSON))
 
     # Legacy columns ``filter_status`` / ``filter_reason``: always ``passed``
     # (only postings that pass the shared rules are stored, and the migration

@@ -65,12 +65,13 @@ def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
         s.get("location") or "" for s in secondary if isinstance(s, dict)
     )
     workplace_type = (item.get("workplaceType") or "").strip()
-    is_remote_flag = bool(item.get("isRemote"))
-    remote = (
-        is_remote_flag
-        or workplace_type.lower() == "remote"
-        or looks_remote(location, secondary_text)
-    )
+    # A stated workplaceType wins: Ashby sets isRemote on Hybrid postings too
+    # ("Bengaluru-HQ", Hybrid, isRemote=True), so the flag and the location
+    # text are only a fallback for postings that don't say.
+    if workplace_type:
+        remote = workplace_type.lower() == "remote"
+    else:
+        remote = bool(item.get("isRemote")) or looks_remote(location, secondary_text)
 
     description = item.get("descriptionHtml") or item.get("descriptionPlain") or ""
     department = (item.get("department") or "").strip()

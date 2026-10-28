@@ -280,6 +280,7 @@ def ingest_one(
         duplicate_of=duplicate_of,
         raw=raw.raw,
         tags=list(raw.tags),
+        countries=list(raw.countries) or None,
         company_id=company_id,
     )
     if duplicate_of is not None:

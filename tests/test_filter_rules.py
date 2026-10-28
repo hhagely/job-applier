@@ -67,6 +67,25 @@ def test_drops_non_us_city_with_non_us_region_code(location: str, make_raw):
     assert "non-US" in (result.reason or "")
 
 
+def test_drops_bare_office_name_when_source_country_is_not_us(make_raw):
+    # "Bengaluru-HQ" names no country; the source's structured country does.
+    result = evaluate(make_raw(location="Bengaluru-HQ", countries=["India"]))
+    assert result.status is FilterStatus.dropped
+    assert "non-US" in (result.reason or "")
+
+
+@pytest.mark.parametrize(
+    ("location", "countries"),
+    [
+        ("Vancouver or Remote", ["Canada", "US"]),  # US among several countries
+        ("Remote - US", ["CA"]),  # location text names the US itself
+    ],
+)
+def test_keeps_posting_whose_countries_or_text_include_us(location, countries, make_raw):
+    result = evaluate(make_raw(location=location, countries=countries))
+    assert result.status is FilterStatus.passed
+
+
 def test_drops_non_senior_title(make_raw):
     result = evaluate(make_raw(title="Software Engineer"))
     assert result.status is FilterStatus.dropped

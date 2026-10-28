@@ -61,6 +61,7 @@ def make_raw() -> Callable[..., RawJob]:
         location: str | None = "Remote — US",
         remote: bool = True,
         tags: list[str] | None = None,
+        countries: list[str] | None = None,
     ) -> RawJob:
         return RawJob(
             source="test",
@@ -72,6 +73,7 @@ def make_raw() -> Callable[..., RawJob]:
             location=location,
             remote=remote,
             tags=tags or [],
+            countries=countries or [],
         )
 
     return _make

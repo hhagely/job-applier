@@ -355,6 +355,19 @@ def test_rematch_reaches_old_postings_already_in_the_queue(fresh_db):
     assert _verdicts(fresh_db, p) == {job: FilterStatus.dropped}
 
 
+def test_rematch_applies_the_shared_rules_to_stored_postings(fresh_db):
+    # A posting stored before a shared rule tightened (here: its remote flag was
+    # corrected after the fact) must leave the queue on the next re-match.
+    p = _profile(fresh_db, "A", **TS)
+    (job,) = _store(fresh_db, _raw(1))
+    matching.match_profile(p)
+    with Session(fresh_db) as s:
+        s.get(JobPosting, job).remote = False
+        s.commit()
+    matching.match_profile(p, rematch=True)
+    assert _verdicts(fresh_db, p) == {job: FilterStatus.dropped}
+
+
 def test_a_kept_verdict_keeps_its_reason(fresh_db):
     # A manual verdict on a job you applied to stays manual, banner reason intact.
     p = _profile(fresh_db, "A", **TS)
