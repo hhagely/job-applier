@@ -1,20 +1,21 @@
-import { api, errorReason, type SearchProfileBody } from '$lib/api';
+import { api, errorReason, type Market, type SearchProfileBody } from '$lib/api';
 import { serverApiBase } from '$lib/apiBase.server';
 import { failStatus, formId } from '$lib/forms.server';
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const [profile, profiles, resumes, blacklist, coverage, watched] = await Promise.all([
+	const [profile, profiles, resumes, blacklist, coverage, watched, countries] = await Promise.all([
 		api.getSearchProfile(fetch, serverApiBase()),
 		api.listSearchProfiles(fetch, serverApiBase()),
 		api.listResumes(fetch, serverApiBase()),
 		api.listBlacklist(fetch, serverApiBase()),
 		api.getCompanyCoverage(fetch, serverApiBase()),
-		api.listWatchedCompanies(fetch, serverApiBase())
+		api.listWatchedCompanies(fetch, serverApiBase()),
+		api.listCountries(fetch, serverApiBase())
 	]);
 	const hasResume = resumes.some((r) => r.is_active);
-	return { profile, profiles, resumes, hasResume, blacklist, coverage, watched };
+	return { profile, profiles, resumes, hasResume, blacklist, coverage, watched, countries };
 };
 
 function splitList(raw: FormDataEntryValue | null): string[] {
@@ -23,6 +24,18 @@ function splitList(raw: FormDataEntryValue | null): string[] {
 		.split(/[\n,]/)
 		.map((s) => s.trim())
 		.filter(Boolean);
+}
+
+// The markets editor posts its rows as one JSON field. Absent (or unreadable)
+// leaves the profile's countries as they are: the PUT treats undefined as "keep".
+function readMarkets(raw: FormDataEntryValue | null): Market[] | undefined {
+	if (typeof raw !== 'string') return undefined;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return Array.isArray(parsed) ? (parsed as Market[]) : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function readProfile(form: FormData): SearchProfileBody {
@@ -34,7 +47,8 @@ function readProfile(form: FormData): SearchProfileBody {
 		required_tech: splitList(form.get('required_tech')),
 		excluded_tech: splitList(form.get('excluded_tech')),
 		extracted_skills: splitList(form.get('extracted_skills')),
-		home_state: typeof homeState === 'string' && homeState.trim() ? homeState.trim() : null
+		home_state: typeof homeState === 'string' && homeState.trim() ? homeState.trim() : null,
+		markets: readMarkets(form.get('markets'))
 	};
 }
 

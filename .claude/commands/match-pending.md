@@ -67,7 +67,14 @@ home state is configured), the two-to-three-sentence reasoning guidance, and the
 JSON object shape you POST as `rubric` + `score` + `reasoning`. The `{{RESUME_TEXT}}` /
 `{{TITLE}}` / `{{COMPANY}}` / `{{LOCATION}}` / `{{STATE_RULE}}` / `{{DESCRIPTION}}`
 placeholders map to the resume text, the configured home-state rule, and each queue
-item's fields.
+item's fields. `{{WHERE_RULE}}` holds the remote and country hard rules: render it the
+way `_where_rule_clause` in [`scoring.py`](../../src/job_applier/ai/scoring.py) does from
+the profile's `markets` (`GET /api/search-profile`). With no markets that's "not fully
+remote: score 0" plus "must be done from outside the United States: score 0"; each added
+country widens the country rule (the candidate will relocate, so the resume's current
+address never counts against a role there), its `hybrid_cities` excuse office presence
+there, and `needs_sponsorship` zeroes a role there only when it *explicitly* won't sponsor
+or requires an existing right to work. Silence about sponsorship is not a refusal.
 
 When invoked in Claude Code, use `scored_by: "claude-code"` in the POST body (the
 in-app path uses `"<provider>-cli"`).

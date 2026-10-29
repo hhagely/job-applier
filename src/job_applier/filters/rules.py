@@ -2,13 +2,19 @@
 
 Shared rules (``evaluate_shared``, run by ingest for everyone; a failure means
 the posting is never stored, and they never return ``manual``):
-  1. Must be fully remote.
-  2. Location must not be non-US-only (when a country is named).
+  1. Must be fully remote, or hybrid / on-site in a city a searched country
+     allows (``Market.hybrid_cities``).
+  2. Must be workable from a searched country: the US, plus the countries any
+     profile added (``SearchProfile.markets``; ingest uses ``union_markets``).
   3. Title must not be a sales / pre-sales / biz-dev role.
   4. Posting must not be a crypto / blockchain / web3 role.
 
 Per-profile rules (``evaluate_profile``, run by ``matching`` for each profile
 over the stored postings; the verdict lands on that profile's JobProfileLink):
+  4b. Rules 1-2 again with this profile's own countries; a location naming
+      only a region that covers one ("Remote - EMEA") is ``manual``.
+  4c. A posting that won't sponsor a visa is dropped when every country it's
+      workable from (for this profile) is one the profile needs sponsorship in.
   5. If the posting names an explicit US-state allow-list, the profile's home
      state must be in it. Skipped when no home state is configured.
   6. Title must indicate one of the configured seniority terms.
@@ -39,7 +45,17 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from job_applier.contracts import RawJob
-from job_applier.countries import US
+from job_applier.countries import (
+    COUNTRY_BY_CODE,
+    REGIONS,
+    US,
+    US_MARKET,
+    Market,
+    markets_from_rows,
+    normalize_country,
+    text_countries,
+    text_regions,
+)
 from job_applier.models.db import FilterStatus, SearchProfile
 
 
@@ -130,6 +146,9 @@ class FilterConfig:
     # the derived two-letter code ("MO") used for abbreviation matching.
     home_state: Optional[str] = None
     home_state_abbr: Optional[str] = None
+    # Countries the posting may be done from: the US first, then any the profile
+    # added (``countries.markets_from_rows``).
+    markets: tuple[Market, ...] = (US_MARKET,)
 
     seniority_re: Optional[re.Pattern[str]] = None
     title_re: Optional[re.Pattern[str]] = None
@@ -148,6 +167,7 @@ def build_config(
     excluded_tech: list[str],
     title_terms: Optional[list[str]] = None,
     home_state: Optional[str] = None,
+    markets: tuple[Market, ...] = (US_MARKET,),
 ) -> FilterConfig:
     seniority_re = (
         re.compile(rf"\b({_alt_pattern(seniority_terms)})\b", re.IGNORECASE)
@@ -192,6 +212,7 @@ def build_config(
         excluded_tech=list(excluded_tech),
         home_state=canonical_state,
         home_state_abbr=STATE_ABBREV_BY_NAME.get(canonical_state) if canonical_state else None,
+        markets=markets,
         seniority_re=seniority_re,
         title_re=title_re,
         required_long_re=required_long_re,
@@ -267,19 +288,21 @@ def config_for(profile: Optional[SearchProfile]) -> FilterConfig:
     there's no row). ``matching`` builds one of these per profile."""
     if profile is None:
         return _BUILTIN_DEFAULT
+    markets = markets_from_rows(profile.markets)
     if not has_criteria(profile):
         # Fall back to the built-in role/tech defaults, but still honor the
-        # profile's home state. The state-allow-list rule is independent of the
-        # tech lists, and the onboarding wizard sets the state *before* any roles
-        # exist, so a fresh profile (empty lists) must not silently drop the
-        # state the user just chose.
+        # profile's home state and countries. Neither depends on the tech lists,
+        # and the onboarding wizard sets the state *before* any roles exist, so
+        # a fresh profile (empty lists) must not silently drop the state the
+        # user just chose.
         canonical = _canonical_state(profile.home_state)
-        if canonical is None:
+        if canonical is None and markets == _BUILTIN_DEFAULT.markets:
             return _BUILTIN_DEFAULT
         return replace(
             _BUILTIN_DEFAULT,
             home_state=canonical,
-            home_state_abbr=STATE_ABBREV_BY_NAME.get(canonical),
+            home_state_abbr=STATE_ABBREV_BY_NAME.get(canonical) if canonical else None,
+            markets=markets,
         )
     return build_config(
         role_titles=profile.role_titles,
@@ -288,6 +311,7 @@ def config_for(profile: Optional[SearchProfile]) -> FilterConfig:
         required_tech=profile.required_tech,
         excluded_tech=profile.excluded_tech,
         home_state=profile.home_state,
+        markets=markets,
     )
 
 
@@ -350,34 +374,10 @@ CRYPTO_BLOCKCHAIN = re.compile(
     re.IGNORECASE,
 )
 
-# Non-US country / region / major-city tokens. If the location names one of these
-# AND has no US marker, drop. "Remote", "Distributed", "Anywhere" with no country
-# is left to scoring rather than filtered here.
-NON_US_LOCATION = re.compile(
-    r"\b("
-    r"canada|mexico|brazil|argentina|chile|colombia|peru|"
-    r"united\s+kingdom|england|scotland|wales|ireland|"
-    r"germany|france|spain|portugal|italy|netherlands|belgium|luxembourg|"
-    r"poland|romania|ukraine|austria|switzerland|"
-    r"sweden|norway|denmark|finland|iceland|"
-    r"czech|hungary|slovakia|bulgaria|greece|estonia|latvia|lithuania|"
-    r"japan|china|korea|singapore|india|indonesia|philippines|vietnam|thailand|malaysia|"
-    r"australia|new\s+zealand|"
-    r"south\s+africa|nigeria|kenya|egypt|morocco|"
-    r"israel|turkey|uae|saudi(\s+arabia)?|qatar|"
-    r"emea|apac|latam|"
-    r"london|berlin|munich|hamburg|paris|madrid|barcelona|lisbon|amsterdam|dublin|"
-    r"rome|milan|warsaw|prague|stockholm|oslo|copenhagen|helsinki|"
-    r"tokyo|seoul|sydney|melbourne|brisbane|"
-    r"toronto|vancouver|montreal|ottawa|"
-    r"sao\s+paulo|mexico\s+city|buenos\s+aires|bogot[aá]"
-    r")\b",
-    re.IGNORECASE,
-)
 # Country-name tokens are case-insensitive, but bare "US" stays case-sensitive
 # so it doesn't match every appearance of the English word "us".
 _US_HINT_CI = re.compile(
-    r"\b(united\s+states|usa|u\.s\.a\.|u\.s\.|americas)\b",
+    r"\b(united\s+states|usa|u\.s\.a\.|u\.s\.|americas|north\s+america)\b",
     re.IGNORECASE,
 )
 _US_HINT_CS = re.compile(r"\bUS\b|\bUS[-\s]")
@@ -395,6 +395,10 @@ _US_STATE_ABBREVS = (
     "WI WY DC"
 ).split()
 _US_STATE_ABBREV = re.compile(r",\s*(" + "|".join(_US_STATE_ABBREVS) + r")\b")
+# The whole "City, ST" — a US town, whatever foreign city shares its name.
+_US_CITY_STATE = re.compile(
+    r"[A-Za-z][A-Za-z.'\- ]*,\s*(?:" + "|".join(_US_STATE_ABBREVS) + r")\b"
+)
 
 
 def _has_us_hint(location: str) -> bool:
@@ -405,20 +409,11 @@ def _has_us_hint(location: str) -> bool:
     )
 
 
-# A "City, X[, Y]" pattern. Used as a fallback signal: any specific-place
-# location that lacks a US hint is treated as non-US, even if its country
-# isn't enumerated in NON_US_LOCATION.
+# A "City, X[, Y]" pattern. A specific place the catalog can't name and that
+# carries no US hint is treated as somewhere outside every searchable country.
 _SPECIFIC_LOCATION = re.compile(
     r"[A-Za-z][A-Za-z\s.'\-]{1,40},\s*[A-Za-z][A-Za-z\s.'\-]{1,40}"
 )
-
-
-def _is_specific_non_us(location: str) -> bool:
-    if not location:
-        return False
-    if _has_us_hint(location):
-        return False
-    return bool(_SPECIFIC_LOCATION.search(location))
 
 
 # US states + DC, full names. Used to detect explicit state allow-lists in the
@@ -510,6 +505,132 @@ def _haystack(raw: RawJob) -> str:
     return "\n".join(parts)
 
 
+# A posting saying it won't sponsor a work visa, or that the hire must already
+# have the right to work. Only consulted for a country the profile needs
+# sponsorship in, so a US "must be authorized without sponsorship" line never
+# costs a profile that searches the US.
+NO_SPONSORSHIP = re.compile(
+    r"\b(?:"
+    r"(?:unable|not\s+able|cannot|can\s*not|can't|won't|will\s+not|do\s+not|don't|does\s+not|doesn't)"
+    r"\s+(?:to\s+)?(?:currently\s+)?(?:offer\s+|provide\s+|support\s+)?(?:visa\s+)?sponsor"
+    r"|no\s+(?:visa\s+)?sponsorship"
+    r"|sponsorship\s+(?:is\s+)?(?:not\s+|un)available"
+    r"|without\s+(?:the\s+need\s+for\s+)?(?:current\s+or\s+future\s+)?(?:visa\s+)?sponsorship"
+    r"|(?:must|need\s+to|required\s+to)\s+(?:already\s+)?(?:have|hold|possess)\s+"
+    r"(?:the\s+|an?\s+)?(?:existing\s+|full\s+|valid\s+)?right\s+to\s+work"
+    r")",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class _Where:
+    """Whether a posting can be done from one of a profile's countries.
+
+    ``markets`` are the profile's markets it can be done from (all of them for a
+    location that names nowhere, like "Remote"), which the sponsorship rule
+    reads; ``reason`` explains a drop or a ``manual``.
+    """
+
+    status: FilterStatus
+    reason: Optional[str] = None
+    markets: tuple[Market, ...] = ()
+
+
+def _place(raw: RawJob) -> tuple[set[str], set[str], bool]:
+    """Where the posting says it can be done: (countries, region countries,
+    unknown-foreign).
+
+    When the source sends structured countries they decide, plus the US if the
+    location text names it (a Lever role filed under Canada with a "Remote - US"
+    location; "Bengaluru-HQ" under India stays India). Only a source with no
+    structured country is placed from the text, where a "City, ST" US town is
+    taken out first so "Edinburgh, TX" isn't read as Scotland. A region word
+    ("EMEA") only counts when no country is named, and a "City, X" place the
+    catalog can't name, with no US hint, is somewhere outside every searchable
+    country.
+    """
+    location = raw.location or ""
+    us = {US} if _has_us_hint(location) else set()
+    structured = {c for c in map(normalize_country, raw.countries) if c}
+    if structured:
+        countries = structured | us
+    else:
+        countries = text_countries(_US_CITY_STATE.sub(" ", location)) | us
+    regions: set[str] = set()
+    if not countries:
+        for word in text_regions(location):
+            regions |= REGIONS[word]
+    unknown = not countries and not regions and bool(_SPECIFIC_LOCATION.search(location))
+    return countries, regions, unknown
+
+
+def _city_named(location: str, city: str) -> bool:
+    return bool(re.search(rf"\b{_alt_pattern([city])}\b", location, re.IGNORECASE))
+
+
+def _where(raw: RawJob, markets: tuple[Market, ...]) -> _Where:
+    """Rules 1-2: the posting must be workable from one of ``markets``: fully
+    remote, or hybrid / on-site in a city a market allows, and located in one of
+    the markets' countries. A location naming only a region that covers one of
+    them ("Remote - EMEA" for a UK search) is ``manual``; the user decides."""
+    location = raw.location or ""
+    countries, regions, unknown = _place(raw)
+    by_code = {m.country: m for m in markets}
+
+    if countries:
+        accepting = tuple(by_code[c] for c in countries if c in by_code)
+    elif regions:
+        accepting = tuple(by_code[c] for c in sorted(regions) if c in by_code)
+    elif unknown:
+        accepting = ()
+    else:
+        accepting = markets  # names nowhere ("Remote"): left to scoring
+
+    onsite = not raw.remote or bool(
+        ONSITE_HINTS.search(raw.title or "") or ONSITE_HINTS.search(location)
+    )
+    if onsite:
+        # Hybrid / on-site is fine only in a city a market names, for a posting
+        # placed in that market's country or in no catalog country at all (a
+        # town the catalog doesn't know, like "Livingston, West Lothian").
+        candidates = () if regions else (accepting if countries else markets)
+        accepting = tuple(
+            m for m in candidates if any(_city_named(location, c) for c in m.hybrid_cities)
+        )
+        if not accepting:
+            if not raw.remote:
+                return _Where(FilterStatus.dropped, "not remote")
+            return _Where(FilterStatus.dropped, "title/location indicates on-site or hybrid")
+
+    if not accepting:
+        if len(markets) == 1 and markets[0].country == US:
+            return _Where(FilterStatus.dropped, "location is non-US only")
+        return _Where(FilterStatus.dropped, "location is outside the countries you search")
+
+    if regions:
+        names = ", ".join(COUNTRY_BY_CODE[m.country].name for m in accepting)
+        return _Where(
+            FilterStatus.manual,
+            f"region-wide location ({location.strip()}) — check it hires in {names}",
+            accepting,
+        )
+    return _Where(FilterStatus.passed, None, accepting)
+
+
+def union_markets(configs: list[FilterConfig]) -> tuple[Market, ...]:
+    """Markets that admit a posting any of ``configs``' markets would, for the
+    scrape: it serves every profile at once, so it may only drop what every
+    profile would. Each country's hybrid cities are unioned; sponsorship is a
+    per-profile rule and doesn't apply here."""
+    cities: dict[str, list[str]] = {US: []}
+    for cfg in configs:
+        for m in cfg.markets:
+            merged = cities.setdefault(m.country, [])
+            merged.extend(c for c in m.hybrid_cities if c not in merged)
+    return tuple(Market(code, hybrid_cities=tuple(cs)) for code, cs in cities.items())
+
+
 def union_title_config(configs: list[FilterConfig]) -> FilterConfig:
     """A config whose title gates pass a title any of ``configs`` would.
 
@@ -565,38 +686,28 @@ def evaluate(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult
     profile); it remains the single-profile composition that ``diagnose-filter``
     and the tests reason about.
     """
-    shared = evaluate_shared(raw)
+    cfg = config or _BUILTIN_DEFAULT
+    shared = evaluate_shared(raw, cfg.markets)
     if shared.status is FilterStatus.dropped:
         return shared
-    return evaluate_profile(raw, config)
+    return evaluate_profile(raw, cfg)
 
 
-def evaluate_shared(raw: RawJob) -> FilterResult:
-    """Rules that are the same for every profile: remote-only, US-only, no sales
-    titles, no crypto. Applied once at scrape time; a posting that fails is never
-    stored. Never returns ``manual``."""
+def evaluate_shared(
+    raw: RawJob, markets: tuple[Market, ...] = (US_MARKET,)
+) -> FilterResult:
+    """Rules that are the same for every profile: workable from one of
+    ``markets`` (remote, or hybrid in a city a market allows), no sales titles,
+    no crypto. Ingest passes ``union_markets`` of every profile, so a posting is
+    stored when any profile could want it; one that fails is never stored.
+    Never returns ``manual`` (a region-wide location passes here and is left to
+    ``evaluate_profile``)."""
     title = raw.title or ""
 
-    # 1. Remote
-    if not raw.remote:
-        return FilterResult(FilterStatus.dropped, "not remote")
-    if ONSITE_HINTS.search(title) or ONSITE_HINTS.search(raw.location or ""):
-        return FilterResult(FilterStatus.dropped, "title/location indicates on-site or hybrid")
-
-    # 2. US-only location. When the source sends structured countries they
-    #    decide: none of them US means the role isn't done from the US, however
-    #    bare the location text ("Bengaluru-HQ"), unless that text itself names
-    #    the US (a Lever role filed under Canada with a "Remote - US" location);
-    #    US among them keeps it, even beside "Vancouver". Only a source with no
-    #    structured country falls back to guessing from the text.
-    location = raw.location or ""
-    if raw.countries:
-        if US not in raw.countries and not _has_us_hint(location):
-            return FilterResult(FilterStatus.dropped, "location is non-US only")
-    elif (
-        NON_US_LOCATION.search(location) and not _has_us_hint(location)
-    ) or _is_specific_non_us(location):
-        return FilterResult(FilterStatus.dropped, "location is non-US only")
+    # 1-2. Remote (or an allowed hybrid city), in one of the searched countries.
+    where = _where(raw, markets)
+    if where.status is FilterStatus.dropped:
+        return FilterResult(FilterStatus.dropped, where.reason)
 
     # 3. Sales / pre-sales / biz-dev titles
     if SALES_TITLE.search(title) or SALES_HEAD_OF.search(title):
@@ -610,14 +721,29 @@ def evaluate_shared(raw: RawJob) -> FilterResult:
 
 
 def evaluate_profile(raw: RawJob, config: Optional[FilterConfig] = None) -> FilterResult:
-    """One profile's personal rules (home-state allow-list, seniority, title
-    keywords, excluded and required tech) on a posting that already passed
-    ``evaluate_shared``.
+    """One profile's personal rules (its countries and visa sponsorship,
+    home-state allow-list, seniority, title keywords, excluded and required
+    tech) on a posting that already passed ``evaluate_shared``.
     Applied per profile by ``matching``, against the stored posting."""
     cfg = config or _BUILTIN_DEFAULT
     title = raw.title or ""
     haystack = _haystack(raw)
     tags_lower = {t.lower() for t in raw.tags}
+
+    # 4b. This profile's own countries: the scrape kept the posting for the
+    #     union of every profile's, so another profile's country is dropped here.
+    where = _where(raw, cfg.markets)
+    if where.status is FilterStatus.dropped:
+        return FilterResult(FilterStatus.dropped, where.reason)
+
+    # 4c. Sponsorship: when every country the posting is workable from for this
+    #     profile is one it needs a visa for, a posting that won't sponsor is out.
+    if (
+        where.markets
+        and all(m.needs_sponsorship for m in where.markets)
+        and NO_SPONSORSHIP.search(raw.description or "")
+    ):
+        return FilterResult(FilterStatus.dropped, "won't sponsor a work visa")
 
     # 5. State allow-list must include the user's home state (when one is configured;
     #    an unset home state skips this rule rather than assuming any state).
@@ -690,5 +816,10 @@ def evaluate_profile(raw: RawJob, config: Optional[FilterConfig] = None) -> Filt
         return FilterResult(
             FilterStatus.manual, "excluded tech mentioned in description; verify primary stack"
         )
+
+    # A region-wide location ("Remote - EMEA") that covers one of the profile's
+    # countries but names none: everything else passed, so the user decides.
+    if where.status is FilterStatus.manual:
+        return FilterResult(FilterStatus.manual, where.reason)
 
     return FilterResult(FilterStatus.passed)

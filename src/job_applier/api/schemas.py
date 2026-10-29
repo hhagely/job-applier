@@ -5,6 +5,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 from job_applier.contracts import MAX_GHOSTED_AFTER_DAYS, MIN_GHOSTED_AFTER_DAYS
+from job_applier.countries import MAX_HYBRID_CITIES
 from job_applier.models.db import ApplicationStatus, FilterStatus
 
 
@@ -215,6 +216,26 @@ class ResumeSummaryOut(BaseModel):
     uploaded_at: datetime
 
 
+class MarketBody(BaseModel):
+    """A country searched besides the US. ``country`` may be any code or name
+    ``countries.lookup_country`` knows; the PUT normalizes it to alpha-2 and 422s
+    a country outside the catalog."""
+
+    country: str = Field(min_length=1, max_length=80)
+    # The user would need a work visa there: a posting that won't sponsor is dropped.
+    needs_sponsorship: bool = False
+    # Where a hybrid / on-site role is acceptable instead of remote-only.
+    hybrid_cities: list[str] = Field(default_factory=list, max_length=MAX_HYBRID_CITIES)
+
+
+class CountryOut(BaseModel):
+    code: str
+    name: str
+    # Other codes and names it goes by ("UK", "Britain"), so the /search picker
+    # can resolve what the user types without a copy of the catalog.
+    aliases: list[str] = []
+
+
 class SearchProfileBody(BaseModel):
     """Shape used for both reading and writing a search profile's criteria.
 
@@ -235,6 +256,10 @@ class SearchProfileBody(BaseModel):
     # None/"" to leave the state-allow-list rule off. Validated + normalized on the
     # PUT path. Used only for ingest filtering.
     home_state: Optional[str] = None
+    # Countries searched besides the US (empty: the US only). Omitted (None) on a
+    # PUT leaves them as they are, so a caller that predates them (the legacy
+    # /suggest-roles command, the recommendations accept) can't wipe them.
+    markets: Optional[list[MarketBody]] = None
 
 
 class SearchProfileOut(SearchProfileBody):
@@ -242,6 +267,8 @@ class SearchProfileOut(SearchProfileBody):
     name: str = "Default"
     is_active: bool = True
     resume_id: Optional[int] = None
+    # Always a list on the way out (None only means "keep" on a PUT).
+    markets: list[MarketBody] = []
     # Filled on the profile list only, so every row can say which resume it uses.
     resume_filename: Optional[str] = None
     recommendations_draft: Optional[dict] = None

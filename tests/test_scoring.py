@@ -13,6 +13,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from job_applier import services
 from job_applier.ai import scoring, tasks
 from job_applier.api.app import app
+from job_applier.countries import Market
 from job_applier.models.db import (
     JobPosting,
     MatchScore,
@@ -512,6 +513,29 @@ def test_score_prompt_includes_state_rule_when_home_state_set(builder):
     assert "state allow-list excludes" not in without
     assert "{{STATE_RULE}}" not in with_state
     assert "{{STATE_RULE}}" not in without
+
+
+@pytest.mark.parametrize("builder", ["single", "batch"])
+def test_score_prompt_where_rule_follows_the_profiles_countries(builder):
+    uk = (Market("US"), Market("GB", needs_sponsorship=True, hybrid_cities=("Edinburgh",)))
+    e = _engine()
+    with Session(e) as s:
+        job = _seed_job(s, title="Senior Engineer", desc="<p>TypeScript.</p>")
+        if builder == "single":
+            us_only = scoring.build_score_prompt("resume", job)
+            with_uk = scoring.build_score_prompt("resume", job, markets=uk)
+        else:
+            us_only = scoring.build_batch_score_prompt("resume", [job])
+            with_uk = scoring.build_batch_score_prompt("resume", [job], markets=uk)
+    assert "outside the United States" in us_only
+    assert "Exception" not in us_only and "sponsorship" not in us_only
+    assert "(United States, United Kingdom)" in with_uk
+    assert "Edinburgh (United Kingdom)" in with_uk
+    assert "visa sponsorship for roles in the United Kingdom" in with_uk
+    # Silence about sponsorship and the resume's current address aren't refusals.
+    assert "doesn't mention\n  sponsorship is not a refusal" in with_uk
+    assert "will relocate" in with_uk and "will relocate" not in us_only
+    assert "{{WHERE_RULE}}" not in us_only + with_uk
 
 
 # ---- services parity (guards the refactor) --------------------------------

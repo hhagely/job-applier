@@ -7,7 +7,7 @@ of truth in ``prompts/score.md``).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, NoReturn, Optional
+from typing import Callable, Iterable, NoReturn, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,7 @@ from job_applier.ai import prompt_safety, providers
 from job_applier.ai.templates import load_template, render_job_prompt
 from job_applier.config import settings
 from job_applier.contracts import html_to_text
+from job_applier.countries import COUNTRY_BY_CODE, US_MARKET, Market
 from job_applier.models.db import ApplicationStatus, JobPosting, Session, engine
 
 # Below this score a job is auto-archived after scoring (60 itself survives).
@@ -56,12 +57,79 @@ def _state_rule_clause(home_state: Optional[str]) -> str:
     )
 
 
+def _or_join(items: Iterable[str]) -> str:
+    items = list(items)
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} or {items[-1]}"
+
+
+# Countries whose name reads with "the" mid-sentence ("roles in the United Kingdom").
+_NAMED_WITH_THE = frozenset({"US", "GB", "NL", "PH", "CZ", "AE"})
+
+
+def _where_rule_clause(markets: tuple[Market, ...] = (US_MARKET,)) -> str:
+    """The remote and country hard rules for the score prompts, filled into the
+    ``{{WHERE_RULE}}`` placeholder, from the profile's searched countries
+    (``FilterConfig.markets``), so scoring and the filter agree on where a role
+    can be. A US-only profile gets the plain remote-only, US-only rules."""
+    lines = [
+        "- The job is not fully remote: it requires in-office presence on any schedule\n"
+        '  (on-site, hybrid, "N days a week in the office"). Score `0`, reasoning explains.\n'
+        "  Optional office access, or occasional travel (an offsite, a week a quarter), is\n"
+        "  still remote."
+    ]
+    hybrid = [m for m in markets if m.hybrid_cities]
+    if hybrid:
+        places = "; ".join(
+            f"{_or_join(m.hybrid_cities)} ({COUNTRY_BY_CODE[m.country].name})" for m in hybrid
+        )
+        lines.append(
+            f"  Exception: hybrid or on-site work based in {places} is acceptable;\n"
+            "  don't lower the score for that office presence."
+        )
+    if len(markets) == 1:
+        lines.append(
+            "- The job must be done from outside the United States (e.g. based in or hiring\n"
+            "  only in another country): score `0`, reasoning explains."
+        )
+    else:
+        names = ", ".join(COUNTRY_BY_CODE[m.country].name for m in markets)
+        lines.append(
+            f"- The job can't be done from any country the candidate is searching ({names}),\n"
+            "  e.g. it's based in or hiring only elsewhere: score `0`, reasoning explains.\n"
+            "  The candidate will relocate to any of those countries, so where the resume\n"
+            "  says they live today never counts against a role in one of them. A role that's\n"
+            '  remote within a time zone or region covering one of them (e.g. "European time\n'
+            '  zones" for the United Kingdom) can be done from there.'
+        )
+    for m in markets:
+        if m.needs_sponsorship:
+            name = COUNTRY_BY_CODE[m.country].name
+            if m.country in _NAMED_WITH_THE:
+                name = f"the {name}"
+            lines.append(
+                f"- The candidate needs visa sponsorship for roles in {name}. Score `0` only\n"
+                "  when a role there explicitly says it can't sponsor or requires an existing\n"
+                "  right to work; reasoning quotes it. A posting that doesn't mention\n"
+                "  sponsorship is not a refusal: don't lower the score for that silence. One\n"
+                "  that offers sponsorship or relocation counts in `hard_requirements`' favor."
+            )
+    return "\n".join(lines)
+
+
 def build_score_prompt(
-    resume_text: str, job: JobPosting, *, home_state: Optional[str] = None
+    resume_text: str,
+    job: JobPosting,
+    *,
+    home_state: Optional[str] = None,
+    markets: tuple[Market, ...] = (US_MARKET,),
 ) -> str:
     """Render the score prompt for one job (shared single-job render)."""
     return render_job_prompt(
-        "score.md", resume_text, job, state_rule=_state_rule_clause(home_state)
+        "score.md",
+        resume_text,
+        job,
+        state_rule=_state_rule_clause(home_state),
+        where_rule=_where_rule_clause(markets),
     )
 
 
@@ -86,7 +154,11 @@ def _job_block(job: JobPosting, nonce: str) -> str:
 
 
 def build_batch_score_prompt(
-    resume_text: str, jobs: list[JobPosting], *, home_state: Optional[str] = None
+    resume_text: str,
+    jobs: list[JobPosting],
+    *,
+    home_state: Optional[str] = None,
+    markets: tuple[Market, ...] = (US_MARKET,),
 ) -> str:
     """Render the batch score prompt for several jobs (resume + rubric sent once).
 
@@ -99,6 +171,7 @@ def build_batch_score_prompt(
         .replace("{{RESUME_TEXT}}", resume_text.strip())
         .replace("{{NONCE}}", nonce)
         .replace("{{STATE_RULE}}", _state_rule_clause(home_state))
+        .replace("{{WHERE_RULE}}", _where_rule_clause(markets))
         .replace("{{JOBS_BLOCK}}", jobs_block)
     )
 
@@ -244,8 +317,10 @@ def score_one(
     ``score_kind="tailored"`` scores a per-job tailored resume markdown (the drafting
     flow); the same rubric template powers both so baseline/tailored can't drift.
     """
-    home_state = profiles.active_config(session).home_state
-    prompt = build_score_prompt(resume_text, job, home_state=home_state)
+    cfg = profiles.active_config(session)
+    prompt = build_score_prompt(
+        resume_text, job, home_state=cfg.home_state, markets=cfg.markets
+    )
     payload = _run_and_parse(provider, prompt, model)
     final_score = _persist_score(session, provider, job.id, payload, score_kind=score_kind)
     return ScoreResult(job.id, final_score, payload.reasoning)
@@ -257,13 +332,16 @@ def _score_batch_call(
     jobs: list[JobPosting],
     model: Optional[str],
     home_state: Optional[str] = None,
+    markets: tuple[Market, ...] = (US_MARKET,),
 ) -> dict[int, ScoredPayload]:
     """One batch invocation. Returns ``{job_id: payload}`` for the jobs the model
     scored cleanly (id echoed, no ``error``, score in range). Jobs the model dropped
     or botched are simply absent, so the caller re-queues them single-job. Raises the
     underlying ``ProviderError`` / ``ScoringError`` on a total failure (provider error
     or unparseable JSON after retry) so the caller can fall the *whole* batch back."""
-    prompt = build_batch_score_prompt(resume_text, jobs, home_state=home_state)
+    prompt = build_batch_score_prompt(
+        resume_text, jobs, home_state=home_state, markets=markets
+    )
     payload = providers.run_json_or(
         provider,
         prompt,
@@ -387,7 +465,7 @@ def score_pending(
     if resume is None:
         raise NoActiveResume("no active resume — upload one first")
 
-    home_state = profiles.active_config(session).home_state
+    cfg = profiles.active_config(session)
 
     if job_ids is not None:
         jobs = [j for j in (session.get(JobPosting, jid) for jid in job_ids) if j]
@@ -420,7 +498,7 @@ def score_pending(
         if len(batch) > 1:
             try:
                 batch_scores = _score_batch_call(
-                    provider, resume.extracted_text, batch, model, home_state
+                    provider, resume.extracted_text, batch, model, cfg.home_state, cfg.markets
                 )
             except providers.ProviderUsageLimit as exc:
                 # The single-job fallback exists to rescue a batch the *model*

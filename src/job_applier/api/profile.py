@@ -20,12 +20,15 @@ from sqlmodel import Session
 
 from job_applier import matching, profiles, services
 from job_applier.api.schemas import (
+    CountryOut,
+    MarketBody,
     SearchProfileBody,
     SearchProfileCreate,
     SearchProfileMetaUpdate,
     SearchProfileOut,
     SearchProfileRecommendationIn,
 )
+from job_applier.countries import COUNTRIES, US, normalize_markets
 from job_applier.filters import has_criteria, normalize_home_state
 from job_applier.models.db import SearchProfile, get_session
 from job_applier.models.scoping import session_profile_id
@@ -64,6 +67,7 @@ def profile_out(
         excluded_tech=list(p.excluded_tech or []),
         extracted_skills=list(p.extracted_skills or []),
         home_state=p.home_state,
+        markets=[MarketBody(**m) for m in p.markets or []],
         recommendations_draft=p.recommendations_draft,
         updated_at=p.updated_at,
         using_defaults=using_defaults,
@@ -149,6 +153,11 @@ def put_search_profile(
 ) -> SearchProfileOut:
     try:
         home_state = normalize_home_state(body.home_state)
+        markets = (
+            None
+            if body.markets is None
+            else normalize_markets([m.model_dump() for m in body.markets])
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     p = _load_or_create_profile(session)
@@ -159,12 +168,27 @@ def put_search_profile(
     p.excluded_tech = body.excluded_tech
     p.extracted_skills = body.extracted_skills
     p.home_state = home_state
+    if markets is not None:
+        p.markets = markets
     p.updated_at = datetime.now(timezone.utc)
     session.add(p)
     session.commit()
     session.refresh(p)
     matching.start_rematch(p.id)
     return _profile_out(p)
+
+
+@router.get("/api/countries", response_model=list[CountryOut])
+def list_countries() -> list[CountryOut]:
+    """The countries a profile can add to its search (the US is always searched)."""
+    return sorted(
+        (
+            CountryOut(code=c.code, name=c.name, aliases=[*c.codes, *c.names])
+            for c in COUNTRIES
+            if c.code != US
+        ),
+        key=lambda c: c.name,
+    )
 
 
 @router.post("/api/search-profile/recommendations", response_model=SearchProfileOut)

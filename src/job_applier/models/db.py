@@ -282,6 +282,12 @@ class SearchProfile(SQLModel, table=True):
     # rule entirely (no state assumption). Used ONLY for ingest filtering — never
     # for any other purpose. Edited at /search.
     home_state: Optional[str] = None
+    # Countries searched besides the US, each
+    # {"country": "GB", "needs_sponsorship": bool, "hybrid_cities": [...]}
+    # (``countries.normalize_markets`` writes them; ``markets_from_rows`` reads).
+    # Empty means the US only. Drives the filter's location rule, at match time
+    # per profile and, unioned over every profile, at scrape time. Edited at /search.
+    markets: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     # Reference: skills extracted from the user's resume by the LLM. Not used by
     # the filter directly — surfaced in the UI so the user can see what informed
     # the recommendations.

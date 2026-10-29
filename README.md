@@ -353,9 +353,13 @@ last 30 days in the background, with no new scrape.
 
 The shared rules, always applied:
 
-- **Remote only** — drops `hybrid`, `on-site`, anything mentioning relocation.
-- **US-locatable** — if the posting names a non-US country/region and has no US
-  marker, drop. Specific "City, Region" locations without a US hint also drop.
+- **Remote only** — drops `hybrid`, `on-site`, anything mentioning relocation,
+  except in a city a profile allows for a country it added (below).
+- **In a searched country** — the US, plus every country any profile added under
+  **Where you can work**. A source's structured country decides when it sends one;
+  otherwise the location text is read for country names and major cities
+  (`countries.py`). Specific "City, Region" locations the catalog can't place and
+  without a US hint drop.
 - **Not a sales / pre-sales / biz-dev title** — `Senior Solutions Engineer`,
   `Head of Partnerships`, etc. are dropped even when they pass seniority.
 - **Not crypto / blockchain / web3** — matched against the whole posting, not just
@@ -367,6 +371,14 @@ Then the per-profile rules, edited on the **Search profile** page:
   blacklist is dropped for that profile. Matching normalizes the company name
   (casing, punctuation, and one trailing legal suffix), so `Meta`, `Meta Inc`, and
   `Meta, Inc.` all match however a source spells it.
+- **Where you can work** — the US is always searched, remote only. The toggle adds
+  other countries (from a fixed list the filter knows how to recognize). Per
+  country: **I'd need visa sponsorship** drops postings there that say they can't
+  sponsor or need an existing right to work, and **Hybrid or on-site OK in** lets
+  in non-remote roles in the cities you name. A location naming only a region
+  ("Remote - EMEA") that covers one of your countries lands in manual review. The
+  scoring prompt's location rules follow the same settings. A newly added
+  country's postings arrive with the next scrape (they were never stored before).
 - **State allow-list must include your home state** — postings that say "we can
   only hire in X, Y, Z" and don't list your state drop. Phrased as "any US state"
   or "nationwide" overrides. **When the profile's state is left unset this rule is

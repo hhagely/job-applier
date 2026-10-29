@@ -226,6 +226,7 @@ def create_profile(
         p.excluded_tech = list(src.excluded_tech or [])
         p.extracted_skills = list(src.extracted_skills or [])
         p.home_state = src.home_state
+        p.markets = [dict(m) for m in src.markets or []]
         if src.resume_id is not None:
             src_resume = owned_resume(session, src.id, src.resume_id)
     session.add(p)

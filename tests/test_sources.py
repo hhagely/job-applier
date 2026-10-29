@@ -512,7 +512,7 @@ class TestAshby:
             ],
         }
         r = next(ashby_normalize("Co", item))
-        assert r.countries == ["India", "US"]
+        assert r.countries == ["IN", "US"]
 
     def test_blank_title_skipped(self):
         item = {"id": "x", "title": ""}
