@@ -10,7 +10,7 @@ follow-up tracking are built in.
 
 No LinkedIn or Indeed scraping — those violate ToS and risk account bans.
 Sources are open ATS endpoints (Greenhouse, Lever, Ashby, Workday, Workable,
-SmartRecruiters, Jibe, Oracle) and aggregator feeds (RemoteOK, We Work Remotely,
+SmartRecruiters, Jibe, Oracle, Pinpoint, Teamtailor) and aggregator feeds (RemoteOK, We Work Remotely,
 Hacker News "Who is hiring", Y Combinator).
 
 ## Install (desktop app)
@@ -313,7 +313,7 @@ src/job_applier/
                #   task runner, and the canonical prompt templates (ai/prompts/)
   filters/     # Hard-rule filter, driven by SearchProfile
   models/      # SQLModel definitions + DB engine (jobs, scores, history, applications, profile)
-  sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters, Jibe, Oracle, RemoteOK, WWR, HN, YC)
+  sources/     # Source adapters (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters, Jibe, Oracle, Pinpoint, Teamtailor, RemoteOK, WWR, HN, YC)
   ingest.py    # Pipeline: fetch → dedupe (per-source, cross-source, JD-SimHash) → filter → persist
   matching.py  # Per-profile matching: each profile's rules over the stored postings
   profiles.py  # Profile lifecycle: active profile, resumes, queue scoping
@@ -414,6 +414,8 @@ has no title keywords, seniority terms, or required tech at all.
 | SmartRecruiters  | DB slug list (`SourceSlug`)     | `api.smartrecruiters.com/v1/companies/{slug}/postings`. Slugs are case-sensitive (`Visa` ≠ `visa`). |
 | Jibe (iCIMS)     | DB slug list (`SourceSlug`)     | `{tenant}.jibeapply.com/api/jobs`. Slug is the jibeapply.com subdomain (e.g. `githubinc`). |
 | Oracle (Recruiting Cloud) | DB slug list, packed format | Slug is `{apiHost}\|{siteNumber}\|{publicJobBaseUrl}[\|{company}]`. Served by the candidate-experience `recruitingCEJobRequisitions` JSON API on the underlying Fusion host (the vanity careers domain 302s API calls away); job links use the public base. |
+| Pinpoint         | DB slug list (`SourceSlug`)     | `{slug}.pinpointhq.com/postings.json`. Postings have no country or date, so the filter reads the country from the location text. |
+| Teamtailor       | DB slug list (`SourceSlug`)     | `{slug}.teamtailor.com/jobs.rss`, 100 postings a page via `?offset=`. North America boards use the slug `{name}.na`. |
 | RemoteOK         | none                            | Single-endpoint aggregator (`remoteok.com/api`).                      |
 | We Work Remotely | none                            | Per-category RSS feeds; engineering categories only.                  |
 | Hacker News      | none                            | Most recent monthly "Who is hiring" thread, parsed via Algolia HN API. Top-level comments are individual postings. |
@@ -422,11 +424,21 @@ has no title keywords, seniority terms, or required tech at all.
 ### Managing the company slug list
 
 Per-company slugs (Greenhouse, Lever, Ashby, Workday, Workable, SmartRecruiters,
-Jibe, Oracle) live in the database (`SourceSlug` table), not in code. Initial
+Jibe, Oracle, Pinpoint, Teamtailor) live in the database (`SourceSlug` table), not in code. Initial
 setup seeds the table from `src/job_applier/sources/companies.py` on first
 `job-applier init` — and the seed is per-source, so adding a new source type
 later picks up its seed on the next `init` without disturbing the populated
-tables.
+tables. Companies added to the seed later go in `SEED_BATCHES` at the bottom of
+that file instead: every install picks each batch up once on its next start
+(recorded in `AppSetting`), so a board you removed isn't added back. The UK and
+Ireland batches add 77 boards for profiles that search those countries.
+
+A board can be limited to certain countries (`SourceSlug.countries`, set by a
+batch): it's only scraped while some profile searches one of them, and isn't
+counted under **Companies searched** otherwise. Fetching is the cost this saves,
+in network time and in requests against rate-limited ATSs. A board that also lists
+US roles stays unlimited, because the US is always searched. Naming a limited
+board under **Check a company** makes it yours, scraped from then on.
 
 ```sh
 # Pull new Greenhouse/Lever/Workable/SmartRecruiters candidates from the
@@ -442,16 +454,19 @@ make refresh-slugs-full
 Discovery (the candidate-pull) covers the five sources the SimplifyJobs feed
 carries URLs for: Greenhouse, Lever, Ashby, Workable, and SmartRecruiters.
 There's no equivalent public list for the others. Re-verification is broader —
-it covers those five plus Workday, auto-disabling dead boards; Jibe and Oracle
-are seed-only (neither discovered nor re-verified).
+it covers those five plus Workday, Pinpoint, and Teamtailor, auto-disabling dead
+boards; Jibe and Oracle are seed-only (neither discovered nor re-verified).
 
 Sources differ in what counts as proof a board is real, so `board_exists()` in
 [refresh.py](src/job_applier/sources/refresh.py) holds the rule for both
-discovery and the manual add. Greenhouse, Lever, and Ashby 404 a slug they don't
-know, so any 200 is proof — a board with no openings today is a real employer
-who just isn't hiring. SmartRecruiters answers 200 with an empty list for *any*
-string, and Workable keeps abandoned accounts alive forever, so on those two a
-board only counts when it currently has at least one open posting.
+discovery and the manual add. Greenhouse, Lever, Ashby, and Teamtailor 404 a slug
+they don't know, so any 200 is proof — a board with no openings today is a real
+employer who just isn't hiring. SmartRecruiters answers 200 with an empty list for
+*any* string, and Workable keeps abandoned accounts alive forever, so on those two a
+board only counts when it currently has at least one open posting. Pinpoint has
+the same rule for a different reason: trial accounts sit under many real company
+names, empty or holding Pinpoint's sample jobs ("Head of DEI - UK"), which count as
+no postings.
 
 The SimplifyJobs feed is heavily new-grad / intern biased — it's only useful
 as a wide net for *valid* slugs, not relevant ones. Failed fetches during

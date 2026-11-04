@@ -21,8 +21,10 @@ import pytest
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from job_applier.models import SourceSlug
+from job_applier.models import SearchProfile, SourceSlug
+from job_applier import sources as sources_mod
 from job_applier.sources import refresh as refresh_mod
+from job_applier.sources.companies import SeedBatch
 
 # Every source refresh_slugs discovers candidates for, plus Workday (re-verified
 # only). Used to build stub candidate sets.
@@ -267,3 +269,110 @@ def test_feed_parse_warns_when_the_envelope_is_not_a_list(monkeypatch, caplog):
     )
     refresh_mod._fetch_candidates_from_simplify()
     assert "expected a list" in caplog.text
+
+
+# ---- Seed batches reach existing installs once ------------------------------
+
+
+def test_seed_batch_is_applied_once_and_skips_stored_slugs(tmp_path, monkeypatch):
+    """A batch reaches an install whose sources are already seeded, skips a slug
+    already stored under any casing, and isn't re-applied on the next start, so a
+    company removed after it landed stays removed."""
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(refresh_mod, "engine", lambda: eng)
+    monkeypatch.setattr(refresh_mod, "_SEEDS", {"greenhouse": ["stripe"], "ashby": ["Notion"]})
+    _seed(eng, [SourceSlug(source="greenhouse", slug="stripe"),
+                SourceSlug(source="ashby", slug="Notion")])
+    monkeypatch.setattr(
+        refresh_mod,
+        "SEED_BATCHES",
+        {"uk": SeedBatch(boards={"greenhouse": ["monzo", "Stripe"], "ashby": ["Synthesia"]})},
+    )
+
+    assert refresh_mod.seed_if_empty() == 2
+
+    def slugs():
+        with Session(eng) as s:
+            return sorted((r.source, r.slug) for r in s.exec(select(SourceSlug)))
+
+    assert slugs() == [
+        ("ashby", "Notion"), ("ashby", "Synthesia"),
+        ("greenhouse", "monzo"), ("greenhouse", "stripe"),
+    ]
+    with Session(eng) as s:
+        s.delete(s.exec(select(SourceSlug).where(SourceSlug.slug == "monzo")).one())
+        s.commit()
+    assert refresh_mod.seed_if_empty() == 0
+    assert ("greenhouse", "monzo") not in slugs()
+
+
+def test_seed_batch_countries_tag_new_and_stored_boards_but_not_the_users(tmp_path, monkeypatch):
+    """The countries describe the board, so a stored row takes them too; a board the
+    user added by hand stays theirs and is always scraped."""
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(refresh_mod, "engine", lambda: eng)
+    monkeypatch.setattr(refresh_mod, "_SEEDS", {})
+    _seed(eng, [SourceSlug(source="greenhouse", slug="dojo"),
+                SourceSlug(source="greenhouse", slug="tide", added_by_user=True)])
+    monkeypatch.setattr(
+        refresh_mod,
+        "SEED_BATCHES",
+        {"uk": SeedBatch(countries=("GB", "IE"), boards={"greenhouse": ["dojo", "tide", "ohme"]})},
+    )
+
+    assert refresh_mod.seed_if_empty() == 1
+
+    with Session(eng) as s:
+        tags = {r.slug: r.countries for r in s.exec(select(SourceSlug))}
+    assert tags == {"dojo": ["GB", "IE"], "ohme": ["GB", "IE"], "tide": []}
+
+
+def test_a_scoped_board_is_scraped_only_while_a_profile_searches_its_country(tmp_path, monkeypatch):
+    """Any one profile searching the country is enough, and turning it off stops
+    the scraping without touching the row."""
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(sources_mod, "engine", lambda: eng)
+    _seed(eng, [SourceSlug(source="greenhouse", slug="stripe"),
+                SourceSlug(source="greenhouse", slug="dojo", countries=["GB", "IE"]),
+                SourceSlug(source="greenhouse", slug="dead", enabled=False)])
+    with Session(eng) as s:
+        s.add_all([SearchProfile(name="US only"), SearchProfile(name="Abroad")])
+        s.commit()
+
+    assert sources_mod._enabled_slugs("greenhouse") == ["stripe"]
+
+    with Session(eng) as s:
+        abroad = s.exec(select(SearchProfile).where(SearchProfile.name == "Abroad")).one()
+        abroad.markets = [{"country": "IE"}]
+        s.add(abroad)
+        s.commit()
+    assert sources_mod._enabled_slugs("greenhouse") == ["dojo", "stripe"]
+
+    with Session(eng) as s:
+        abroad = s.exec(select(SearchProfile).where(SearchProfile.name == "Abroad")).one()
+        abroad.markets = []
+        s.add(abroad)
+        s.commit()
+    assert sources_mod._enabled_slugs("greenhouse") == ["stripe"]
+
+
+@pytest.mark.parametrize(
+    ("postings", "expected"),
+    [
+        ([{"title": "Backend Engineer"}], 1),
+        ([], 0),
+        # Pinpoint's trial accounts: real company names, sample jobs.
+        ([{"title": "Head of DEI - UK"}, {"title": "Marketing Manager"}], 0),
+    ],
+)
+def test_pinpoint_only_counts_a_real_employers_postings(monkeypatch, postings, expected):
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"data": postings}
+
+    monkeypatch.setattr(refresh_mod.httpx, "get", lambda *a, **k: Resp())
+    [(_, ok, count, _)] = refresh_mod.verify_slugs("pinpoint", ["acme"], max_workers=1)
+    assert ok and count == expected
+    assert refresh_mod.board_exists("pinpoint", ok, count) is (expected > 0)

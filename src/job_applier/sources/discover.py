@@ -36,7 +36,15 @@ from job_applier.sources.refresh import (
 
 # Sources reachable from a bare company name. Order is preference order: when a
 # name matches boards on more than one ATS, this decides which is reported first.
-PROBE_SOURCES = ["greenhouse", "lever", "ashby", "smartrecruiters", "workable"]
+PROBE_SOURCES = [
+    "greenhouse",
+    "lever",
+    "ashby",
+    "smartrecruiters",
+    "workable",
+    "pinpoint",
+    "teamtailor",
+]
 
 # Human-facing names for the sources a user can add by hand, used in the
 # "paste a careers URL" hint when a name probe comes up empty.
@@ -48,11 +56,19 @@ SUPPORTED_LABELS = {
     "workable": "Workable",
     "workday": "Workday",
     "jibe": "Jibe",
+    "pinpoint": "Pinpoint",
+    "teamtailor": "Teamtailor",
 }
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
 # Workday paths carry a locale segment ahead of the site (``/en-US/Careers``).
 _LOCALE = re.compile(r"^[a-z]{2}([-_][A-Za-z]{2})?$")
+# The company part of a board's own subdomain. Teamtailor's North America cluster
+# adds a label (``acme.na.teamtailor.com``), and each ATS's own app and marketing
+# hosts share the domain without being anyone's board.
+_PINPOINT_HOST = re.compile(r"^([a-z0-9-]+)\.pinpointhq\.com$")
+_TEAMTAILOR_HOST = re.compile(r"^([a-z0-9-]+(?:\.na)?)\.teamtailor\.com$")
+_ATS_OWN_HOSTS = {"www", "app", "api", "support", "help", "docs"}
 
 
 @dataclass(frozen=True)
@@ -121,6 +137,11 @@ def parse_board_url(text: str) -> Board | None:
 
     if host.endswith("myworkdayjobs.com"):
         return _parse_workday_url(host, parts)
+
+    for source, pattern in (("pinpoint", _PINPOINT_HOST), ("teamtailor", _TEAMTAILOR_HOST)):
+        match = pattern.match(host)
+        if match and match.group(1) not in _ATS_OWN_HOSTS:
+            return Board(source, match.group(1))
 
     return None
 
