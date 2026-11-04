@@ -24,7 +24,13 @@ from dataclasses import dataclass
 
 import httpx
 
-from job_applier.sources.base import TITLE_GATE, RawJob, looks_remote, parse_date_multi
+from job_applier.sources.base import (
+    TITLE_GATE,
+    RawJob,
+    fetch_boards,
+    looks_remote,
+    parse_date_multi,
+)
 
 log = logging.getLogger(__name__)
 
@@ -82,8 +88,9 @@ class WorkdaySource:
                 "User-Agent": "Mozilla/5.0 (compatible; job-applier/0.1)",
             },
         ) as client:
-            for board in self.boards:
-                yield from _fetch_board(client, board)
+            yield from fetch_boards(
+                self.boards, lambda board: _fetch_board(client, board), source=self.name
+            )
 
 
 def _fetch_board(client: httpx.Client, board: WorkdayBoard) -> Iterable[RawJob]:

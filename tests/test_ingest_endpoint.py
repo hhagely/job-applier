@@ -9,7 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from job_applier import ingest
 from job_applier.api.app import app
 from job_applier.models import db
-from job_applier.models.db import JobPosting, JobProfileLink, get_session
+from job_applier.models.db import JobPosting, JobProfileLink, SearchProfile, get_session
 from job_applier.sources.base import RawJob
 
 
@@ -186,6 +186,36 @@ def test_run_ingest_without_cb_is_unchanged(monkeypatch):
     stats = ingest.run_ingest(sources=[FakeSource("only", [_raw("x1")])])
     assert stats.fetched == 1
     assert stats.inserted == 1
+
+
+def test_run_ingest_gives_sources_every_profiles_hybrid_cities(monkeypatch):
+    """The list-level skip may only drop what every profile would."""
+    e = _engine()
+    monkeypatch.setattr(db, "_engine", e)  # ingest + matching both use it
+    with Session(e) as s:
+        s.add(SearchProfile(name="US only", is_active=True))
+        s.add(
+            SearchProfile(
+                name="UK hybrid",
+                markets=[
+                    {"country": "GB", "needs_sponsorship": True, "hybrid_cities": ["Edinburgh"]}
+                ],
+            )
+        )
+        s.commit()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(ingest, "get_all_sources", _capture)
+    ingest.run_ingest()
+
+    assert {m.country: m.hybrid_cities for m in seen["markets"]} == {
+        "US": (),
+        "GB": ("Edinburgh",),
+    }
 
 
 # ---- endpoint -------------------------------------------------------------

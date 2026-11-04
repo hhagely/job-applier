@@ -8,6 +8,7 @@ list/detail fetch dance.
 
 from __future__ import annotations
 
+import threading
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -16,13 +17,18 @@ import pytest
 from job_applier.contracts import html_to_text
 from job_applier.countries import US_MARKET, Market
 from job_applier.filters import evaluate_shared
+from job_applier.sources import ashby as ashby_mod
+from job_applier.sources import greenhouse as greenhouse_mod
+from job_applier.sources import jibe as jibe_mod
+from job_applier.sources import lever as lever_mod
 from job_applier.sources import oracle as oracle_mod
+from job_applier.sources import pinpoint as pinpoint_mod
 from job_applier.sources import smartrecruiters as smartrecruiters_mod
 from job_applier.sources import teamtailor as teamtailor_mod
 from job_applier.sources import workable as workable_mod
 from job_applier.sources import workday as workday_mod
 from job_applier.sources.ashby import _normalize as ashby_normalize
-from job_applier.sources.base import looks_remote, parse_date_multi, parse_iso_date
+from job_applier.sources.base import RawJob, fetch_boards, looks_remote, parse_date_multi, parse_iso_date
 from job_applier.sources.greenhouse import _normalize as greenhouse_normalize
 from job_applier.sources.hackernews import (
     _html_to_text,
@@ -1624,3 +1630,169 @@ def test_workable_tries_boards_in_a_different_order_each_run(monkeypatch):
 
     assert sorted(first) == sorted(source.company_slugs)
     assert first != seen
+
+
+def test_workable_fetches_one_board_at_a_time(monkeypatch):
+    """Its rate limit is per IP and a block can last a day, so no concurrency."""
+    threads = []
+    source = workable_mod.WorkableSource(["a", "b", "c"])
+    monkeypatch.setattr(
+        source,
+        "_fetch_slug",
+        lambda _client, _slug: threads.append(threading.current_thread()) or [],
+    )
+
+    list(source.fetch())
+
+    assert threads == [threading.main_thread()] * 3
+
+
+def _job(source_id: str) -> RawJob:
+    return RawJob(
+        source="test",
+        source_id=source_id,
+        url="",
+        title="Senior Engineer",
+        company_name="Acme",
+        description="",
+    )
+
+
+class TestFetchBoards:
+    def test_a_failing_board_keeps_its_jobs_and_does_not_stop_the_others(self, caplog):
+        def fetch_one(board: str):
+            yield _job(f"{board}:1")
+            if board == "bad":
+                raise RuntimeError("boom")
+            yield _job(f"{board}:2")
+
+        jobs = list(fetch_boards(["bad", "good"], fetch_one, source="test", workers=2))
+
+        assert sorted(j.source_id for j in jobs) == ["bad:1", "good:1", "good:2"]
+        assert "test[bad] failed" in caplog.text
+
+    def test_a_slow_board_does_not_hold_up_the_others(self):
+        release = threading.Event()
+
+        def fetch_one(board: str):
+            if board == "slow":
+                assert release.wait(timeout=5)
+            yield _job(board)
+
+        jobs = fetch_boards(["slow", "fast"], fetch_one, source="test", workers=2)
+
+        assert next(jobs).source_id == "fast"
+        release.set()
+        assert [j.source_id for j in jobs] == ["slow"]
+
+    def test_starts_no_more_boards_than_workers_until_the_consumer_catches_up(self):
+        started = []
+        lock = threading.Lock()
+
+        def fetch_one(board: int):
+            with lock:
+                started.append(board)
+            yield _job(str(board))
+
+        jobs = fetch_boards(range(20), fetch_one, source="test", workers=3)
+        next(jobs)
+        # Paused here, as during a batch write: nothing new starts until the consumer
+        # returns, which is what bounds the boards held in memory.
+        assert len(started) <= 3
+
+        assert len(list(jobs)) == 19
+        assert sorted(started) == list(range(20))
+
+
+@pytest.mark.parametrize(
+    ("module", "cls", "boards", "body"),
+    [
+        pytest.param(lever_mod, "LeverSource", ["a", "b"], "[]", id="lever"),
+        pytest.param(greenhouse_mod, "GreenhouseSource", ["a", "b"], '{"jobs": []}', id="greenhouse"),
+        pytest.param(ashby_mod, "AshbySource", ["a", "b"], '{"jobs": []}', id="ashby"),
+        pytest.param(pinpoint_mod, "PinpointSource", ["a", "b"], '{"data": []}', id="pinpoint"),
+        pytest.param(
+            teamtailor_mod, "TeamtailorSource", ["a", "b"], "<rss><channel/></rss>", id="teamtailor"
+        ),
+        pytest.param(jibe_mod, "JibeSource", ["a", "b"], '{"jobs": []}', id="jibe"),
+        pytest.param(
+            smartrecruiters_mod, "SmartRecruitersSource", ["a", "b"], '{"content": []}', id="smartrecruiters"
+        ),
+        pytest.param(
+            workday_mod, "WorkdaySource", ["a|wd1|S", "b|wd1|S"], '{"jobPostings": []}', id="workday"
+        ),
+        pytest.param(
+            oracle_mod, "OracleSource", [_ORACLE_BAD_SLUG, _ORACLE_GOOD_SLUG], '{"items": []}', id="oracle"
+        ),
+    ],
+)
+def test_adapter_fetches_its_boards_concurrently(monkeypatch, module, cls, boards, body):
+    """Each request waits for one from the other board, which only a concurrent
+    fetch can supply; a sequential adapter breaks the barrier."""
+    barrier = threading.Barrier(2)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        barrier.wait(timeout=5)
+        return httpx.Response(200, text=body)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(module.httpx, "Client", lambda **kw: client)
+
+    assert list(getattr(module, cls)(boards).fetch()) == []
+    assert not barrier.broken
+
+
+_SR_ONSITE = {
+    "city": "Austin",
+    "region": "TX",
+    "country": "us",
+    "remote": False,
+    "hybrid": False,
+    "fullLocation": "Austin, TX, United States",
+}
+_SR_REMOTE = {"country": "us", "remote": True, "fullLocation": "Remote, United States"}
+
+
+def _sr_hybrid(city: str) -> dict:
+    return {
+        "city": city,
+        "country": "gb",
+        "remote": False,
+        "hybrid": True,
+        "fullLocation": f"{city}, United Kingdom",
+    }
+
+
+class TestSmartRecruitersListSkip:
+    MARKETS = (US_MARKET, Market("GB", hybrid_cities=("Edinburgh",)))
+
+    def _requests_detail(self, routed_client, location, markets) -> bool:
+        summary = {"id": "1", "name": "Senior Software Engineer"}
+        if location is not None:
+            summary["location"] = location
+        client = routed_client(
+            smartrecruiters_mod,
+            [
+                ("companies/Good/postings/1", _SR_DETAIL),
+                ("companies/Good/postings", {"content": [summary], "totalFound": 1}),
+            ],
+        )
+        source = smartrecruiters_mod.SmartRecruitersSource(["Good"], markets=markets)
+        list(source.fetch())
+        return any(url.endswith("/postings/1") for url in client.urls)
+
+    @pytest.mark.parametrize(
+        ("location", "expected"),
+        [
+            pytest.param(_SR_ONSITE, False, id="on-site-is-skipped"),
+            pytest.param(_SR_REMOTE, True, id="remote-is-fetched"),
+            pytest.param(_sr_hybrid("Edinburgh"), True, id="hybrid-in-a-searched-city-is-fetched"),
+            pytest.param(_sr_hybrid("Manchester"), False, id="hybrid-elsewhere-is-skipped"),
+            pytest.param(None, True, id="no-location-block-is-fetched"),
+        ],
+    )
+    def test_detail_request(self, routed_client, location, expected):
+        assert self._requests_detail(routed_client, location, self.MARKETS) is expected
+
+    def test_without_markets_nothing_is_skipped(self, routed_client):
+        assert self._requests_detail(routed_client, _SR_ONSITE, None) is True
