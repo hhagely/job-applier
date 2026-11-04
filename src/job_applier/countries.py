@@ -372,6 +372,11 @@ def _oracle(raw: dict) -> Iterable[Any]:
             yield loc.get("CountryCode")
 
 
+def _teamtailor(raw: dict) -> Iterable[Any]:
+    for loc in _dicts(raw.get("locations")):
+        yield loc.get("country")
+
+
 _EXTRACTORS: dict[str, Callable[[dict], Iterable[Any]]] = {
     "ashby": _ashby,
     "lever": _lever,
@@ -380,6 +385,7 @@ _EXTRACTORS: dict[str, Callable[[dict], Iterable[Any]]] = {
     "jibe": _jibe,
     "workable": _workable,
     "oracle": _oracle,
+    "teamtailor": _teamtailor,
 }
 
 

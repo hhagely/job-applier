@@ -31,9 +31,9 @@
 		<p class="muted" style="margin-bottom:14px">
 			Have an employer in mind? Type their name to find out whether your scrapes already cover
 			them — most well-known companies are on the list already. If they aren't, and their job
-			board is one we can read (Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Workday, or
-			Jibe), it gets added and searched from the next scrape on. Pasting the URL of their job board
-			works too, and is more exact than a name.
+			board is one we can read (Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Workday, Jibe,
+			Pinpoint, or Teamtailor), it gets added and searched from the next scrape on. Pasting the URL
+			of their job board works too, and is more exact than a name.
 		</p>
 
 		<form method="POST" action="?/addCompany" class="wl-add" use:enhance={whileBusy((b) => (adding = b))}>

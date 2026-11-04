@@ -213,11 +213,13 @@ def _ensure_multi_profile_columns() -> None:
 
 
 def _ensure_sourceslug_columns() -> None:
-    """Add SourceSlug.added_by_user / .label on existing DBs that pre-date them.
+    """Add SourceSlug.added_by_user / .label / .countries on existing DBs that
+    pre-date them.
 
     Everything already in the table got there via the seed or feed discovery, so
     the DEFAULT 0 backfill is the truthful value: no existing row was added by
-    hand. ``label`` stays nullable — the UI falls back to the slug.
+    hand. ``label`` stays nullable — the UI falls back to the slug. ``countries``
+    defaults to empty, meaning always scraped, which is how those rows behaved.
     """
     with engine().connect() as conn:
         cols = _table_cols(conn, "sourceslug")
@@ -234,6 +236,11 @@ def _ensure_sourceslug_columns() -> None:
             added = True
         if "label" not in cols:
             conn.exec_driver_sql("ALTER TABLE sourceslug ADD COLUMN label VARCHAR")
+            added = True
+        if "countries" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE sourceslug ADD COLUMN countries JSON NOT NULL DEFAULT '[]'"
+            )
             added = True
         if added:
             conn.commit()

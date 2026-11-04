@@ -9,9 +9,9 @@ and ``POST /api/company-coverage/refresh`` (the "Update company list" button on
 
 Discovery pulls slugs the SimplifyJobs feed carries: Greenhouse, Lever,
 Workable, SmartRecruiters, and Ashby. Re-verification covers those five plus
-Workday so dead boards get auto-disabled regardless of how they got into the
-table. Jibe and Oracle are seed-only (neither discovered nor re-verified) —
-their slugs pack fields no public URL exposes.
+Workday, Pinpoint, and Teamtailor so dead boards get auto-disabled regardless of
+how they got into the table. Jibe and Oracle are seed-only (neither discovered nor
+re-verified) — their slugs pack fields no public URL exposes.
 """
 
 from __future__ import annotations
@@ -28,18 +28,22 @@ import httpx
 from sqlmodel import Session, select
 
 from job_applier.contracts import BOARD_GONE_ERRORS
-from job_applier.models import SourceSlug, engine
+from job_applier.countries import US, markets_from_rows
+from job_applier.models import SearchProfile, SourceSlug, engine
+from job_applier.models.db import AppSetting
 from job_applier.sources.companies import (
     ASHBY_COMPANIES,
     GREENHOUSE_COMPANIES,
     JIBE_TENANTS,
     LEVER_COMPANIES,
     ORACLE_SITES,
+    SEED_BATCHES,
     SMARTRECRUITERS_COMPANIES,
     WORKABLE_COMPANIES,
     WORKDAY_BOARDS,
 )
 from job_applier.sources.oracle import parse_slug as parse_oracle_slug
+from job_applier.sources.pinpoint import is_sample_board
 from job_applier.sources.workday import parse_slug as parse_workday_slug
 
 log = logging.getLogger(__name__)
@@ -75,6 +79,8 @@ LV_VERIFY = "https://api.lever.co/v0/postings/{slug}?mode=json"
 ASHBY_VERIFY = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 SR_VERIFY = "https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=1"
 JIBE_VERIFY = "https://{slug}.jibeapply.com/api/jobs?page=1"
+PINPOINT_VERIFY = "https://{slug}.pinpointhq.com/postings.json"
+TEAMTAILOR_VERIFY = "https://{slug}.teamtailor.com/jobs.rss"
 # Workable's verify is a POST with a body — handled by a dedicated helper.
 WORKABLE_VERIFY_URL = "https://apply.workable.com/api/v3/accounts/{slug}/jobs"
 # Few at a time: once Workable's limit trips, requests already in flight are wasted
@@ -127,8 +133,10 @@ _CASE_INSENSITIVE_DEDUPE = {"ashby"}
 # at least one posting as proof of life, for two different reasons:
 # SmartRecruiters answers 200 with an empty list for ANY string (verified), so
 # "it responded" means nothing there; Workable 404s properly but keeps abandoned
-# accounts alive forever, so a long-squatted name still answers 200.
-BOARDS_404_WHEN_MISSING = {"greenhouse", "lever", "ashby", "jibe"}
+# accounts alive forever, so a long-squatted name still answers 200; Pinpoint
+# 404s too, but trial accounts sit under many real company names, so its verifier
+# counts a board of Pinpoint's sample jobs as empty.
+BOARDS_404_WHEN_MISSING = {"greenhouse", "lever", "ashby", "jibe", "teamtailor"}
 
 
 def board_exists(source: str, ok: bool, job_count: int | None) -> bool:
@@ -170,7 +178,31 @@ class RefreshStats:
     wk_disabled: int = 0
     sr_reverified: int = 0
     sr_disabled: int = 0
+    pp_reverified: int = 0
+    pp_disabled: int = 0
+    tt_reverified: int = 0
+    tt_disabled: int = 0
 
+
+def searched_countries(session: Session) -> set[str]:
+    """Every country a profile on this install searches, the US always among them."""
+    searched = {US}
+    for rows in session.exec(select(SearchProfile.markets)):
+        searched.update(market.country for market in markets_from_rows(rows))
+    return searched
+
+
+def board_is_searched(row: SourceSlug, searched: set[str]) -> bool:
+    """Whether a scrape should fetch this board, given ``searched_countries``.
+
+    Fetching costs network time and a request against the ATS's rate limit, so a
+    board only one country's searchers want waits until someone searches it.
+    """
+    return not row.countries or not searched.isdisjoint(row.countries)
+
+
+#: ``AppSetting`` key prefix recording that a ``SEED_BATCHES`` entry was applied.
+SEED_BATCH_KEY_PREFIX = "seed_batch:"
 
 _SEEDS: dict[str, list[str]] = {
     "greenhouse": GREENHOUSE_COMPANIES,
@@ -185,7 +217,8 @@ _SEEDS: dict[str, list[str]] = {
 
 
 def seed_if_empty() -> int:
-    """Seed each source's slugs from companies.py if that source has no rows.
+    """Seed each source's slugs from companies.py if that source has no rows,
+    then apply any ``SEED_BATCHES`` this install hasn't had yet.
 
     Per-source so adding a new source (e.g. Ashby) on an existing install picks
     up its seed on the next ``init`` without disturbing the populated sources.
@@ -202,15 +235,50 @@ def seed_if_empty() -> int:
             valid = _valid_slugs(source, slugs)
             session.add_all(SourceSlug(source=source, slug=s) for s in valid)
             inserted += len(valid)
-        if inserted:
-            session.commit()
+        inserted += _apply_seed_batches(session)
+        session.commit()
+    return inserted
+
+
+def _apply_seed_batches(session: Session) -> int:
+    """Insert the slugs of every ``SEED_BATCHES`` entry this install hasn't had.
+
+    The base seed above only fills an empty source, so a company added to it
+    later never reaches an existing install. A batch reaches every install once:
+    its name is recorded in ``AppSetting`` when applied, so a row the user later
+    removes isn't put back on the next start. A slug already stored (by the
+    feed, the base seed, or the user) gets no second row, matched
+    case-insensitively like feed discovery, but does take the batch's countries,
+    since they describe the board. One the user added by hand stays theirs: they
+    asked for it, so it's always scraped. The caller commits.
+    """
+    inserted = 0
+    for name, batch in SEED_BATCHES.items():
+        key = f"{SEED_BATCH_KEY_PREFIX}{name}"
+        if session.get(AppSetting, key) is not None:
+            continue
+        for source, slugs in batch.boards.items():
+            stored = {
+                row.slug.lower(): row
+                for row in session.exec(select(SourceSlug).where(SourceSlug.source == source))
+            }
+            for slug in _valid_slugs(source, slugs):
+                row = stored.get(slug.lower())
+                if row is None:
+                    session.add(
+                        SourceSlug(source=source, slug=slug, countries=list(batch.countries))
+                    )
+                    inserted += 1
+                elif batch.countries and not row.added_by_user:
+                    row.countries = list(batch.countries)
+        session.add(AppSetting(key=key, value=datetime.now(timezone.utc).isoformat()))
     return inserted
 
 
 # Progress steps reported through ``progress_cb``: one for the feed fetch, one per
-# per-source verify pass. Reverification adds a second pass over six sources.
+# per-source verify pass. Reverification adds a second pass over eight sources.
 REFRESH_STEPS = 6
-REFRESH_STEPS_REVERIFY = REFRESH_STEPS + 6
+REFRESH_STEPS_REVERIFY = REFRESH_STEPS + 8
 
 
 def refresh_slugs(
@@ -264,7 +332,7 @@ def refresh_slugs(
     # transaction that writes them.
     discovered_sources = ["greenhouse", "lever", "workable", "smartrecruiters", "ashby"]
     existing = _existing_slugs(
-        discovered_sources + (["workday"] if reverify_existing else [])
+        discovered_sources + (["workday", "pinpoint", "teamtailor"] if reverify_existing else [])
     )
 
     new_gh = _new_slugs("greenhouse", candidates["greenhouse"], existing["greenhouse"])
@@ -347,6 +415,22 @@ def refresh_slugs(
             disabled_field="sr_disabled",
         )
         _step(f"re-checked {len(existing['smartrecruiters'])} SmartRecruiters boards")
+        _apply_reverify(
+            source="pinpoint",
+            results=_verify_pinpoint(sorted(existing["pinpoint"]), max_workers),
+            stats=stats,
+            reverified_field="pp_reverified",
+            disabled_field="pp_disabled",
+        )
+        _step(f"re-checked {len(existing['pinpoint'])} Pinpoint boards")
+        _apply_reverify(
+            source="teamtailor",
+            results=_verify_teamtailor(sorted(existing["teamtailor"]), max_workers),
+            stats=stats,
+            reverified_field="tt_reverified",
+            disabled_field="tt_disabled",
+        )
+        _step(f"re-checked {len(existing['teamtailor'])} Teamtailor boards")
 
     return stats
 
@@ -591,6 +675,10 @@ def verify_slugs(
         return _verify_many(slugs, url_template, max_workers, timeout=timeout)
     if source == "workable":
         return _verify_workable(slugs, max_workers, timeout=timeout)
+    if source == "pinpoint":
+        return _verify_pinpoint(slugs, max_workers, timeout=timeout)
+    if source == "teamtailor":
+        return _verify_teamtailor(slugs, max_workers, timeout=timeout)
     if source == "workday":
         return _verify_workday(slugs, max_workers, timeout=timeout)
     raise ValueError(f"no board verifier for source {source!r}")
@@ -614,6 +702,46 @@ def _verify_many(
             else:
                 count = 0
             return (slug, True, count, None)
+        except Exception as e:  # noqa: BLE001 — we want to capture the error string
+            return (slug, False, None, str(e))
+
+    return _run_verifier(slugs, check, max_workers)
+
+
+def _verify_pinpoint(
+    slugs: list[str], max_workers: int, timeout: float = 20
+) -> list[_VerifyResult]:
+    """Pinpoint's envelope is ``{"data": [...]}``, and a trial account's sample jobs
+    count as no jobs, so ``board_exists`` rejects it."""
+
+    def check(slug: str) -> _VerifyResult:
+        try:
+            r = httpx.get(
+                PINPOINT_VERIFY.format(slug=slug), timeout=timeout, follow_redirects=True
+            )
+            if r.status_code != 200:
+                return (slug, False, None, f"HTTP {r.status_code}")
+            postings = r.json().get("data") or []
+            return (slug, True, 0 if is_sample_board(postings) else len(postings), None)
+        except Exception as e:  # noqa: BLE001 — we want to capture the error string
+            return (slug, False, None, str(e))
+
+    return _run_verifier(slugs, check, max_workers)
+
+
+def _verify_teamtailor(
+    slugs: list[str], max_workers: int, timeout: float = 20
+) -> list[_VerifyResult]:
+    """Teamtailor's feed is RSS, so it can't share ``_verify_many``'s JSON parse."""
+
+    def check(slug: str) -> _VerifyResult:
+        try:
+            r = httpx.get(
+                TEAMTAILOR_VERIFY.format(slug=slug), timeout=timeout, follow_redirects=True
+            )
+            if r.status_code != 200:
+                return (slug, False, None, f"HTTP {r.status_code}")
+            return (slug, True, r.text.count("<item>"), None)
         except Exception as e:  # noqa: BLE001 — we want to capture the error string
             return (slug, False, None, str(e))
 

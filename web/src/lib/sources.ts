@@ -14,6 +14,8 @@ export const SOURCE_META: Record<string, SourceMeta> = {
 	ashby: { label: 'Ashby', ease: 'easy' },
 	workable: { label: 'Workable', ease: 'easy' },
 	smartrecruiters: { label: 'SmartRecruiters', ease: 'easy' },
+	pinpoint: { label: 'Pinpoint', ease: 'easy' },
+	teamtailor: { label: 'Teamtailor', ease: 'easy' },
 	jibe: { label: 'Jibe', ease: 'med' },
 	oracle: { label: 'Oracle', ease: 'med' },
 	remoteok: { label: 'RemoteOK', ease: 'med' },

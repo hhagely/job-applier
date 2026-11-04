@@ -19,6 +19,7 @@ from sqlmodel import Session, select
 
 from job_applier.models.db import BlacklistedCompany, SourceSlug
 from job_applier.sources import discover
+from job_applier.sources.refresh import board_is_searched, searched_countries
 
 
 class WatchedCompanyError(ValueError):
@@ -158,6 +159,23 @@ def _already_result(typed: str, row: SourceSlug) -> AddWatchedResult:
     )
 
 
+def _already_or_start_searching(
+    session: Session, typed: str, existing: SourceSlug
+) -> AddWatchedResult:
+    """Report a stored board as already searched, unless it's stored for countries
+    no profile searches. Nothing scrapes that one, so "already searching" would be
+    false: naming it makes it the user's own board, scraped from now on."""
+    if board_is_searched(existing, searched_countries(session)):
+        return _already_result(typed, existing)
+    existing.countries = []
+    existing.added_by_user = True
+    existing.label = typed
+    existing.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(existing)
+    return AddWatchedResult("added", _found_message(typed, [existing]), [existing])
+
+
 def add_watched_company(session: Session, query: str) -> AddWatchedResult:
     """Add one company to the searched list from a name or a pasted board URL.
 
@@ -188,7 +206,9 @@ def add_watched_company(session: Session, query: str) -> AddWatchedResult:
             session, board.source, board.slug
         ) or find_watched_by_name(session, label)
         if existing is not None:
-            return _already_result(company_display_name(existing), existing)
+            return _already_or_start_searching(
+                session, company_display_name(existing), existing
+            )
         exists, count, reason = discover.verify_board(board)
         if not exists:
             label_source = discover.SUPPORTED_LABELS.get(board.source, board.source)
@@ -199,7 +219,7 @@ def add_watched_company(session: Session, query: str) -> AddWatchedResult:
     _blacklist_guard(session, text)
     existing = find_watched_by_name(session, text)
     if existing is not None:
-        return _already_result(text, existing)
+        return _already_or_start_searching(session, text, existing)
 
     boards = discover.probe_company(text)
     if not boards:

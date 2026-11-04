@@ -14,8 +14,11 @@ import httpx
 import pytest
 
 from job_applier.contracts import html_to_text
+from job_applier.countries import US_MARKET, Market
+from job_applier.filters import evaluate_shared
 from job_applier.sources import oracle as oracle_mod
 from job_applier.sources import smartrecruiters as smartrecruiters_mod
+from job_applier.sources import teamtailor as teamtailor_mod
 from job_applier.sources import workable as workable_mod
 from job_applier.sources import workday as workday_mod
 from job_applier.sources.ashby import _normalize as ashby_normalize
@@ -38,7 +41,9 @@ from job_applier.sources.oracle import _parse_list as oracle_parse_list
 from job_applier.sources.oracle import parse_slug as oracle_parse_slug
 from job_applier.sources import refresh as refresh_mod
 from job_applier.sources.refresh import _valid_slugs
+from job_applier.sources.pinpoint import _normalize as pinpoint_normalize
 from job_applier.sources.remoteok import _normalize as remoteok_normalize
+from job_applier.sources.teamtailor import _normalize as teamtailor_normalize
 from job_applier.sources.smartrecruiters import _normalize as sr_normalize
 from job_applier.sources.weworkremotely import (
     _extract_company_url as wwr_extract_url,
@@ -1453,6 +1458,124 @@ class TestWorkdayMalformedPayloads:
             jobs = list(workday_mod.WorkdaySource(["bad|wd1|Site"]).fetch())
         assert jobs == []
         assert "non-JSON" in caplog.text
+
+
+# ---- Pinpoint ---------------------------------------------------------------
+
+
+def _pinpoint_item(**over):
+    item = {
+        "id": "289463",
+        "title": "Senior Engineer",
+        "url": "https://careers.acme.com/en/postings/abc",
+        "description": "<p>Build things.</p>",
+        "key_responsibilities": "<p>Ship.</p>",
+        "key_responsibilities_header": "You",
+        "employment_type_text": "Permanent - Full Time",
+        "workplace_type": "hybrid",
+        "job": {"department": {"name": "Engineering"}},
+        "location": {"name": "Edinburgh", "city": "Edinburgh", "province": "City of Edinburgh"},
+    }
+    return {**item, **over}
+
+
+def test_pinpoint_normalizes_a_posting():
+    [job] = pinpoint_normalize("made-tech", _pinpoint_item())
+    assert job.source == "pinpoint"
+    assert job.source_id == "made-tech:289463"
+    assert job.company_name == "Made Tech"
+    assert job.location == "Edinburgh, City of Edinburgh"
+    assert job.remote is False
+    assert "Build things" in job.description and "<h3>You</h3><p>Ship.</p>" in job.description
+    assert job.tags == ["Engineering", "hybrid"]
+
+
+@pytest.mark.parametrize(
+    ("workplace_type", "name", "remote"),
+    [("remote", "London", True), ("onsite", "Remote office", False), (None, "Remote UK", True)],
+)
+def test_pinpoint_stated_workplace_type_decides_remote(workplace_type, name, remote):
+    item = _pinpoint_item(workplace_type=workplace_type, location={"name": name})
+    [job] = pinpoint_normalize("acme", item)
+    assert job.remote is remote
+
+
+def test_pinpoint_reads_the_country_from_the_location_text():
+    [job] = pinpoint_normalize("acme", _pinpoint_item(workplace_type="remote"))
+    assert job.countries == []
+    assert evaluate_shared(job, (US_MARKET,)).status.value == "dropped"
+    assert evaluate_shared(job, (US_MARKET, Market("GB"))).status.value == "passed"
+
+
+# ---- Teamtailor -------------------------------------------------------------
+
+_TEAMTAILOR_ITEM = """<item>
+  <title>Senior Engineer</title>
+  <description>&lt;p&gt;Build things.&lt;/p&gt;</description>
+  <pubDate>Tue, 03 Nov 2026 19:37:57 +0100</pubDate>
+  <link>https://acme.teamtailor.com/jobs/1-senior-engineer</link>
+  <remoteStatus>{status}</remoteStatus>
+  <guid>{guid}</guid>
+  <tt:locations>
+    <tt:location><tt:name>HQ</tt:name><tt:city>London</tt:city><tt:country>United Kingdom</tt:country></tt:location>
+    <tt:location><tt:name>Dublin Office</tt:name><tt:city></tt:city><tt:country>Ireland</tt:country></tt:location>
+  </tt:locations>
+  <tt:department>Engineering</tt:department>
+</item>"""
+
+
+def _teamtailor_feed(items: list[str]) -> str:
+    return (
+        '<?xml version="1.0"?><rss version="2.0" xmlns:tt="https://teamtailor.com/locations">'
+        f"<channel><title>Acme Ltd</title>{''.join(items)}</channel></rss>"
+    )
+
+
+@pytest.mark.parametrize(("status", "remote"), [("fully", True), ("hybrid", False), ("none", False)])
+def test_teamtailor_normalizes_a_posting(status, remote):
+    channel = ET.fromstring(
+        _teamtailor_feed([_TEAMTAILOR_ITEM.format(status=status, guid="abc")])
+    ).find("channel")
+    [job] = teamtailor_normalize("acme", "Acme Ltd", channel.find("item"))
+    assert job.source_id == "acme:abc"
+    assert job.company_name == "Acme Ltd"
+    assert job.remote is remote
+    assert job.location == "London, United Kingdom; Dublin Office, Ireland"
+    assert job.countries == ["GB", "IE"]
+    assert job.description == "<p>Build things.</p>"
+    assert job.posted_at is not None
+
+
+def test_teamtailor_pages_by_offset_past_the_feed_limit():
+    def page(start: int, count: int) -> str:
+        return _teamtailor_feed(
+            [_TEAMTAILOR_ITEM.format(status="fully", guid=f"g{start + i}") for i in range(count)]
+        )
+
+    pages = {0: page(0, teamtailor_mod.PAGE_SIZE), teamtailor_mod.PAGE_SIZE: page(100, 30)}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=pages[int(request.url.params["offset"])])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        jobs = list(teamtailor_mod._fetch_board(client, "acme"))
+    assert len(jobs) == 130
+
+
+def test_teamtailor_stops_when_a_feed_ignores_the_offset():
+    full = _teamtailor_feed(
+        [_TEAMTAILOR_ITEM.format(status="fully", guid=f"g{i}") for i in range(teamtailor_mod.PAGE_SIZE)]
+    )
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, text=full)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        jobs = list(teamtailor_mod._fetch_board(client, "acme"))
+    assert len(jobs) == teamtailor_mod.PAGE_SIZE
+    assert len(calls) == 2
 
 
 # ---- Workable's rate limit --------------------------------------------------

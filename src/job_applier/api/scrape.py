@@ -7,10 +7,10 @@ task stream; neither needs an AI provider, just network access.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import Integer, cast, func
 from sqlmodel import Session, select
 
 from job_applier import ingest
@@ -19,7 +19,7 @@ from job_applier.api.schemas import CompanyCoverageOut, StartTaskOut
 from job_applier.contracts import parse_iso_date
 from job_applier.models.db import SourceSlug, engine, get_session, get_setting, set_setting
 from job_applier.sources import refresh as refresh_mod
-from job_applier.sources.refresh import refresh_slugs
+from job_applier.sources.refresh import board_is_searched, refresh_slugs, searched_countries
 
 router = APIRouter(tags=["scrape"])
 
@@ -68,18 +68,11 @@ COMPANY_CHECKED_KEY = "companies_last_checked_at"
 @router.get("/api/company-coverage", response_model=CompanyCoverageOut)
 def company_coverage(session: Session = Depends(get_session)) -> CompanyCoverageOut:
     """How many company job boards ingest watches, split by source, plus when the
-    list was last checked for new ones."""
-    # `enabled` is a Boolean column, so SUM() over it inherits the Boolean result
-    # processor and every non-zero total collapses to True (=1). Cast to Integer so
-    # the sum stays a count.
-    rows = session.exec(
-        select(
-            SourceSlug.source,
-            func.count(SourceSlug.id),
-            func.sum(cast(SourceSlug.enabled, Integer)),
-        ).group_by(SourceSlug.source)
-    ).all()
-    by_source = {source: int(n) for source, n, _ in rows}
+    list was last checked for new ones. A board stored for countries no profile
+    searches isn't counted: nothing scrapes it."""
+    searched = searched_countries(session)
+    rows = [r for r in session.exec(select(SourceSlug)).all() if board_is_searched(r, searched)]
+    by_source = dict(Counter(r.source for r in rows))
     # The checked-at setting is a free-form string column, so parse it leniently:
     # a hand-edited or half-written value must degrade to "never checked", not 500
     # this endpoint. /search loads it as a page dependency, so a hard failure here
@@ -87,7 +80,7 @@ def company_coverage(session: Session = Depends(get_session)) -> CompanyCoverage
     last = parse_iso_date(get_setting(session, COMPANY_CHECKED_KEY))
     return CompanyCoverageOut(
         total=sum(by_source.values()),
-        enabled=sum(int(en or 0) for _, _, en in rows),
+        enabled=sum(1 for r in rows if r.enabled),
         by_source=dict(sorted(by_source.items(), key=lambda kv: -kv[1])),
         last_checked_at=last,
     )
@@ -119,6 +112,8 @@ def _run_refresh_companies_task(state: "ai_tasks.TaskState", reverify: bool) -> 
         + stats.workday_disabled
         + stats.wk_disabled
         + stats.sr_disabled
+        + stats.pp_disabled
+        + stats.tt_disabled
     )
     summary = f"done: {added} new compan{'y' if added == 1 else 'ies'} added"
     if reverify:
