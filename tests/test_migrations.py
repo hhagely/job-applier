@@ -21,6 +21,8 @@ import sqlite3
 
 import pytest
 
+from job_applier.models import migrations
+
 # Every table as it existed BEFORE the current crop of migrations:
 # jobposting predates cross_source_hash + jd_fingerprint/duplicate_of;
 # matchscore predates resume_id; both score tables predate score_kind
@@ -751,3 +753,32 @@ def test_a_nullable_owner_column_from_an_earlier_migration_is_tightened(tmp_path
         ]
     finally:
         conn.close()
+
+
+def test_boards_disabled_by_transient_errors_come_back(tmp_path, monkeypatch):
+    db_path, _ = _run_startup(tmp_path, monkeypatch)
+    conn = sqlite3.connect(db_path)
+    rows = {
+        "limited": "HTTP 429",
+        "bad-gateway": "HTTP 502",
+        "slow": "The read operation timed out",
+        "gone": "HTTP 404",
+        "wrong-shape": "HTTP 422",
+        "no-error": None,
+    }
+    for slug, err in rows.items():
+        conn.execute(
+            "INSERT INTO sourceslug (source, slug, enabled, added_by_user, last_error, added_at, "
+            "updated_at) VALUES ('workable', ?, 0, 0, ?, '2026-10-28', '2026-10-28')",
+            (slug, err),
+        )
+    conn.commit()
+    conn.close()
+
+    migrations.run()
+    migrations.run()
+
+    conn = sqlite3.connect(db_path)
+    enabled = dict(conn.execute("SELECT slug, enabled FROM sourceslug WHERE source = 'workable'"))
+    conn.close()
+    assert {s for s in rows if enabled[s]} == {"limited", "bad-gateway", "slow"}

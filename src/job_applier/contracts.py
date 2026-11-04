@@ -31,6 +31,12 @@ from job_applier.countries import posting_countries
 # quietly reports "nothing configured" forever.
 
 #: Selected AI CLI (``"claude"``, ``"gemini"``, ``"codex"``, ``"ollama"``).
+#: Failed board checks that mean the board is gone, as ``SourceSlug.last_error``
+#: spells them. Anything else (a rate limit, a timeout, a 5xx) says nothing about
+#: the board, so it stays enabled. 422 is Workday rejecting the public API's body
+#: shape for that tenant, which doesn't change between runs.
+BOARD_GONE_ERRORS = frozenset({"HTTP 404", "HTTP 410", "HTTP 422", "malformed slug"})
+
 AI_PROVIDER_KEY = "ai_provider"
 
 #: Override for the baseline (bulk) scoring model. When unset, the resolver falls

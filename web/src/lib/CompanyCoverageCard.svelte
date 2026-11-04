@@ -70,7 +70,7 @@
 			</button>
 			<label class="cov-reverify">
 				<input type="checkbox" name="reverify" disabled={companies.busy} />
-				Also remove boards that no longer respond
+				Also remove boards that have closed
 				<span class="muted">(slower — re-checks all {coverage.total.toLocaleString()})</span>
 			</label>
 		</form>

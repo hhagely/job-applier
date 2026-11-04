@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from xml.etree import ElementTree as ET
 
+import httpx
 import pytest
 
 from job_applier.contracts import html_to_text
@@ -1452,3 +1453,51 @@ class TestWorkdayMalformedPayloads:
             jobs = list(workday_mod.WorkdaySource(["bad|wd1|Site"]).fetch())
         assert jobs == []
         assert "non-JSON" in caplog.text
+
+
+# ---- Workable's rate limit --------------------------------------------------
+
+
+def _workable_429_client(retry_after, calls):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(429, headers={"Retry-After": retry_after} if retry_after else {})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_workable_gives_up_at_once_on_a_long_retry_after(monkeypatch):
+    """Sleeping 10 seconds against a day-long block only delays the scrape."""
+    monkeypatch.setattr(workable_mod.time, "sleep", lambda _: pytest.fail("should not wait"))
+    calls = []
+    source = workable_mod.WorkableSource(["a"])
+    with _workable_429_client("86400", calls) as client:
+        assert source._post_with_backoff(client, "https://x.test/", {}, label="a") is None
+    assert len(calls) == 1 and source._rate_limited
+
+
+@pytest.mark.parametrize("retry_after", ["5", None, "Wed, 21 Oct 2026 07:28:00 GMT"])
+def test_workable_retries_once_on_a_short_or_unreadable_retry_after(monkeypatch, retry_after):
+    slept = []
+    monkeypatch.setattr(workable_mod.time, "sleep", slept.append)
+    calls = []
+    source = workable_mod.WorkableSource(["a"])
+    with _workable_429_client(retry_after, calls) as client:
+        assert source._post_with_backoff(client, "https://x.test/", {}, label="a") is None
+    assert len(calls) == 2 and slept == [workable_mod.RATE_LIMIT_BACKOFF_S]
+    assert source._rate_limited
+
+
+def test_workable_tries_boards_in_a_different_order_each_run(monkeypatch):
+    """A fixed order would starve the same boards every time the limit trips."""
+    seen = []
+    source = workable_mod.WorkableSource([f"s{i}" for i in range(30)])
+    monkeypatch.setattr(source, "_fetch_slug", lambda _client, slug: seen.append(slug) or [])
+
+    list(source.fetch())
+    first = list(seen)
+    seen.clear()
+    list(source.fetch())
+
+    assert sorted(first) == sorted(source.company_slugs)
+    assert first != seen

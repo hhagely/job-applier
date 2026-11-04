@@ -267,3 +267,98 @@ def test_feed_parse_warns_when_the_envelope_is_not_a_list(monkeypatch, caplog):
     )
     refresh_mod._fetch_candidates_from_simplify()
     assert "expected a list" in caplog.text
+
+
+# ---- Bug 3: a failed check isn't a dead board -------------------------------
+
+
+@pytest.mark.parametrize(
+    "err",
+    ["HTTP 429", "HTTP 500", "HTTP 502", "The read operation timed out", "Expecting value"],
+)
+def test_transient_failure_leaves_a_board_enabled(tmp_path, monkeypatch, err):
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(refresh_mod, "engine", lambda: eng)
+    _seed(eng, [SourceSlug(source="workable", slug="acme")])
+    stats = refresh_mod.RefreshStats()
+
+    refresh_mod._apply_reverify(
+        source="workable",
+        results=[("acme", False, None, err)],
+        stats=stats,
+        reverified_field="wk_reverified",
+        disabled_field="wk_disabled",
+    )
+
+    with Session(eng) as s:
+        row = s.exec(select(SourceSlug)).one()
+    assert row.enabled is True and row.last_error == err
+    assert stats.wk_disabled == 0
+
+
+@pytest.mark.parametrize("err", ["HTTP 404", "HTTP 410", "HTTP 422", "malformed slug"])
+def test_a_gone_board_is_disabled(tmp_path, monkeypatch, err):
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(refresh_mod, "engine", lambda: eng)
+    _seed(eng, [SourceSlug(source="workday", slug="acme")])
+    stats = refresh_mod.RefreshStats()
+
+    refresh_mod._apply_reverify(
+        source="workday",
+        results=[("acme", False, None, err)],
+        stats=stats,
+        reverified_field="workday_reverified",
+        disabled_field="workday_disabled",
+    )
+
+    with Session(eng) as s:
+        assert s.exec(select(SourceSlug)).one().enabled is False
+    assert stats.workday_disabled == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "result", "enabled", "last_error"),
+    [
+        # Passing again brings a board back.
+        ("lever", (True, 3, None), True, None),
+        # An empty Workable board isn't proof of life, so it stays off.
+        ("workable", (True, 0, None), False, None),
+        # A transient failure neither revives it nor loses why it was disabled.
+        ("lever", (False, None, "HTTP 429"), False, "HTTP 404"),
+    ],
+)
+def test_a_disabled_board_only_comes_back_on_proof(
+    tmp_path, monkeypatch, source, result, enabled, last_error
+):
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(refresh_mod, "engine", lambda: eng)
+    _seed(eng, [SourceSlug(source=source, slug="acme", enabled=False, last_error="HTTP 404")])
+
+    refresh_mod._apply_reverify(
+        source=source,
+        results=[("acme", *result)],
+        stats=refresh_mod.RefreshStats(),
+        reverified_field="lv_reverified",
+        disabled_field="lv_disabled",
+    )
+
+    with Session(eng) as s:
+        row = s.exec(select(SourceSlug)).one()
+    assert (row.enabled, row.last_error) == (enabled, last_error)
+
+
+def test_workable_verify_stops_requesting_at_the_first_429(monkeypatch):
+    calls = []
+
+    class Resp:
+        status_code = 429
+
+    def post(url, **_):
+        calls.append(url)
+        return Resp()
+
+    monkeypatch.setattr(refresh_mod.httpx, "post", post)
+    results = refresh_mod._verify_workable(["a", "b", "c"], max_workers=1)
+
+    assert len(calls) == 1
+    assert [r[3] for r in results] == ["HTTP 429"] * 3

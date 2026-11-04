@@ -16,6 +16,7 @@ Job page URL pattern: ``https://apply.workable.com/{slug}/j/{shortcode}/``
 from __future__ import annotations
 
 import logging
+import random
 import time
 from collections.abc import Iterable
 from typing import Optional
@@ -37,11 +38,14 @@ JOB_PAGE = "https://apply.workable.com/{slug}/j/{shortcode}/"
 MAX_JOBS_PER_SLUG = 200
 PAGE_LIMIT = 100
 
-# Workable's detail endpoint rate-limits at ~60 req/min per IP. With the
-# title-level pre-filter we make ~10x fewer detail calls per slug, so a short
-# backoff + single retry is enough. We still abort the rest of the run on a
-# second 429 — by then the cooldown is established and pressing harder makes
-# it worse.
+# Workable rate-limits per IP, and its block can be long: measured 2026-11-04, about
+# 150 list requests in 12 seconds drew a 429 with ``Retry-After: 86400``, still
+# refusing minutes later. So a short backoff + single retry only applies when the
+# 429 asks for no longer than that; anything longer ends the run straight away,
+# since waiting is pointless and pressing harder may make it worse. The title-level
+# pre-filter makes ~10x fewer detail calls per slug, which is what stretches the
+# allowance across more boards. Not every board fits in one run, which is why
+# ``fetch`` shuffles them.
 RATE_LIMIT_BACKOFF_S = 10.0
 MAX_RETRIES_ON_429 = 1
 # Once we've eaten the backoff and still hit 429, skip remaining slugs.
@@ -64,16 +68,18 @@ class WorkableSource:
         self._rate_limited = False
 
     def fetch(self) -> Iterable[RawJob]:
+        # A fixed order would give the limit's allowance to the same boards on every
+        # run and never reach the ones at the end of the alphabet.
+        slugs = random.sample(self.company_slugs, len(self.company_slugs))
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            for slug in self.company_slugs:
+            for done, slug in enumerate(slugs):
                 if self._rate_limited and LIST_429_SHORT_CIRCUITS_RUN:
                     # Once we've eaten a 429 with backoff and still hit it again,
                     # spending the rest of the run pounding the API just extends
                     # the cooldown. Bail until the next ingest.
                     log.warning(
                         "workable rate-limited, skipping remaining %d slugs",
-                        len(self.company_slugs)
-                        - self.company_slugs.index(slug),
+                        len(slugs) - done,
                     )
                     return
                 yield from self._fetch_slug(client, slug)
@@ -164,8 +170,9 @@ class WorkableSource:
         *,
         label: str,
     ) -> dict | None:
-        """One retry on 429 with a fixed backoff. Sets ``self._rate_limited``
-        when the retry also fails so the caller can short-circuit the run."""
+        """One retry on 429 with a fixed backoff, unless the 429 asks for longer
+        than that. Sets ``self._rate_limited`` when giving up so the caller can
+        short-circuit the run."""
         for attempt in range(MAX_RETRIES_ON_429 + 1):
             try:
                 if method == "POST":
@@ -176,12 +183,13 @@ class WorkableSource:
                 log.warning("workable[%s] %s failed: %s", label, method, e)
                 return None
             if resp.status_code == 429:
-                if attempt >= MAX_RETRIES_ON_429:
+                retry_after = _retry_after_seconds(resp)
+                if attempt >= MAX_RETRIES_ON_429 or retry_after > RATE_LIMIT_BACKOFF_S:
                     log.warning(
-                        "workable[%s] %s rate-limited after %d retries; aborting run",
+                        "workable[%s] %s rate-limited (Retry-After %.0fs); aborting run",
                         label,
                         method,
-                        MAX_RETRIES_ON_429,
+                        retry_after,
                     )
                     self._rate_limited = True
                     return None
@@ -201,6 +209,14 @@ class WorkableSource:
                 log.warning("workable[%s] %s failed: %s", label, method, e)
                 return None
         return None
+
+
+def _retry_after_seconds(resp: httpx.Response) -> float:
+    """The 429's ``Retry-After`` in seconds, 0 when absent or in the date form."""
+    try:
+        return float(resp.headers.get("retry-after") or 0)
+    except ValueError:
+        return 0.0
 
 
 def _normalize(company_slug: str, item: dict) -> RawJob | None:
