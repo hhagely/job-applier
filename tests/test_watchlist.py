@@ -339,3 +339,29 @@ class TestWatchlistApi:
 
     def test_delete_missing_is_404(self, client):
         assert client.request("DELETE", "/api/watched-companies/999").status_code == 404
+
+
+# ---- Boards scoped to countries nobody searches ------------------------------
+
+
+def test_naming_a_board_nobody_scrapes_starts_searching_it(session, monkeypatch):
+    """A scoped board with no profile searching its country isn't being searched,
+    so "already searching" would be false. Naming it makes it the user's own."""
+    session.add(SourceSlug(source="greenhouse", slug="dojo", countries=["GB", "IE"]))
+    session.commit()
+    monkeypatch.setattr(discover, "probe_company", lambda *_: pytest.fail("no probe needed"))
+
+    result = watchlist.add_watched_company(session, "Dojo")
+
+    assert result.status == "added"
+    row = session.exec(select(SourceSlug).where(SourceSlug.slug == "dojo")).one()
+    assert row.countries == [] and row.added_by_user and row.label == "Dojo"
+    assert len(session.exec(select(SourceSlug)).all()) == 1
+
+
+def test_a_scoped_board_someone_searches_is_already_searched(session):
+    session.add(SearchProfile(name="Abroad", markets=[{"country": "GB"}]))
+    session.add(SourceSlug(source="greenhouse", slug="dojo", countries=["GB", "IE"]))
+    session.commit()
+
+    assert watchlist.add_watched_company(session, "Dojo").status == "already_searched"

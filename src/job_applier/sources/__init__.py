@@ -2,8 +2,8 @@
 
 The DB (``SourceSlug`` table) is the runtime source of truth for which
 per-company boards (Greenhouse / Lever / Ashby / Workday / Workable /
-SmartRecruiters / Jibe / Oracle) to ingest from. ``companies.py`` exists only
-as a one-time seed for fresh installs. The registered set is whatever
+SmartRecruiters / Jibe / Oracle) to ingest from.
+``companies.py`` exists only as a seed. The registered set is whatever
 ``get_all_sources`` builds — keep this list in step with it.
 
 The aggregator sources (RemoteOK, WeWorkRemotely, HackerNews, YCombinator)
@@ -24,6 +24,7 @@ from job_applier.sources.hackernews import HackerNewsHiringSource
 from job_applier.sources.jibe import JibeSource
 from job_applier.sources.lever import LeverSource
 from job_applier.sources.oracle import OracleSource
+from job_applier.sources.refresh import board_is_searched, searched_countries
 from job_applier.sources.remoteok import RemoteOKSource
 from job_applier.sources.smartrecruiters import SmartRecruitersSource
 from job_applier.sources.workable import WorkableSource
@@ -37,13 +38,14 @@ if TYPE_CHECKING:
 
 def _enabled_slugs(source: str) -> list[str]:
     with Session(engine()) as session:
+        searched = searched_countries(session)
         rows = session.exec(
             select(SourceSlug).where(
                 SourceSlug.source == source,
                 SourceSlug.enabled.is_(True),  # type: ignore[union-attr]
             )
         ).all()
-    return sorted(r.slug for r in rows)
+    return sorted(r.slug for r in rows if board_is_searched(r, searched))
 
 
 def get_all_sources(filter_config: FilterConfig | None = None) -> list[SourceAdapter]:

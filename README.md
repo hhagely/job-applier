@@ -428,9 +428,15 @@ setup seeds the table from `src/job_applier/sources/companies.py` on first
 later picks up its seed on the next `init` without disturbing the populated
 tables. Companies added to the seed later go in `SEED_BATCHES` at the bottom of
 that file instead: every install picks each batch up once on its next start
-(recorded in `AppSetting`), so a board you removed isn't added back. The
-`uk-ie-2026-10` batch adds about 60 UK, Scotland, and Ireland employers for
-profiles that search those countries.
+(recorded in `AppSetting`), so a board you removed isn't added back. The UK and
+Ireland batches add 57 boards for profiles that search those countries.
+
+A board can be limited to certain countries (`SourceSlug.countries`, set by a
+batch): it's only scraped while some profile searches one of them, and isn't
+counted under **Companies searched** otherwise. Fetching is the cost this saves,
+in network time and in requests against rate-limited ATSs. A board that also lists
+US roles stays unlimited, because the US is always searched. Naming a limited
+board under **Check a company** makes it yours, scraped from then on.
 
 ```sh
 # Pull new Greenhouse/Lever/Workable/SmartRecruiters candidates from the

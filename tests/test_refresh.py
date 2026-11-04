@@ -21,8 +21,10 @@ import pytest
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from job_applier.models import SourceSlug
+from job_applier.models import SearchProfile, SourceSlug
+from job_applier import sources as sources_mod
 from job_applier.sources import refresh as refresh_mod
+from job_applier.sources.companies import SeedBatch
 
 # Every source refresh_slugs discovers candidates for, plus Workday (re-verified
 # only). Used to build stub candidate sets.
@@ -284,7 +286,7 @@ def test_seed_batch_is_applied_once_and_skips_stored_slugs(tmp_path, monkeypatch
     monkeypatch.setattr(
         refresh_mod,
         "SEED_BATCHES",
-        {"uk": {"greenhouse": ["monzo", "Stripe"], "ashby": ["Synthesia"]}},
+        {"uk": SeedBatch(boards={"greenhouse": ["monzo", "Stripe"], "ashby": ["Synthesia"]})},
     )
 
     assert refresh_mod.seed_if_empty() == 2
@@ -302,3 +304,53 @@ def test_seed_batch_is_applied_once_and_skips_stored_slugs(tmp_path, monkeypatch
         s.commit()
     assert refresh_mod.seed_if_empty() == 0
     assert ("greenhouse", "monzo") not in slugs()
+
+
+def test_seed_batch_countries_tag_new_and_stored_boards_but_not_the_users(tmp_path, monkeypatch):
+    """The countries describe the board, so a stored row takes them too; a board the
+    user added by hand stays theirs and is always scraped."""
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(refresh_mod, "engine", lambda: eng)
+    monkeypatch.setattr(refresh_mod, "_SEEDS", {})
+    _seed(eng, [SourceSlug(source="greenhouse", slug="dojo"),
+                SourceSlug(source="greenhouse", slug="tide", added_by_user=True)])
+    monkeypatch.setattr(
+        refresh_mod,
+        "SEED_BATCHES",
+        {"uk": SeedBatch(countries=("GB", "IE"), boards={"greenhouse": ["dojo", "tide", "ohme"]})},
+    )
+
+    assert refresh_mod.seed_if_empty() == 1
+
+    with Session(eng) as s:
+        tags = {r.slug: r.countries for r in s.exec(select(SourceSlug))}
+    assert tags == {"dojo": ["GB", "IE"], "ohme": ["GB", "IE"], "tide": []}
+
+
+def test_a_scoped_board_is_scraped_only_while_a_profile_searches_its_country(tmp_path, monkeypatch):
+    """Any one profile searching the country is enough, and turning it off stops
+    the scraping without touching the row."""
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(sources_mod, "engine", lambda: eng)
+    _seed(eng, [SourceSlug(source="greenhouse", slug="stripe"),
+                SourceSlug(source="greenhouse", slug="dojo", countries=["GB", "IE"]),
+                SourceSlug(source="greenhouse", slug="dead", enabled=False)])
+    with Session(eng) as s:
+        s.add_all([SearchProfile(name="US only"), SearchProfile(name="Abroad")])
+        s.commit()
+
+    assert sources_mod._enabled_slugs("greenhouse") == ["stripe"]
+
+    with Session(eng) as s:
+        abroad = s.exec(select(SearchProfile).where(SearchProfile.name == "Abroad")).one()
+        abroad.markets = [{"country": "IE"}]
+        s.add(abroad)
+        s.commit()
+    assert sources_mod._enabled_slugs("greenhouse") == ["dojo", "stripe"]
+
+    with Session(eng) as s:
+        abroad = s.exec(select(SearchProfile).where(SearchProfile.name == "Abroad")).one()
+        abroad.markets = []
+        s.add(abroad)
+        s.commit()
+    assert sources_mod._enabled_slugs("greenhouse") == ["stripe"]

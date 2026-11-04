@@ -205,6 +205,10 @@ class SourceSlug(SQLModel, table=True):
     to thousands. ``label`` keeps the name they typed for display, since a slug
     like ``acme-corp`` (or a packed Workday ``tenant|region|site``) doesn't read
     as a company name.
+
+    ``countries`` limits when the board is scraped: only while some profile
+    searches one of these alpha-2 codes (``refresh.board_is_searched``). Empty
+    means always, which is every row but the seed batches that set it.
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -216,6 +220,7 @@ class SourceSlug(SQLModel, table=True):
     last_error: Optional[str] = None
     added_by_user: bool = Field(default=False, index=True)
     label: Optional[str] = None
+    countries: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     added_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

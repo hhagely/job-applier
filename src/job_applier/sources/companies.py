@@ -36,6 +36,8 @@ numeric ``CX_n`` site number; the public job-link base is carried separately so
 click-throughs land on the pretty careers URL.
 """
 
+from dataclasses import dataclass
+
 GREENHOUSE_COMPANIES: list[str] = [
     "10alabs",
     "10beauty",
@@ -1397,90 +1399,118 @@ ORACLE_SITES: list[str] = [
     "|https://careers.oracle.com/en/sites/jobsearch|Oracle",
 ]
 
-# Additions made after an install has already been seeded, keyed by batch name
-# and then by source. The lists above only fill a source with no rows, so a
-# company added to them never reaches an existing install; a batch here reaches
-# every install exactly once (see ``refresh._apply_seed_batches``). Add new
-# companies as a new batch rather than editing an applied one: an install that
-# already recorded a batch name won't look at it again.
-SEED_BATCHES: dict[str, dict[str, list[str]]] = {
-    # UK (Scotland included) and Ireland employers, for profiles that search
-    # those countries under "Where you can work". Each board was confirmed live
-    # and, unless noted, listing UK or Irish roles when added (2026-10-28).
-    # Many Scottish employers use an ATS we don't read (Pinpoint, BambooHR,
-    # Teamtailor), so Scotland is thinner here than its tech scene.
-    "uk-ie-2026-10": {
-        "greenhouse": [
-            # Scotland
-            "fanduel",  # Edinburgh
-            # UK
-            "autotrader",
-            "dojo",
-            "ebury",
-            "form3",
-            "geniussports",
-            "gocardless",
-            "gymshark",
-            "isomorphiclabs",
-            "ohme",
-            "physicsx",
-            "polyai",
-            "redbadger",
-            "riverlane",
-            "speechmatics",
-            "sumup",
-            "thoughtworks",
-            "tide",
-            "truelayer",
-            "typeform",
-            # Ireland
-            "flipdish",
-            "learnupon",
-            "mongodb",
-            "smartbear",
-            "squarespace",
-            "wrike",
-        ],
-        "lever": [
-            "healx",
-            "kitmanlabs",  # Dublin; no openings when added
-            "recognisebank",
-        ],
-        "ashby": [
-            # Scotland
-            "Wordsmith",  # Edinburgh
-            # UK
-            "Accurx",
-            "Beamery",
-            "Birdie",  # lists "United Kingdon", which the filter does not read as the UK
-            "Codat",
-            "Duffel",
-            "Freetrade",
-            "Improbable",
-            "Juro",
-            "Kaluza",
-            "Marshmallow",
-            "Moneybox",
-            "Multiverse",
-            "OakNorth",
-            "Oxa",
-            "Paddle",
-            "Signal-AI",
-            "Snyk",
-            "Thought-Machine",
-            "Tractable",
-            "TrueLayer",
-            "Unmind",
-            # Ireland
-            "Evervault",
-            "Fonoa",
-            "Nory",
-            "Wayflyer",
-            "Workhuman",
-        ],
-        "workday": [
-            # Wood Mackenzie, Edinburgh; no titles matched our search terms when added
-            "woodmac|wd3|woodmaccareers",
-        ],
-    },
+
+@dataclass(frozen=True)
+class SeedBatch:
+    """Boards added after an install has already been seeded, keyed by source."""
+
+    boards: dict[str, list[str]]
+    # Scrape these only while a profile searches one of these countries. Leave it
+    # empty for a board that also lists US roles: the US is always searched, so
+    # scoping it would hide those roles from a US-only profile.
+    countries: tuple[str, ...] = ()
+
+
+# The lists above only fill a source with no rows, so a company added to them
+# never reaches an existing install; a batch here reaches every install exactly
+# once (see ``refresh._apply_seed_batches``). Add new companies as a new batch
+# rather than editing an applied one: an install that already recorded a batch
+# name won't look at it again.
+#
+# The UK (Scotland included) and Ireland batches are for profiles that search those
+# countries under "Where you can work". Each board was confirmed live and, unless
+# noted, listing UK or Irish roles when added. Boards went in the scoped batch when
+# they listed no US roles, which is a judgment made on the day: one that starts
+# hiring in the US won't reach a US-only profile until it's moved.
+SEED_BATCHES: dict[str, SeedBatch] = {
+    # Also list US roles, so they're scraped for everyone.
+    "uk-ie-2026-10": SeedBatch(
+        boards={
+            "greenhouse": [
+                # Scotland
+                "fanduel",  # Edinburgh
+                # UK
+                "form3",
+                "geniussports",
+                "gocardless",
+                "gymshark",
+                "isomorphiclabs",
+                "physicsx",
+                "polyai",
+                "riverlane",
+                "speechmatics",
+                "sumup",
+                "thoughtworks",
+                "typeform",
+                # Ireland
+                "mongodb",
+                "smartbear",
+                "squarespace",
+                "wrike",
+            ],
+            "ashby": [
+                # Scotland
+                "Wordsmith",  # Edinburgh
+                # UK
+                "Beamery",
+                "Codat",
+                "Duffel",
+                "Juro",
+                "Paddle",
+                "Signal-AI",
+                "Snyk",
+                "Thought-Machine",
+                "Tractable",
+                # Ireland
+                "Evervault",
+                "Fonoa",
+                "Nory",
+                "Wayflyer",
+                "Workhuman",
+            ],
+            "workday": [
+                # Wood Mackenzie, Edinburgh; no titles matched our search terms when
+                # added, so whether it lists US roles is unknown
+                "woodmac|wd3|woodmaccareers",
+            ],
+        }
+    ),
+    # No US roles when added, so a US-only install doesn't scrape them.
+    "uk-ie-only-2026-11": SeedBatch(
+        countries=("GB", "IE"),
+        boards={
+            "greenhouse": [
+                # UK
+                "autotrader",
+                "dojo",
+                "ebury",
+                "ohme",
+                "redbadger",
+                "tide",
+                "truelayer",
+                # Ireland
+                "flipdish",
+                "learnupon",
+            ],
+            "lever": [
+                "healx",
+                "kitmanlabs",  # Dublin; no openings when added
+                "recognisebank",
+            ],
+            "ashby": [
+                "Accurx",
+                "Birdie",  # lists "United Kingdon", which the filter does not read as the UK
+                "Freetrade",
+                "Improbable",
+                "Kaluza",
+                "Marshmallow",
+                "Moneybox",
+                "Multiverse",
+                "OakNorth",
+                "Oxa",
+                "TrueLayer",
+                "Unmind",
+            ],
+        },
+    ),
 }

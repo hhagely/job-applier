@@ -26,7 +26,8 @@ from datetime import datetime, timezone
 import httpx
 from sqlmodel import Session, select
 
-from job_applier.models import SourceSlug, engine
+from job_applier.countries import US, markets_from_rows
+from job_applier.models import SearchProfile, SourceSlug, engine
 from job_applier.models.db import AppSetting
 from job_applier.sources.companies import (
     ASHBY_COMPANIES,
@@ -169,6 +170,23 @@ class RefreshStats:
     sr_disabled: int = 0
 
 
+def searched_countries(session: Session) -> set[str]:
+    """Every country a profile on this install searches, the US always among them."""
+    searched = {US}
+    for rows in session.exec(select(SearchProfile.markets)):
+        searched.update(market.country for market in markets_from_rows(rows))
+    return searched
+
+
+def board_is_searched(row: SourceSlug, searched: set[str]) -> bool:
+    """Whether a scrape should fetch this board, given ``searched_countries``.
+
+    Fetching costs network time and a request against the ATS's rate limit, so a
+    board only one country's searchers want waits until someone searches it.
+    """
+    return not row.countries or not searched.isdisjoint(row.countries)
+
+
 #: ``AppSetting`` key prefix recording that a ``SEED_BATCHES`` entry was applied.
 SEED_BATCH_KEY_PREFIX = "seed_batch:"
 
@@ -215,24 +233,30 @@ def _apply_seed_batches(session: Session) -> int:
     later never reaches an existing install. A batch reaches every install once:
     its name is recorded in ``AppSetting`` when applied, so a row the user later
     removes isn't put back on the next start. A slug already stored (by the
-    feed, the base seed, or the user) is skipped, matched case-insensitively
-    like feed discovery. The caller commits.
+    feed, the base seed, or the user) gets no second row, matched
+    case-insensitively like feed discovery, but does take the batch's countries,
+    since they describe the board. One the user added by hand stays theirs: they
+    asked for it, so it's always scraped. The caller commits.
     """
     inserted = 0
-    for name, by_source in SEED_BATCHES.items():
+    for name, batch in SEED_BATCHES.items():
         key = f"{SEED_BATCH_KEY_PREFIX}{name}"
         if session.get(AppSetting, key) is not None:
             continue
-        for source, slugs in by_source.items():
+        for source, slugs in batch.boards.items():
             stored = {
-                s.lower()
-                for s in session.exec(
-                    select(SourceSlug.slug).where(SourceSlug.source == source)
-                )
+                row.slug.lower(): row
+                for row in session.exec(select(SourceSlug).where(SourceSlug.source == source))
             }
-            new = [s for s in _valid_slugs(source, slugs) if s.lower() not in stored]
-            session.add_all(SourceSlug(source=source, slug=s) for s in new)
-            inserted += len(new)
+            for slug in _valid_slugs(source, slugs):
+                row = stored.get(slug.lower())
+                if row is None:
+                    session.add(
+                        SourceSlug(source=source, slug=slug, countries=list(batch.countries))
+                    )
+                    inserted += 1
+                elif batch.countries and not row.added_by_user:
+                    row.countries = list(batch.countries)
         session.add(AppSetting(key=key, value=datetime.now(timezone.utc).isoformat()))
     return inserted
 
