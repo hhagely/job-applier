@@ -269,15 +269,38 @@ describe('Open N postings', () => {
 		expect(openButton()).toHaveProperty('disabled', true);
 	});
 
-	it('asks before opening a big batch, and opens nothing when declined', async () => {
-		const jobs = Array.from({ length: 11 }, (_, i) =>
+	const batch = (length: number) =>
+		Array.from({ length }, (_, i) =>
 			job({ id: i + 1, url: `https://e.com/${i + 1}`, title: `Job ${i + 1}` })
 		);
-		const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-		render(Board, { props: { data: data({ jobs }) } });
+
+	it('asks before opening a big batch, and opens nothing when declined', async () => {
+		render(Board, { props: { data: data({ jobs: batch(11) }) } });
 		await selectAllVisible();
 		await fireEvent.click(openButton());
-		expect(confirm).toHaveBeenCalledWith('Open 11 postings in your browser?');
+		const dialog = screen.getByRole('dialog', { name: 'Open 11 postings?' });
 		expect(window.open).not.toHaveBeenCalled();
+
+		await fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(window.open).not.toHaveBeenCalled();
+	});
+
+	it('opens every selected posting once the big batch is confirmed', async () => {
+		render(Board, { props: { data: data({ jobs: batch(11) }) } });
+		await selectAllVisible();
+		await fireEvent.click(openButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Open postings' }));
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(window.open).toHaveBeenCalledTimes(11);
+		expect(window.open).toHaveBeenCalledWith('https://e.com/11', '_blank', 'noopener');
+	});
+
+	it('skips the prompt at the threshold', async () => {
+		render(Board, { props: { data: data({ jobs: batch(10) }) } });
+		await selectAllVisible();
+		await fireEvent.click(openButton());
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(window.open).toHaveBeenCalledTimes(10);
 	});
 });

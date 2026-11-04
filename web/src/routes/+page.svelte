@@ -16,6 +16,7 @@
 		type SortKey,
 		type UnempFilter
 	} from '$lib/queueFilters';
+	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
 	import JobDetailPane from '$lib/JobDetailPane.svelte';
 	import JobListRow from '$lib/JobListRow.svelte';
 	import ScoreProgress from '$lib/ScoreProgress.svelte';
@@ -190,25 +191,28 @@
 	const base = $derived(data.apiBase ?? '');
 
 	// --- "Open N postings": every selected job's original posting, one tab each.
-	// window.open() has to run synchronously inside the user gesture (an await
-	// first and a browser blocks every tab), which is fine here: the selection
-	// is always rows already loaded on this page, so their URLs are in hand. ---
+	// window.open() has to run synchronously inside a click (an await first and a
+	// browser blocks every tab), which is fine here: the selection is always rows
+	// already loaded on this page, so their URLs are in hand. Electron opens them
+	// all; a browser's popup blocker lets one through per click unless the user
+	// allows popups for the site. ---
 	// Opening a browser tab per job is slow and hard to undo, so a big batch asks first.
 	const OPEN_ALL_CONFIRM_AT = 10;
+	let confirmingOpen = $state(false);
 
 	const selectedUrls = $derived([
 		...new Set(data.jobs.filter((j) => selected.has(j.id) && j.url).map((j) => j.url))
 	]);
 
-	function openSelectedPostings() {
-		const urls = selectedUrls;
-		if (urls.length === 0) return;
-		if (urls.length > OPEN_ALL_CONFIRM_AT && !confirm(`Open ${urls.length} postings in your browser?`)) {
-			return;
-		}
+	function openPostings() {
 		// main.js's window-open handler hands each URL to the OS browser and denies
 		// the Electron window, so window.open's return value says nothing here.
-		for (const url of urls) window.open(url, '_blank', 'noopener');
+		for (const url of selectedUrls) window.open(url, '_blank', 'noopener');
+	}
+
+	function onOpenPostingsClick() {
+		if (selectedUrls.length > OPEN_ALL_CONFIRM_AT) confirmingOpen = true;
+		else openPostings();
 	}
 
 	const allVisibleSelected = $derived(
@@ -396,7 +400,7 @@
 		{#if selected.size > 0}
 			<button
 				class="btn"
-				onclick={openSelectedPostings}
+				onclick={onOpenPostingsClick}
 				disabled={selectedUrls.length === 0}
 				title={`Open ${selectedUrls.length} original posting${selectedUrls.length === 1 ? '' : 's'} in your browser`}
 			>
@@ -570,6 +574,19 @@
 	<!-- detail pane -->
 	<JobDetailPane job={selectedJob} {hasProvider} apiBase={base} />
 </div>
+
+<ConfirmDialog
+	open={confirmingOpen}
+	title={`Open ${selectedUrls.length} postings?`}
+	confirmLabel="Open postings"
+	onConfirm={() => {
+		confirmingOpen = false;
+		openPostings();
+	}}
+	onCancel={() => (confirmingOpen = false)}
+>
+	Each posting opens in its own tab in your browser.
+</ConfirmDialog>
 
 {#if selectedCount > 0}
 	<form
