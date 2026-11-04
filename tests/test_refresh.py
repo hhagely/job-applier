@@ -267,3 +267,38 @@ def test_feed_parse_warns_when_the_envelope_is_not_a_list(monkeypatch, caplog):
     )
     refresh_mod._fetch_candidates_from_simplify()
     assert "expected a list" in caplog.text
+
+
+# ---- Seed batches reach existing installs once ------------------------------
+
+
+def test_seed_batch_is_applied_once_and_skips_stored_slugs(tmp_path, monkeypatch):
+    """A batch reaches an install whose sources are already seeded, skips a slug
+    already stored under any casing, and isn't re-applied on the next start, so a
+    company removed after it landed stays removed."""
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(refresh_mod, "engine", lambda: eng)
+    monkeypatch.setattr(refresh_mod, "_SEEDS", {"greenhouse": ["stripe"], "ashby": ["Notion"]})
+    _seed(eng, [SourceSlug(source="greenhouse", slug="stripe"),
+                SourceSlug(source="ashby", slug="Notion")])
+    monkeypatch.setattr(
+        refresh_mod,
+        "SEED_BATCHES",
+        {"uk": {"greenhouse": ["monzo", "Stripe"], "ashby": ["Synthesia"]}},
+    )
+
+    assert refresh_mod.seed_if_empty() == 2
+
+    def slugs():
+        with Session(eng) as s:
+            return sorted((r.source, r.slug) for r in s.exec(select(SourceSlug)))
+
+    assert slugs() == [
+        ("ashby", "Notion"), ("ashby", "Synthesia"),
+        ("greenhouse", "monzo"), ("greenhouse", "stripe"),
+    ]
+    with Session(eng) as s:
+        s.delete(s.exec(select(SourceSlug).where(SourceSlug.slug == "monzo")).one())
+        s.commit()
+    assert refresh_mod.seed_if_empty() == 0
+    assert ("greenhouse", "monzo") not in slugs()

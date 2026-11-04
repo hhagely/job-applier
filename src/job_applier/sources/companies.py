@@ -9,6 +9,9 @@ when the table is empty. After that, manage slugs via the DB:
 - ``job-applier refresh-slugs --reverify`` — also re-check existing slugs
   and auto-disable ones that have gone dead.
 
+``SEED_BATCHES`` at the bottom is the exception: companies added after the
+fact, which every install picks up once on its next start.
+
 Greenhouse / Lever lists below were originally sourced from SimplifyJobs and
 verified live against the public boards APIs at the time of writing.
 
@@ -1393,3 +1396,90 @@ ORACLE_SITES: list[str] = [
     "eeho.fa.us2.oraclecloud.com|CX_45001"
     "|https://careers.oracle.com/en/sites/jobsearch|Oracle",
 ]
+
+# Additions made after an install has already been seeded, keyed by batch name
+# and then by source. The lists above only fill a source with no rows, so a
+# company added to them never reaches an existing install; a batch here reaches
+# every install exactly once (see ``refresh._apply_seed_batches``). Add new
+# companies as a new batch rather than editing an applied one: an install that
+# already recorded a batch name won't look at it again.
+SEED_BATCHES: dict[str, dict[str, list[str]]] = {
+    # UK (Scotland included) and Ireland employers, for profiles that search
+    # those countries under "Where you can work". Each board was confirmed live
+    # and, unless noted, listing UK or Irish roles when added (2026-10-28).
+    # Many Scottish employers use an ATS we don't read (Pinpoint, BambooHR,
+    # Teamtailor), so Scotland is thinner here than its tech scene.
+    "uk-ie-2026-10": {
+        "greenhouse": [
+            # Scotland
+            "fanduel",  # Edinburgh
+            # UK
+            "autotrader",
+            "dojo",
+            "ebury",
+            "form3",
+            "geniussports",
+            "gocardless",
+            "gymshark",
+            "isomorphiclabs",
+            "ohme",
+            "physicsx",
+            "polyai",
+            "redbadger",
+            "riverlane",
+            "speechmatics",
+            "sumup",
+            "thoughtworks",
+            "tide",
+            "truelayer",
+            "typeform",
+            # Ireland
+            "flipdish",
+            "learnupon",
+            "mongodb",
+            "smartbear",
+            "squarespace",
+            "wrike",
+        ],
+        "lever": [
+            "healx",
+            "kitmanlabs",  # Dublin; no openings when added
+            "recognisebank",
+        ],
+        "ashby": [
+            # Scotland
+            "Wordsmith",  # Edinburgh
+            # UK
+            "Accurx",
+            "Beamery",
+            "Birdie",
+            "Codat",
+            "Duffel",
+            "Freetrade",
+            "Improbable",
+            "Juro",
+            "Kaluza",
+            "Marshmallow",
+            "Moneybox",
+            "Multiverse",
+            "OakNorth",
+            "Oxa",
+            "Paddle",
+            "Signal-AI",
+            "Snyk",
+            "Thought-Machine",
+            "Tractable",
+            "TrueLayer",
+            "Unmind",
+            # Ireland
+            "Evervault",
+            "Fonoa",
+            "Nory",
+            "Wayflyer",
+            "Workhuman",
+        ],
+        "workday": [
+            "woodmac|wd3|woodmaccareers",  # Wood Mackenzie, Edinburgh
+        ],
+    },
+}

@@ -426,7 +426,11 @@ Jibe, Oracle) live in the database (`SourceSlug` table), not in code. Initial
 setup seeds the table from `src/job_applier/sources/companies.py` on first
 `job-applier init` — and the seed is per-source, so adding a new source type
 later picks up its seed on the next `init` without disturbing the populated
-tables.
+tables. Companies added to the seed later go in `SEED_BATCHES` at the bottom of
+that file instead: every install picks each batch up once on its next start
+(recorded in `AppSetting`), so a board you removed isn't added back. The
+`uk-ie-2026-10` batch adds about 60 UK, Scotland, and Ireland employers for
+profiles that search those countries.
 
 ```sh
 # Pull new Greenhouse/Lever/Workable/SmartRecruiters candidates from the

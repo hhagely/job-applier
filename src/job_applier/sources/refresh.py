@@ -27,12 +27,14 @@ import httpx
 from sqlmodel import Session, select
 
 from job_applier.models import SourceSlug, engine
+from job_applier.models.db import AppSetting
 from job_applier.sources.companies import (
     ASHBY_COMPANIES,
     GREENHOUSE_COMPANIES,
     JIBE_TENANTS,
     LEVER_COMPANIES,
     ORACLE_SITES,
+    SEED_BATCHES,
     SMARTRECRUITERS_COMPANIES,
     WORKABLE_COMPANIES,
     WORKDAY_BOARDS,
@@ -167,6 +169,9 @@ class RefreshStats:
     sr_disabled: int = 0
 
 
+#: ``AppSetting`` key prefix recording that a ``SEED_BATCHES`` entry was applied.
+SEED_BATCH_KEY_PREFIX = "seed_batch:"
+
 _SEEDS: dict[str, list[str]] = {
     "greenhouse": GREENHOUSE_COMPANIES,
     "lever": LEVER_COMPANIES,
@@ -180,7 +185,8 @@ _SEEDS: dict[str, list[str]] = {
 
 
 def seed_if_empty() -> int:
-    """Seed each source's slugs from companies.py if that source has no rows.
+    """Seed each source's slugs from companies.py if that source has no rows,
+    then apply any ``SEED_BATCHES`` this install hasn't had yet.
 
     Per-source so adding a new source (e.g. Ashby) on an existing install picks
     up its seed on the next ``init`` without disturbing the populated sources.
@@ -197,8 +203,37 @@ def seed_if_empty() -> int:
             valid = _valid_slugs(source, slugs)
             session.add_all(SourceSlug(source=source, slug=s) for s in valid)
             inserted += len(valid)
-        if inserted:
-            session.commit()
+        inserted += _apply_seed_batches(session)
+        session.commit()
+    return inserted
+
+
+def _apply_seed_batches(session: Session) -> int:
+    """Insert the slugs of every ``SEED_BATCHES`` entry this install hasn't had.
+
+    The base seed above only fills an empty source, so a company added to it
+    later never reaches an existing install. A batch reaches every install once:
+    its name is recorded in ``AppSetting`` when applied, so a row the user later
+    removes isn't put back on the next start. A slug already stored (by the
+    feed, the base seed, or the user) is skipped, matched case-insensitively
+    like feed discovery. The caller commits.
+    """
+    inserted = 0
+    for name, by_source in SEED_BATCHES.items():
+        key = f"{SEED_BATCH_KEY_PREFIX}{name}"
+        if session.get(AppSetting, key) is not None:
+            continue
+        for source, slugs in by_source.items():
+            stored = {
+                s.lower()
+                for s in session.exec(
+                    select(SourceSlug.slug).where(SourceSlug.source == source)
+                )
+            }
+            new = [s for s in _valid_slugs(source, slugs) if s.lower() not in stored]
+            session.add_all(SourceSlug(source=source, slug=s) for s in new)
+            inserted += len(new)
+        session.add(AppSetting(key=key, value=datetime.now(timezone.utc).isoformat()))
     return inserted
 
 
