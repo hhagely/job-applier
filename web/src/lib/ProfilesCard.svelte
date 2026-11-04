@@ -3,7 +3,9 @@
 	// profiles. The forms post to /search's own actions (?/createProfile,
 	// ?/activateProfile, ?/updateProfileMeta, ?/deleteProfile), so this only
 	// renders on that page; the page passes the action's error/message back in.
+	import { tick } from 'svelte';
 	import { enhance } from '$app/forms';
+	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
 	import { whileBusy } from '$lib/busy';
 	import type { SearchProfile } from '$lib/api';
 
@@ -15,6 +17,16 @@
 
 	let profileBusy = $state(false);
 	const busyEnhance = whileBusy((b) => (profileBusy = b));
+
+	let pendingDelete = $state<{ name: string; form: HTMLFormElement } | null>(null);
+
+	async function confirmDelete() {
+		const form = pendingDelete?.form;
+		pendingDelete = null;
+		// Let focus return to the Delete button before the submit disables it.
+		await tick();
+		form?.requestSubmit();
+	}
 </script>
 
 <div class="card">
@@ -70,17 +82,13 @@
 						<form method="POST" action="?/deleteProfile" use:enhance={busyEnhance}>
 							<input type="hidden" name="id" value={p.id} />
 							<button
-								type="submit"
+								type="button"
 								class="btn ghost sm"
 								disabled={profileBusy}
 								aria-label="Delete {p.name}"
 								onclick={(e) => {
-									if (
-										!confirm(
-											`Delete "${p.name}"? This permanently removes its resumes, statuses, notes, scores, blacklist, and tailored drafts. Jobs are kept.`
-										)
-									)
-										e.preventDefault();
+									const form = e.currentTarget.form;
+									if (form) pendingDelete = { name: p.name, form };
 								}}>Delete</button
 							>
 						</form>
@@ -109,6 +117,18 @@
 		</form>
 	</div>
 </div>
+
+<ConfirmDialog
+	open={pendingDelete !== null}
+	title={`Delete "${pendingDelete?.name}"?`}
+	confirmLabel="Delete"
+	danger
+	onConfirm={confirmDelete}
+	onCancel={() => (pendingDelete = null)}
+>
+	This permanently removes its resumes, statuses, notes, scores, blacklist, and tailored drafts.
+	Jobs are kept.
+</ConfirmDialog>
 
 <style>
 	.pf-list {

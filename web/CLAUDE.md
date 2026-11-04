@@ -23,4 +23,5 @@ Electron draws a frameless window and the SvelteKit titlebar provides the window
 ## Notes
 
 - [src/lib/api.ts](src/lib/api.ts) must stay browser-safe — no `$env/dynamic/private` imports.
+- Confirmations use [src/lib/ConfirmDialog.svelte](src/lib/ConfirmDialog.svelte), never the native `confirm()`, which Electron shows as a generic OS dialog.
 - [src/lib/draftCart.svelte.ts](src/lib/draftCart.svelte.ts) is the rune-based store for the cross-route draft cart, used from `/`, `/jobs/[id]`, and `/followups`.
