@@ -731,7 +731,7 @@ export const api = {
 		call<CompanyCoverage>(fetchFn, base, '/api/company-coverage'),
 
 	/** Find company job boards we aren't watching yet. `reverify` also re-checks
-	 *  the ones we already have and disables any that no longer respond. */
+	 *  the ones we already have and disables any that have closed. */
 	startCompanyRefresh: (fetchFn: FetchFn, base: string, reverify = false) =>
 		call<{ task_id: string }>(
 			fetchFn,

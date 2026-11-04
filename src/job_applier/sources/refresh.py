@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures as cf
 import logging
 import re
+import threading
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlmodel import Session, select
 
+from job_applier.contracts import BOARD_GONE_ERRORS
 from job_applier.countries import US, markets_from_rows
 from job_applier.models import SearchProfile, SourceSlug, engine
 from job_applier.models.db import AppSetting
@@ -81,6 +83,9 @@ PINPOINT_VERIFY = "https://{slug}.pinpointhq.com/postings.json"
 TEAMTAILOR_VERIFY = "https://{slug}.teamtailor.com/jobs.rss"
 # Workable's verify is a POST with a body — handled by a dedicated helper.
 WORKABLE_VERIFY_URL = "https://apply.workable.com/api/v3/accounts/{slug}/jobs"
+# Few at a time: once Workable's limit trips, requests already in flight are wasted
+# against a block that can last a day.
+WORKABLE_VERIFY_WORKERS = 4
 
 # Sources whose "does this board exist" check is a plain GET returning either a
 # job list or a ``{"jobs": [...]}`` envelope, so they can share ``_verify_many``.
@@ -480,6 +485,12 @@ def _apply_reverify(
     touched meanwhile (added, removed) is picked up as it stands now. Only the
     verification columns are written — ``added_by_user`` and ``label`` are left
     exactly as they were.
+
+    Only an answer meaning the board is gone (``BOARD_GONE_ERRORS``) disables a row.
+    A rate limit or a timeout says nothing about the board, and treating one as
+    death is how one Workable 429 burst disabled 186 live boards. A disabled row
+    that passes again comes back; one that merely fails differently keeps the error
+    that disabled it.
     """
     if not results:
         return
@@ -494,10 +505,16 @@ def _apply_reverify(
             ok, count, err = outcome
             row.last_fetched_at = now
             row.last_job_count = count if ok else row.last_job_count
-            row.last_error = None if ok else err
-            if not ok and row.enabled:
+            gone = not ok and err in BOARD_GONE_ERRORS
+            if ok:
+                row.last_error = None
+            elif gone or row.enabled:
+                row.last_error = err
+            if gone and row.enabled:
                 row.enabled = False
                 setattr(stats, disabled_field, getattr(stats, disabled_field) + 1)
+            elif not row.enabled and board_exists(source, ok, count):
+                row.enabled = True
             row.updated_at = now
             setattr(stats, reverified_field, getattr(stats, reverified_field) + 1)
         session.commit()
@@ -736,9 +753,15 @@ def _verify_workable(
 ) -> list[_VerifyResult]:
     """Workable's list endpoint is POST-only with a JSON body, so it can't share
     ``_verify_many``'s GET ``check``. Returns the response's ``total`` as the count
-    so the caller can skip dead boards (total == 0)."""
+    so the caller can skip dead boards (total == 0).
+
+    The first 429 ends the pass: Workable's block can last a day (``sources/workable``)
+    and it covers the scrape too, so the rest report the same error unrequested."""
+    limited = threading.Event()
 
     def check(slug: str) -> _VerifyResult:
+        if limited.is_set():
+            return (slug, False, None, "HTTP 429")
         try:
             r = httpx.post(
                 WORKABLE_VERIFY_URL.format(slug=slug),
@@ -746,6 +769,8 @@ def _verify_workable(
                 timeout=timeout,
                 follow_redirects=True,
             )
+            if r.status_code == 429:
+                limited.set()
             if r.status_code != 200:
                 return (slug, False, None, f"HTTP {r.status_code}")
             payload = r.json()
@@ -754,7 +779,7 @@ def _verify_workable(
         except Exception as e:  # noqa: BLE001 — capture the error string
             return (slug, False, None, str(e))
 
-    return _run_verifier(slugs, check, max_workers)
+    return _run_verifier(slugs, check, min(max_workers, WORKABLE_VERIFY_WORKERS))
 
 
 def _verify_workday(

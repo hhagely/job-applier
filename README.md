@@ -455,7 +455,15 @@ Discovery (the candidate-pull) covers the five sources the SimplifyJobs feed
 carries URLs for: Greenhouse, Lever, Ashby, Workable, and SmartRecruiters.
 There's no equivalent public list for the others. Re-verification is broader —
 it covers those five plus Workday, Pinpoint, and Teamtailor, auto-disabling dead
-boards; Jibe and Oracle are seed-only (neither discovered nor re-verified).
+boards; Jibe and Oracle are seed-only (neither discovered nor re-verified). A board
+is only disabled when the ATS says it's gone (a 404, say). A rate limit, timeout,
+or 5xx says nothing about the board, so it stays enabled, and a disabled board that
+passes again comes back.
+
+Workable rate-limits hard: about 150 quick requests can draw a 429 asking you to
+wait a day. A scrape stops at that point and tries its boards in a random order, so
+every board gets a turn over several runs. Re-verifying spends the same allowance,
+so a scrape soon after may get nothing from Workable.
 
 Sources differ in what counts as proof a board is real, so `board_exists()` in
 [refresh.py](src/job_applier/sources/refresh.py) holds the rule for both

@@ -16,6 +16,7 @@ from typing import Optional
 from sqlalchemy.engine import Connection
 from sqlmodel import SQLModel
 
+from job_applier.contracts import BOARD_GONE_ERRORS
 from job_applier.countries import posting_countries
 from job_applier.models.db import engine
 from job_applier.models.scoping import _active_profile_id_from, _insert_default_profile
@@ -42,6 +43,7 @@ def run() -> None:
     _ensure_profile_owner_required()
     _ensure_countries_column()
     _fix_stated_workplace_remote()
+    _reenable_boards_disabled_by_transient_errors()
 
 
 def _table_cols(conn: Connection, table: str) -> set[str]:
@@ -242,6 +244,24 @@ def _ensure_sourceslug_columns() -> None:
             added = True
         if added:
             conn.commit()
+
+
+def _reenable_boards_disabled_by_transient_errors() -> None:
+    """Bring back boards a re-verify disabled over a rate limit, timeout, or 5xx.
+
+    Re-verification used to disable a board on any failed check, so one Workable 429
+    burst disabled 186 live boards. It now disables only ``BOARD_GONE_ERRORS``, and
+    a disabled row keeps the error that disabled it, so this leaves nothing to do
+    after the first run.
+    """
+    gone = sorted(BOARD_GONE_ERRORS)
+    with engine().connect() as conn:
+        conn.exec_driver_sql(
+            "UPDATE sourceslug SET enabled = 1 WHERE enabled = 0 AND last_error IS NOT NULL "
+            f"AND last_error NOT IN ({', '.join('?' * len(gone))})",
+            tuple(gone),
+        )
+        conn.commit()
 
 
 def _ensure_score_kind_columns() -> None:
