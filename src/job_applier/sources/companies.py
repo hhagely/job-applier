@@ -1452,7 +1452,7 @@ SEED_BATCHES: dict[str, dict[str, list[str]]] = {
             # UK
             "Accurx",
             "Beamery",
-            "Birdie",
+            "Birdie",  # lists "United Kingdon", which the filter does not read as the UK
             "Codat",
             "Duffel",
             "Freetrade",
@@ -1479,7 +1479,8 @@ SEED_BATCHES: dict[str, dict[str, list[str]]] = {
             "Workhuman",
         ],
         "workday": [
-            "woodmac|wd3|woodmaccareers",  # Wood Mackenzie, Edinburgh
+            # Wood Mackenzie, Edinburgh; no titles matched our search terms when added
+            "woodmac|wd3|woodmaccareers",
         ],
     },
 }
