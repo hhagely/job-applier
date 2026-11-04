@@ -48,7 +48,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from job_applier.sources.base import TITLE_GATE, RawJob, parse_date_multi
+from job_applier.sources.base import TITLE_GATE, RawJob, fetch_boards, parse_date_multi
 
 log = logging.getLogger(__name__)
 
@@ -210,8 +210,9 @@ class OracleSource:
                 ),
             },
         ) as client:
-            for site in self.sites:
-                yield from _fetch_site(client, site)
+            yield from fetch_boards(
+                self.sites, lambda site: _fetch_site(client, site), source=self.name
+            )
 
 
 def _fetch_site(client: httpx.Client, site: OracleSite) -> Iterable[RawJob]:

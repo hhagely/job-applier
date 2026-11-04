@@ -369,8 +369,8 @@ def run_ingest(
     each source finishes; ``match_cb(profile_name, stats)`` after each profile is
     matched (both optional).
 
-    **No DB transaction is ever held across network I/O.** Adapters fetch lazily —
-    one HTTP request per company slug — so writing as we consume the generator
+    **No DB transaction is ever held across network I/O.** Adapters fetch as they
+    are consumed, several boards at a time, so writing as we consume the generator
     would pin SQLite's single write lock for the entire multi-minute sweep of a
     several-hundred-slug board, and every status change the user made meanwhile
     would block on ``busy_timeout`` and then fail with "database is locked".
@@ -401,7 +401,9 @@ def run_ingest(
         if sources is None:
             # Adapters that pre-skip detail fetches by title may only skip a title
             # every profile would reject.
-            sources = get_all_sources(filter_config=union_title_config(configs))
+            sources = get_all_sources(
+                filter_config=union_title_config(configs), markets=markets
+            )
         caches = _IngestCaches.load(session)
 
     total = len(sources)

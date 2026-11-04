@@ -20,7 +20,7 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from job_applier.sources.base import RawJob
+from job_applier.sources.base import RawJob, fetch_boards
 
 log = logging.getLogger(__name__)
 
@@ -41,8 +41,9 @@ class TeamtailorSource:
 
     def fetch(self) -> Iterable[RawJob]:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            for slug in self.company_slugs:
-                yield from _fetch_board(client, slug)
+            yield from fetch_boards(
+                self.company_slugs, lambda slug: _fetch_board(client, slug), source=self.name
+            )
 
 
 def _fetch_board(client: httpx.Client, slug: str) -> Iterable[RawJob]:

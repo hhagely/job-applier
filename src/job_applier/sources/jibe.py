@@ -35,7 +35,7 @@ from collections.abc import Iterable
 
 import httpx
 
-from job_applier.sources.base import RawJob, looks_remote, parse_iso_date
+from job_applier.sources.base import RawJob, fetch_boards, looks_remote, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -56,8 +56,11 @@ class JibeSource:
 
     def fetch(self) -> Iterable[RawJob]:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            for tenant in self.tenant_slugs:
-                yield from self._fetch_tenant(client, tenant)
+            yield from fetch_boards(
+                self.tenant_slugs,
+                lambda tenant: self._fetch_tenant(client, tenant),
+                source=self.name,
+            )
 
     def _fetch_tenant(self, client: httpx.Client, tenant: str) -> Iterable[RawJob]:
         pulled = 0

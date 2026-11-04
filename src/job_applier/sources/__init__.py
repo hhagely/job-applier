@@ -35,6 +35,7 @@ from job_applier.sources.workday import WorkdaySource
 from job_applier.sources.ycombinator import YCombinatorSource
 
 if TYPE_CHECKING:
+    from job_applier.countries import Market
     from job_applier.filters import FilterConfig
 
 
@@ -50,7 +51,10 @@ def _enabled_slugs(source: str) -> list[str]:
     return sorted(r.slug for r in rows if board_is_searched(r, searched))
 
 
-def get_all_sources(filter_config: FilterConfig | None = None) -> list[SourceAdapter]:
+def get_all_sources(
+    filter_config: FilterConfig | None = None,
+    markets: tuple[Market, ...] | None = None,
+) -> list[SourceAdapter]:
     """Build the ingest source list from current DB state.
 
     ``filter_config`` (the active ``FilterConfig``) is passed into Workable +
@@ -60,6 +64,10 @@ def get_all_sources(filter_config: FilterConfig | None = None) -> list[SourceAda
     multi-hundred-slug board sweep. Callers that actually fetch (ingest, diagnose)
     load the config once and inject it here, so it isn't loaded twice per run; the
     count-only caller (the ingest endpoint's source total) can omit it.
+
+    ``markets`` (every profile's countries unioned) lets SmartRecruiters skip the
+    detail fetch for a posting its list entry already rules out. ``diagnose-filter``
+    omits it so its report still counts those drops.
     """
     return [
         GreenhouseSource(_enabled_slugs("greenhouse")),
@@ -68,7 +76,7 @@ def get_all_sources(filter_config: FilterConfig | None = None) -> list[SourceAda
         WorkdaySource(_enabled_slugs("workday")),
         WorkableSource(_enabled_slugs("workable"), filter_config=filter_config),
         SmartRecruitersSource(
-            _enabled_slugs("smartrecruiters"), filter_config=filter_config
+            _enabled_slugs("smartrecruiters"), filter_config=filter_config, markets=markets
         ),
         JibeSource(_enabled_slugs("jibe")),
         OracleSource(_enabled_slugs("oracle")),

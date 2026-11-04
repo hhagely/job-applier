@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from job_applier.sources.base import RawJob, looks_remote
+from job_applier.sources.base import RawJob, fetch_boards, looks_remote
 
 log = logging.getLogger(__name__)
 
@@ -29,21 +29,26 @@ class LeverSource:
 
     def fetch(self) -> Iterable[RawJob]:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            for slug in self.company_slugs:
-                try:
-                    resp = client.get(API.format(slug=slug), params={"mode": "json"})
-                    resp.raise_for_status()
-                    payload = resp.json()
-                except (httpx.HTTPError, ValueError) as e:
-                    log.warning("lever[%s] fetch failed: %s", slug, e)
-                    continue
+            yield from fetch_boards(
+                self.company_slugs, lambda slug: _fetch_board(client, slug), source=self.name
+            )
 
-                if not isinstance(payload, list):
-                    log.warning("lever[%s] returned non-list payload, skipping", slug)
-                    continue
 
-                for item in payload:
-                    yield from _normalize(slug, item)
+def _fetch_board(client: httpx.Client, slug: str) -> Iterable[RawJob]:
+    try:
+        resp = client.get(API.format(slug=slug), params={"mode": "json"})
+        resp.raise_for_status()
+        payload = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("lever[%s] fetch failed: %s", slug, e)
+        return
+
+    if not isinstance(payload, list):
+        log.warning("lever[%s] returned non-list payload, skipping", slug)
+        return
+
+    for item in payload:
+        yield from _normalize(slug, item)
 
 
 def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:

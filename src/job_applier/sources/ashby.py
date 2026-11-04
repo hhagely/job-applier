@@ -14,7 +14,7 @@ from collections.abc import Iterable
 
 import httpx
 
-from job_applier.sources.base import RawJob, looks_remote, parse_iso_date
+from job_applier.sources.base import RawJob, fetch_boards, looks_remote, parse_iso_date
 
 log = logging.getLogger(__name__)
 
@@ -31,26 +31,31 @@ class AshbySource:
         # OpenAI's board is ~10MB / ~45s — give every Ashby board a generous
         # ceiling rather than tuning per-slug.
         with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-            for slug in self.company_slugs:
-                try:
-                    resp = client.get(
-                        API.format(slug=slug),
-                        params={"includeCompensation": "true"},
-                    )
-                    resp.raise_for_status()
-                    payload = resp.json()
-                except (httpx.HTTPError, ValueError) as e:
-                    log.warning("ashby[%s] fetch failed: %s", slug, e)
-                    continue
+            yield from fetch_boards(
+                self.company_slugs, lambda slug: _fetch_board(client, slug), source=self.name
+            )
 
-                if not isinstance(payload, dict):
-                    log.warning("ashby[%s] returned non-object payload, skipping", slug)
-                    continue
 
-                for item in payload.get("jobs", []):
-                    if not item.get("isListed", True):
-                        continue
-                    yield from _normalize(slug, item)
+def _fetch_board(client: httpx.Client, slug: str) -> Iterable[RawJob]:
+    try:
+        resp = client.get(
+            API.format(slug=slug),
+            params={"includeCompensation": "true"},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("ashby[%s] fetch failed: %s", slug, e)
+        return
+
+    if not isinstance(payload, dict):
+        log.warning("ashby[%s] returned non-object payload, skipping", slug)
+        return
+
+    for item in payload.get("jobs", []):
+        if not item.get("isListed", True):
+            continue
+        yield from _normalize(slug, item)
 
 
 def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:

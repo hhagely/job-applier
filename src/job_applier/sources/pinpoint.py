@@ -22,7 +22,7 @@ from collections.abc import Iterable
 
 import httpx
 
-from job_applier.sources.base import RawJob, looks_remote
+from job_applier.sources.base import RawJob, fetch_boards, looks_remote
 
 log = logging.getLogger(__name__)
 
@@ -51,22 +51,27 @@ class PinpointSource:
 
     def fetch(self) -> Iterable[RawJob]:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            for slug in self.company_slugs:
-                try:
-                    resp = client.get(API.format(slug=slug))
-                    resp.raise_for_status()
-                    payload = resp.json()
-                except (httpx.HTTPError, ValueError) as e:
-                    log.warning("pinpoint[%s] fetch failed: %s", slug, e)
-                    continue
+            yield from fetch_boards(
+                self.company_slugs, lambda slug: _fetch_board(client, slug), source=self.name
+            )
 
-                postings = payload.get("data") if isinstance(payload, dict) else None
-                if not isinstance(postings, list):
-                    log.warning("pinpoint[%s] returned an unexpected payload, skipping", slug)
-                    continue
 
-                for item in postings:
-                    yield from _normalize(slug, item)
+def _fetch_board(client: httpx.Client, slug: str) -> Iterable[RawJob]:
+    try:
+        resp = client.get(API.format(slug=slug))
+        resp.raise_for_status()
+        payload = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("pinpoint[%s] fetch failed: %s", slug, e)
+        return
+
+    postings = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(postings, list):
+        log.warning("pinpoint[%s] returned an unexpected payload, skipping", slug)
+        return
+
+    for item in postings:
+        yield from _normalize(slug, item)
 
 
 def _normalize(company_slug: str, item: dict) -> Iterable[RawJob]:
