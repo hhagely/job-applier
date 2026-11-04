@@ -9,9 +9,9 @@ and ``POST /api/company-coverage/refresh`` (the "Update company list" button on
 
 Discovery pulls slugs the SimplifyJobs feed carries: Greenhouse, Lever,
 Workable, SmartRecruiters, and Ashby. Re-verification covers those five plus
-Workday so dead boards get auto-disabled regardless of how they got into the
-table. Jibe and Oracle are seed-only (neither discovered nor re-verified) —
-their slugs pack fields no public URL exposes.
+Workday, Pinpoint, and Teamtailor so dead boards get auto-disabled regardless of
+how they got into the table. Jibe and Oracle are seed-only (neither discovered nor
+re-verified) — their slugs pack fields no public URL exposes.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from job_applier.sources.companies import (
     WORKDAY_BOARDS,
 )
 from job_applier.sources.oracle import parse_slug as parse_oracle_slug
+from job_applier.sources.pinpoint import is_sample_board
 from job_applier.sources.workday import parse_slug as parse_workday_slug
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,8 @@ LV_VERIFY = "https://api.lever.co/v0/postings/{slug}?mode=json"
 ASHBY_VERIFY = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 SR_VERIFY = "https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=1"
 JIBE_VERIFY = "https://{slug}.jibeapply.com/api/jobs?page=1"
+PINPOINT_VERIFY = "https://{slug}.pinpointhq.com/postings.json"
+TEAMTAILOR_VERIFY = "https://{slug}.teamtailor.com/jobs.rss"
 # Workable's verify is a POST with a body — handled by a dedicated helper.
 WORKABLE_VERIFY_URL = "https://apply.workable.com/api/v3/accounts/{slug}/jobs"
 
@@ -125,8 +128,10 @@ _CASE_INSENSITIVE_DEDUPE = {"ashby"}
 # at least one posting as proof of life, for two different reasons:
 # SmartRecruiters answers 200 with an empty list for ANY string (verified), so
 # "it responded" means nothing there; Workable 404s properly but keeps abandoned
-# accounts alive forever, so a long-squatted name still answers 200.
-BOARDS_404_WHEN_MISSING = {"greenhouse", "lever", "ashby", "jibe"}
+# accounts alive forever, so a long-squatted name still answers 200; Pinpoint
+# 404s too, but trial accounts sit under many real company names, so its verifier
+# counts a board of Pinpoint's sample jobs as empty.
+BOARDS_404_WHEN_MISSING = {"greenhouse", "lever", "ashby", "jibe", "teamtailor"}
 
 
 def board_exists(source: str, ok: bool, job_count: int | None) -> bool:
@@ -168,6 +173,10 @@ class RefreshStats:
     wk_disabled: int = 0
     sr_reverified: int = 0
     sr_disabled: int = 0
+    pp_reverified: int = 0
+    pp_disabled: int = 0
+    tt_reverified: int = 0
+    tt_disabled: int = 0
 
 
 def searched_countries(session: Session) -> set[str]:
@@ -262,9 +271,9 @@ def _apply_seed_batches(session: Session) -> int:
 
 
 # Progress steps reported through ``progress_cb``: one for the feed fetch, one per
-# per-source verify pass. Reverification adds a second pass over six sources.
+# per-source verify pass. Reverification adds a second pass over eight sources.
 REFRESH_STEPS = 6
-REFRESH_STEPS_REVERIFY = REFRESH_STEPS + 6
+REFRESH_STEPS_REVERIFY = REFRESH_STEPS + 8
 
 
 def refresh_slugs(
@@ -318,7 +327,7 @@ def refresh_slugs(
     # transaction that writes them.
     discovered_sources = ["greenhouse", "lever", "workable", "smartrecruiters", "ashby"]
     existing = _existing_slugs(
-        discovered_sources + (["workday"] if reverify_existing else [])
+        discovered_sources + (["workday", "pinpoint", "teamtailor"] if reverify_existing else [])
     )
 
     new_gh = _new_slugs("greenhouse", candidates["greenhouse"], existing["greenhouse"])
@@ -401,6 +410,22 @@ def refresh_slugs(
             disabled_field="sr_disabled",
         )
         _step(f"re-checked {len(existing['smartrecruiters'])} SmartRecruiters boards")
+        _apply_reverify(
+            source="pinpoint",
+            results=_verify_pinpoint(sorted(existing["pinpoint"]), max_workers),
+            stats=stats,
+            reverified_field="pp_reverified",
+            disabled_field="pp_disabled",
+        )
+        _step(f"re-checked {len(existing['pinpoint'])} Pinpoint boards")
+        _apply_reverify(
+            source="teamtailor",
+            results=_verify_teamtailor(sorted(existing["teamtailor"]), max_workers),
+            stats=stats,
+            reverified_field="tt_reverified",
+            disabled_field="tt_disabled",
+        )
+        _step(f"re-checked {len(existing['teamtailor'])} Teamtailor boards")
 
     return stats
 
@@ -633,6 +658,10 @@ def verify_slugs(
         return _verify_many(slugs, url_template, max_workers, timeout=timeout)
     if source == "workable":
         return _verify_workable(slugs, max_workers, timeout=timeout)
+    if source == "pinpoint":
+        return _verify_pinpoint(slugs, max_workers, timeout=timeout)
+    if source == "teamtailor":
+        return _verify_teamtailor(slugs, max_workers, timeout=timeout)
     if source == "workday":
         return _verify_workday(slugs, max_workers, timeout=timeout)
     raise ValueError(f"no board verifier for source {source!r}")
@@ -656,6 +685,46 @@ def _verify_many(
             else:
                 count = 0
             return (slug, True, count, None)
+        except Exception as e:  # noqa: BLE001 — we want to capture the error string
+            return (slug, False, None, str(e))
+
+    return _run_verifier(slugs, check, max_workers)
+
+
+def _verify_pinpoint(
+    slugs: list[str], max_workers: int, timeout: float = 20
+) -> list[_VerifyResult]:
+    """Pinpoint's envelope is ``{"data": [...]}``, and a trial account's sample jobs
+    count as no jobs, so ``board_exists`` rejects it."""
+
+    def check(slug: str) -> _VerifyResult:
+        try:
+            r = httpx.get(
+                PINPOINT_VERIFY.format(slug=slug), timeout=timeout, follow_redirects=True
+            )
+            if r.status_code != 200:
+                return (slug, False, None, f"HTTP {r.status_code}")
+            postings = r.json().get("data") or []
+            return (slug, True, 0 if is_sample_board(postings) else len(postings), None)
+        except Exception as e:  # noqa: BLE001 — we want to capture the error string
+            return (slug, False, None, str(e))
+
+    return _run_verifier(slugs, check, max_workers)
+
+
+def _verify_teamtailor(
+    slugs: list[str], max_workers: int, timeout: float = 20
+) -> list[_VerifyResult]:
+    """Teamtailor's feed is RSS, so it can't share ``_verify_many``'s JSON parse."""
+
+    def check(slug: str) -> _VerifyResult:
+        try:
+            r = httpx.get(
+                TEAMTAILOR_VERIFY.format(slug=slug), timeout=timeout, follow_redirects=True
+            )
+            if r.status_code != 200:
+                return (slug, False, None, f"HTTP {r.status_code}")
+            return (slug, True, r.text.count("<item>"), None)
         except Exception as e:  # noqa: BLE001 — we want to capture the error string
             return (slug, False, None, str(e))
 

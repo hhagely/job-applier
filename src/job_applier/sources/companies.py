@@ -10,7 +10,8 @@ when the table is empty. After that, manage slugs via the DB:
   and auto-disable ones that have gone dead.
 
 ``SEED_BATCHES`` at the bottom is the exception: companies added after the
-fact, which every install picks up once on its next start.
+fact, which every install picks up once on its next start. They are also the only
+source of Pinpoint and Teamtailor boards here.
 
 Greenhouse / Lever lists below were originally sourced from SimplifyJobs and
 verified live against the public boards APIs at the time of writing.
@@ -34,6 +35,9 @@ experience API is served by the underlying Fusion host (e.g.
 ``eeho.fa.us2.oraclecloud.com``), not the vanity careers domain, and keys on a
 numeric ``CX_n`` site number; the public job-link base is carried separately so
 click-throughs land on the pretty careers URL.
+
+Pinpoint:        https://{slug}.pinpointhq.com/postings.json
+Teamtailor:      https://{slug}.teamtailor.com/jobs.rss
 """
 
 from dataclasses import dataclass
@@ -1475,6 +1479,18 @@ SEED_BATCHES: dict[str, SeedBatch] = {
             ],
         }
     ),
+    "uk-ie-2026-11": SeedBatch(
+        boards={
+            "pinpoint": [
+                "float",  # has a role aimed at the Americas
+                "zappi",
+            ],
+            "teamtailor": [
+                "huel",
+                "paysend",
+            ],
+        }
+    ),
     # No US roles when added, so a US-only install doesn't scrape them.
     "uk-ie-only-2026-11": SeedBatch(
         countries=("GB", "IE"),
@@ -1510,6 +1526,28 @@ SEED_BATCHES: dict[str, SeedBatch] = {
                 "Oxa",
                 "TrueLayer",
                 "Unmind",
+            ],
+            "pinpoint": [
+                # Scotland
+                "freeagent",  # Edinburgh
+                # UK
+                "field",
+                "goodenergy",
+                "made-tech",
+                "mojomortgages",
+                "pod-point",
+                "ravelin",
+            ],
+            "teamtailor": [
+                "cazoo",
+                "chip",
+                "monese",
+                "ocadoretail",
+                "oddbox",
+                "onthebeach",
+                "quinyx",
+                "tailscom",
+                "yonder",
             ],
         },
     ),

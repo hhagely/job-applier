@@ -365,3 +365,30 @@ def test_a_scoped_board_someone_searches_is_already_searched(session):
     session.commit()
 
     assert watchlist.add_watched_company(session, "Dojo").status == "already_searched"
+
+
+@pytest.mark.parametrize(
+    ("url", "source", "slug"),
+    [
+        ("https://freeagent.pinpointhq.com/en/postings/abc", "pinpoint", "freeagent"),
+        ("made-tech.pinpointhq.com", "pinpoint", "made-tech"),
+        ("https://huel.teamtailor.com/jobs/123-role", "teamtailor", "huel"),
+        ("https://acme.na.teamtailor.com/jobs", "teamtailor", "acme.na"),
+    ],
+)
+def test_pinpoint_and_teamtailor_urls_parse_to_boards(url, source, slug):
+    board = discover.parse_board_url(url)
+    assert (board.source, board.slug) == (source, slug)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.pinpointhq.com/pricing",
+        "https://app.teamtailor.com/login",
+        "https://notpinpointhq.com/acme",
+        "https://a.b.pinpointhq.com/",
+    ],
+)
+def test_ats_marketing_and_lookalike_hosts_are_not_boards(url):
+    assert discover.parse_board_url(url) is None

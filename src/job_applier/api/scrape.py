@@ -112,6 +112,8 @@ def _run_refresh_companies_task(state: "ai_tasks.TaskState", reverify: bool) -> 
         + stats.workday_disabled
         + stats.wk_disabled
         + stats.sr_disabled
+        + stats.pp_disabled
+        + stats.tt_disabled
     )
     summary = f"done: {added} new compan{'y' if added == 1 else 'ies'} added"
     if reverify:

@@ -354,3 +354,25 @@ def test_a_scoped_board_is_scraped_only_while_a_profile_searches_its_country(tmp
         s.add(abroad)
         s.commit()
     assert sources_mod._enabled_slugs("greenhouse") == ["stripe"]
+
+
+@pytest.mark.parametrize(
+    ("postings", "expected"),
+    [
+        ([{"title": "Backend Engineer"}], 1),
+        ([], 0),
+        # Pinpoint's trial accounts: real company names, sample jobs.
+        ([{"title": "Head of DEI - UK"}, {"title": "Marketing Manager"}], 0),
+    ],
+)
+def test_pinpoint_only_counts_a_real_employers_postings(monkeypatch, postings, expected):
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"data": postings}
+
+    monkeypatch.setattr(refresh_mod.httpx, "get", lambda *a, **k: Resp())
+    [(_, ok, count, _)] = refresh_mod.verify_slugs("pinpoint", ["acme"], max_workers=1)
+    assert ok and count == expected
+    assert refresh_mod.board_exists("pinpoint", ok, count) is (expected > 0)

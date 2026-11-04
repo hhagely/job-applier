@@ -2,7 +2,7 @@
 
 The DB (``SourceSlug`` table) is the runtime source of truth for which
 per-company boards (Greenhouse / Lever / Ashby / Workday / Workable /
-SmartRecruiters / Jibe / Oracle) to ingest from.
+SmartRecruiters / Jibe / Oracle / Pinpoint / Teamtailor) to ingest from.
 ``companies.py`` exists only as a seed. The registered set is whatever
 ``get_all_sources`` builds — keep this list in step with it.
 
@@ -24,9 +24,11 @@ from job_applier.sources.hackernews import HackerNewsHiringSource
 from job_applier.sources.jibe import JibeSource
 from job_applier.sources.lever import LeverSource
 from job_applier.sources.oracle import OracleSource
+from job_applier.sources.pinpoint import PinpointSource
 from job_applier.sources.refresh import board_is_searched, searched_countries
 from job_applier.sources.remoteok import RemoteOKSource
 from job_applier.sources.smartrecruiters import SmartRecruitersSource
+from job_applier.sources.teamtailor import TeamtailorSource
 from job_applier.sources.workable import WorkableSource
 from job_applier.sources.weworkremotely import WeWorkRemotelySource
 from job_applier.sources.workday import WorkdaySource
@@ -70,6 +72,8 @@ def get_all_sources(filter_config: FilterConfig | None = None) -> list[SourceAda
         ),
         JibeSource(_enabled_slugs("jibe")),
         OracleSource(_enabled_slugs("oracle")),
+        PinpointSource(_enabled_slugs("pinpoint")),
+        TeamtailorSource(_enabled_slugs("teamtailor")),
         RemoteOKSource(),
         WeWorkRemotelySource(),
         HackerNewsHiringSource(),
@@ -84,10 +88,12 @@ __all__ = [
     "JibeSource",
     "LeverSource",
     "OracleSource",
+    "PinpointSource",
     "RawJob",
     "RemoteOKSource",
     "SmartRecruitersSource",
     "SourceAdapter",
+    "TeamtailorSource",
     "WeWorkRemotelySource",
     "WorkableSource",
     "WorkdaySource",
